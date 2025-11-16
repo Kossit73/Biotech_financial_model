@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import asdict, fields
 from typing import Dict, List
 
 import numpy as np
@@ -87,6 +87,28 @@ def _default_products() -> pd.DataFrame:
         },
     ]
     return pd.DataFrame(data)
+
+
+def _blank_product_row(name: str = "New vaccine") -> Dict:
+    """Return a ProductConfig-like dict for initializing new rows."""
+
+    cfg = ProductConfig(
+        name=name,
+        stage="Discovery",
+        success_prob=0.2,
+        include_in_consolidation=True,
+        patent_revenue_target=50_000_000,
+        post_patent_revenue_target=25_000_000,
+        cogs_patent=0.35,
+        cogs_post=0.5,
+        sales_marketing_pct=0.15,
+        gna_pct=0.1,
+        rd_remaining_pre_launch=25_000_000,
+        rd_annual_post_launch=5_000_000,
+        capex_remaining_pre_launch=10_000_000,
+        capex_annual_post_launch=2_000_000,
+    )
+    return asdict(cfg)
 
 
 def _default_vaccine_sales_table(first_year: int = 2024) -> pd.DataFrame:
@@ -406,6 +428,40 @@ def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
     )
     st.session_state[session_key] = edited_df
     return edited_df
+
+
+def _validate_product_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Clamp probability/percentage fields to avoid invalid model assumptions."""
+
+    validated = df.copy()
+    if "success_prob" in validated.columns:
+        validated["success_prob"] = (
+            validated["success_prob"].fillna(0.0).clip(0.0, 1.0)
+        )
+
+    percent_cols = [
+        "cogs_patent",
+        "cogs_post",
+        "sales_marketing_pct",
+        "gna_pct",
+        "royalty_pct",
+        "rd_capitalization_ratio",
+    ]
+    for col in percent_cols:
+        if col in validated.columns:
+            upper = 1.0 if col != "royalty_pct" else None
+            series = validated[col].fillna(0.0)
+            if upper is None:
+                validated[col] = series.clip(lower=0.0)
+            else:
+                validated[col] = series.clip(0.0, upper)
+
+    if "include_in_consolidation" in validated.columns:
+        validated["include_in_consolidation"] = validated[
+            "include_in_consolidation"
+        ].fillna(True)
+
+    return validated
 
 
 def _sanitize_product_records(df: pd.DataFrame) -> List[Dict]:
@@ -1051,10 +1107,53 @@ def main() -> None:
         if "product_table" not in st.session_state:
             st.session_state["product_table"] = _default_products()
 
+        product_toolbar = st.columns([0.22, 0.33, 0.45])
+        with product_toolbar[0]:
+            edit_enabled = st.toggle(
+                "Edit rows",
+                value=st.session_state.get("product_edit_enabled", True),
+                key="product_edit_toggle",
+            )
+            st.session_state["product_edit_enabled"] = edit_enabled
+
+        with product_toolbar[1]:
+            new_name = st.text_input(
+                "New product name",
+                value="New vaccine",
+                key="product_new_name",
+            )
+            if st.button("Add row", use_container_width=True):
+                # Append a template row whenever the analyst adds a new vaccine.
+                df = st.session_state["product_table"].copy()
+                default_row = _blank_product_row(new_name or f"Product {len(df) + 1}")
+                df = pd.concat([df, pd.DataFrame([default_row])], ignore_index=True)
+                st.session_state["product_table"] = df
+
+        with product_toolbar[2]:
+            df = st.session_state["product_table"].copy()
+            if df.empty:
+                st.caption("No products to remove.")
+            else:
+                removal_options = list(range(len(df)))
+                remove_labels = [
+                    f"{idx + 1}. {df.loc[idx, 'name'] or 'Unnamed'}" for idx in removal_options
+                ]
+                selected_idx = st.selectbox(
+                    "Select product to remove",
+                    options=removal_options,
+                    format_func=lambda i, labels=remove_labels: labels[i],
+                    key="product_remove_idx",
+                )
+                if st.button("Remove row", use_container_width=True):
+                    # Drop the chosen product while keeping other rows intact.
+                    df = df.drop(df.index[selected_idx]).reset_index(drop=True)
+                    st.session_state["product_table"] = df
+
         product_df = st.data_editor(
             st.session_state["product_table"],
             num_rows="dynamic",
             hide_index=True,
+            disabled=not st.session_state.get("product_edit_enabled", True),
             key="product_editor",
             column_config={
                 "stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
@@ -1064,6 +1163,7 @@ def main() -> None:
                 ),
             },
         )
+        product_df = _validate_product_df(product_df)
         st.session_state["product_table"] = product_df
 
         portfolio = _build_portfolio(product_df, model_cfg)
