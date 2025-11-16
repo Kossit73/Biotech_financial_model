@@ -1,49 +1,21 @@
-"""Core valuation models and utilities for the Valuation Codex package.
-
-This module keeps the original public surface while refactoring the internal
-architecture to be easier to extend.  Each concept now has a focused class and
-there are explicit extension points for valuation, scenario modelling, and
-forecasting strategies.
-"""
+"""Core biotech / agro financial modelling primitives."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
-from pathlib import Path
-import json
-from typing import (
-    Dict,
-    Iterable,
-    List,
-    MutableMapping,
-    Optional,
-    Protocol,
-    Sequence,
-    Union,
-)
+from dataclasses import dataclass, asdict
+from typing import List, Dict, Optional, Callable
 
 import numpy as np
 import pandas as pd
 
 
-FeatureLike = Union[
-    pd.DataFrame,
-    pd.Series,
-    MutableMapping[str, float],
-    Sequence[float],
-    np.ndarray,
-]
+# =====================================
+# 1. Configuration dataclasses (inputs)
+# =====================================
 
 
-# =========================
-# Configuration dataclasses
-# =========================
-
-
-@dataclass(slots=True)
+@dataclass
 class ModelConfig:
-    """Global model assumptions that apply to the full portfolio."""
-
     first_year: int = 2024
     n_years: int = 25
     currency: str = "USD"
@@ -62,10 +34,8 @@ class ModelConfig:
         return np.arange(self.first_year, self.first_year + self.n_years)
 
 
-@dataclass(slots=True)
+@dataclass
 class ProductConfig:
-    """Product-specific assumptions."""
-
     name: str
     stage: str
     success_prob: float
@@ -98,20 +68,24 @@ class ProductConfig:
 
 
 # ===========================
-# Product financials builder
+# 2. Core model classes
 # ===========================
 
 
-class ProductFinancialsBuilder:
-    """Factory for generating deterministic product cash-flow schedules."""
+class Product:
+    """Represents a single biotech (or agro) product/asset."""
 
-    def _launch_year(self, cfg: ProductConfig, model_cfg: ModelConfig) -> int:
-        if cfg.preexisting_market:
-            return model_cfg.first_year
-        return model_cfg.first_year + max(cfg.time_to_market, 0)
+    def __init__(self, config: ProductConfig, model_config: ModelConfig):
+        self.config = config
+        self.model_config = model_config
 
-    def _patent_end_year(self, cfg: ProductConfig, model_cfg: ModelConfig) -> int:
-        return self._launch_year(cfg, model_cfg) + cfg.patent_years - 1
+    def _launch_year(self) -> int:
+        if self.config.preexisting_market:
+            return self.model_config.first_year
+        return self.model_config.first_year + max(self.config.time_to_market, 0)
+
+    def _patent_end_year(self) -> int:
+        return self._launch_year() + self.config.patent_years - 1
 
     @staticmethod
     def _rolling_amortization(additions: pd.Series, life: int) -> pd.Series:
@@ -124,18 +98,19 @@ class ProductFinancialsBuilder:
             if add == 0:
                 continue
             annual = add / life
-            end = min(i + life, len(years))
-            amort.iloc[i:end] += annual
+            for j in range(i, min(i + life, len(years))):
+                amort.iloc[j] += annual
         return amort
 
-    def build_revenue_series(self, cfg: ProductConfig, model_cfg: ModelConfig) -> pd.Series:
-        years = model_cfg.years
+    def build_revenue_series(self) -> pd.Series:
+        years = self.model_config.years
+        cfg = self.config
         revenue = pd.Series(0.0, index=years, name=f"{cfg.name}_revenue")
         if not cfg.include_in_consolidation:
             return revenue
 
-        launch_year = self._launch_year(cfg, model_cfg)
-        patent_end = self._patent_end_year(cfg, model_cfg)
+        launch_year = self._launch_year()
+        patent_end = self._patent_end_year()
 
         for i, year in enumerate(years):
             if year < launch_year:
@@ -146,36 +121,40 @@ class ProductFinancialsBuilder:
             if in_patent:
                 base_target = cfg.patent_revenue_target
                 growth_rate = cfg.market_growth_patent
-                growth_start = max(0, years_since_launch - len(model_cfg.sales_ramp_factors))
+                years_since_growth_start = max(
+                    0, years_since_launch - len(self.model_config.sales_ramp_factors)
+                )
             else:
                 base_target = cfg.post_patent_revenue_target
                 growth_rate = cfg.market_growth_post
-                growth_start = max(0, year - (patent_end + 1))
+                years_since_growth_start = max(0, year - (patent_end + 1))
 
             ramp = (
-                model_cfg.sales_ramp_factors[years_since_launch]
-                if years_since_launch < len(model_cfg.sales_ramp_factors)
+                self.model_config.sales_ramp_factors[years_since_launch]
+                if years_since_launch < len(self.model_config.sales_ramp_factors)
                 else 1.0
             )
-            target_with_growth = base_target * ((1 + growth_rate) ** growth_start)
+
+            target_with_growth = base_target * ((1 + growth_rate) ** years_since_growth_start)
             revenue.iloc[i] = ramp * target_with_growth
 
         return revenue
 
-    def build_cashflow_table(self, cfg: ProductConfig, model_cfg: ModelConfig) -> pd.DataFrame:
-        years = model_cfg.years
+    def build_cashflow_table(self) -> pd.DataFrame:
+        years = self.model_config.years
+        cfg = self.config
         df = pd.DataFrame(index=years)
-        df["revenue"] = self.build_revenue_series(cfg, model_cfg)
+        df["revenue"] = self.build_revenue_series()
 
-        patent_end = self._patent_end_year(cfg, model_cfg)
-        cogs = []
+        patent_end = self._patent_end_year()
+        cogs_vals: List[float] = []
         for year, rev in df["revenue"].items():
             if rev == 0:
-                cogs.append(0.0)
+                cogs_vals.append(0.0)
                 continue
             pct = cfg.cogs_patent if year <= patent_end else cfg.cogs_post
-            cogs.append(-pct * rev)
-        df["cogs"] = cogs
+            cogs_vals.append(-pct * rev)
+        df["cogs"] = cogs_vals
 
         df["sales_marketing"] = -cfg.sales_marketing_pct * df["revenue"]
         df["gna"] = -cfg.gna_pct * df["revenue"]
@@ -185,10 +164,13 @@ class ProductFinancialsBuilder:
         if cfg.rd_remaining_pre_launch > 0 and not cfg.preexisting_market:
             pre_years = max(1, cfg.time_to_market)
             annual_pre = cfg.rd_remaining_pre_launch / pre_years
-            rd_cash.iloc[:pre_years] -= annual_pre
+            for i in range(pre_years):
+                rd_cash.iloc[i] -= annual_pre
 
-        launch_year = self._launch_year(cfg, model_cfg)
-        rd_cash.loc[model_cfg.years >= launch_year] -= cfg.rd_annual_post_launch
+        launch_year = self._launch_year()
+        for i, year in enumerate(years):
+            if year >= launch_year:
+                rd_cash.iloc[i] -= cfg.rd_annual_post_launch
         df["rd_cash"] = rd_cash
 
         rd_cap_add = rd_cash * cfg.rd_capitalization_ratio
@@ -201,10 +183,13 @@ class ProductFinancialsBuilder:
         capex_cash = pd.Series(0.0, index=years)
         if cfg.capex_remaining_pre_launch > 0 and not cfg.preexisting_market:
             pre_years = max(1, cfg.time_to_market)
-            annual_pre = cfg.capex_remaining_pre_launch / pre_years
-            capex_cash.iloc[:pre_years] -= annual_pre
+            annual_pre_cx = cfg.capex_remaining_pre_launch / pre_years
+            for i in range(pre_years):
+                capex_cash.iloc[i] -= annual_pre_cx
 
-        capex_cash.loc[model_cfg.years >= launch_year] -= cfg.capex_annual_post_launch
+        for i, year in enumerate(years):
+            if year >= launch_year:
+                capex_cash.iloc[i] -= cfg.capex_annual_post_launch
         df["capex_cash"] = capex_cash
 
         depreciation = self._rolling_amortization(capex_cash, cfg.capex_dep_years)
@@ -221,7 +206,7 @@ class ProductFinancialsBuilder:
         df["da"] = -(df["rd_amort"] + df["depreciation"])
         df["ebitda"] = df["ebit"] + df["da"]
 
-        tax_rate = model_cfg.tax_rate
+        tax_rate = self.model_config.tax_rate
         df["tax"] = 0.0
         positive_ebit = df["ebit"] > 0
         df.loc[positive_ebit, "tax"] = -tax_rate * df.loc[positive_ebit, "ebit"]
@@ -229,32 +214,6 @@ class ProductFinancialsBuilder:
 
         df["fcff"] = df["nopat"] + df["da"] + df["capex_cash"] + df["rd_cap_add"]
         return df
-
-
-# ==========
-# Core model
-# ==========
-
-
-class Product:
-    """Represents a single product and delegates computations to the builder."""
-
-    def __init__(
-        self,
-        config: ProductConfig,
-        model_config: ModelConfig,
-        *,
-        builder: ProductFinancialsBuilder | None = None,
-    ) -> None:
-        self.config = config
-        self.model_config = model_config
-        self._builder = builder or ProductFinancialsBuilder()
-
-    def build_revenue_series(self) -> pd.Series:
-        return self._builder.build_revenue_series(self.config, self.model_config)
-
-    def build_cashflow_table(self) -> pd.DataFrame:
-        return self._builder.build_cashflow_table(self.config, self.model_config)
 
     def build_probability_weighted_table(self) -> pd.DataFrame:
         df = self.build_cashflow_table().copy()
@@ -264,26 +223,14 @@ class Product:
         return df
 
 
-class WorkingCapitalCalculator:
-    """Utility for working-capital adjustments on consolidated cash flows."""
-
-    def __init__(self, pct_sales: float) -> None:
-        self.pct_sales = pct_sales
-
-    def apply(self, revenue: pd.Series) -> pd.Series:
-        wc = self.pct_sales * revenue
-        wc_diff = wc.diff().fillna(wc)
-        return -wc_diff
-
-
 class Portfolio:
-    """A collection of products governed by a single model configuration."""
+    """A collection of products that can be valued together."""
 
     def __init__(self, products: List[Product], model_config: ModelConfig):
         self.products = products
         self.model_config = model_config
 
-    def consolidated_table(self) -> Dict[str, Dict[str, pd.DataFrame] | pd.DataFrame]:
+    def consolidated_table(self) -> Dict[str, pd.DataFrame | pd.Series]:
         years = self.model_config.years
         base_cols = [
             "revenue",
@@ -319,8 +266,9 @@ class Portfolio:
             per_product_prob[cfg.name] = wdf
             cons_df = cons_df.add(wdf[base_cols], fill_value=0.0)
 
-        wc_calc = WorkingCapitalCalculator(self.model_config.working_capital_pct_sales)
-        cons_df["delta_wc"] = wc_calc.apply(cons_df["revenue"])
+        wc = self.model_config.working_capital_pct_sales * cons_df["revenue"]
+        wc_diff = wc.diff().fillna(wc)
+        cons_df["delta_wc"] = -wc_diff
         cons_df["fcff_after_wc"] = cons_df["fcff"] + cons_df["delta_wc"]
 
         return {
@@ -330,12 +278,12 @@ class Portfolio:
         }
 
 
-# =================
-# Valuation engine
-# =================
+# ======================
+# 3. Valuation engine
+# ======================
 
 
-@dataclass(slots=True)
+@dataclass
 class ValuationResult:
     portfolio: Portfolio
     rnpv: float
@@ -345,52 +293,44 @@ class ValuationResult:
     per_product_prob: Dict[str, pd.DataFrame]
 
 
-class ValuationMethod(Protocol):
-    """Interface for all valuation strategies."""
+class ValuationEngine:
+    """Runs DCF valuation (rNPV, terminal value) on a Portfolio."""
 
-    name: str
+    def __init__(self, portfolio: Portfolio):
+        self.portfolio = portfolio
+        self.model_config = portfolio.model_config
 
-    def run(self, portfolio: Portfolio) -> ValuationResult:  # pragma: no cover - Protocol
-        ...
-
-
-class DiscountedCashFlowValuation:
-    """Classic discounted cash-flow valuation with an EBITDA terminal value."""
-
-    name = "discounted_cash_flow"
-
-    @staticmethod
-    def _discounted_cash_flows(fcff: pd.Series, discount_rate: float) -> pd.DataFrame:
+    def _discounted_cash_flows(self, fcff: pd.Series) -> pd.DataFrame:
         years = fcff.index.values
         t = np.arange(len(years))
         df = pd.DataFrame(index=years)
         df["t"] = t
         df["fcff"] = fcff.values
-        df["discount_factor"] = 1.0 / ((1 + discount_rate) ** t)
+        df["discount_factor"] = 1.0 / ((1 + self.model_config.discount_rate) ** t)
         df["discounted_fcff"] = df["fcff"] * df["discount_factor"]
         return df
 
-    def _add_terminal_value(
-        self, dcf_df: pd.DataFrame, cons_df: pd.DataFrame, model_cfg: ModelConfig
-    ) -> float:
+    def _add_terminal_value(self, dcf_df: pd.DataFrame, cons_df: pd.DataFrame) -> float:
         last_year = cons_df.index[-1]
         last_ebitda = cons_df.loc[last_year, "ebitda"]
-        terminal_ev = model_cfg.ev_ebitda_multiple * last_ebitda
+        multiple = self.model_config.ev_ebitda_multiple
+        terminal_ev = multiple * last_ebitda
 
         t_last = dcf_df.loc[last_year, "t"]
-        discount = (1 + model_cfg.discount_rate) ** t_last
         dcf_df.loc[last_year, "terminal_value"] = terminal_ev
-        dcf_df.loc[last_year, "discounted_terminal_value"] = terminal_ev / discount
-        return float(dcf_df["discounted_fcff"].sum() + dcf_df["discounted_terminal_value"].sum())
+        dcf_df.loc[last_year, "discounted_terminal_value"] = terminal_ev / (
+            (1 + self.model_config.discount_rate) ** t_last
+        )
+        rnpv = dcf_df["discounted_fcff"].sum() + dcf_df["discounted_terminal_value"].sum()
+        return rnpv
 
-    def run(self, portfolio: Portfolio) -> ValuationResult:
-        agg = portfolio.consolidated_table()
+    def run(self) -> ValuationResult:
+        agg = self.portfolio.consolidated_table()
         cons = agg["consolidated"]
-        model_cfg = portfolio.model_config
-        dcf_df = self._discounted_cash_flows(cons["fcff_after_wc"], model_cfg.discount_rate)
-        rnpv = self._add_terminal_value(dcf_df, cons, model_cfg)
+        dcf_df = self._discounted_cash_flows(cons["fcff_after_wc"])
+        rnpv = self._add_terminal_value(dcf_df, cons)
         return ValuationResult(
-            portfolio=portfolio,
+            portfolio=self.portfolio,
             rnpv=rnpv,
             dcf_table=dcf_df,
             consolidated=cons,
@@ -399,107 +339,12 @@ class DiscountedCashFlowValuation:
         )
 
 
-class ValuationEngine:
-    """Thin orchestrator that delegates to a concrete valuation method."""
-
-    def __init__(
-        self,
-        portfolio: Portfolio,
-        method: ValuationMethod | None = None,
-    ) -> None:
-        self.portfolio = portfolio
-        self.method = method or DiscountedCashFlowValuation()
-
-    def run(self) -> ValuationResult:
-        return self.method.run(self.portfolio)
+# ======================
+# 4. VC-style valuation
+# ======================
 
 
-# ==================
-# VC-style valuation
-# ==================
-
-
-class MultiplesModel:
-    """Simple linear model that predicts EV/EBITDA multiples."""
-
-    def __init__(self, feature_names: Sequence[str] | None = None) -> None:
-        self.feature_names_: list[str] | None = list(feature_names) if feature_names else None
-        self.coef_: np.ndarray | None = None
-        self.intercept_: float | None = None
-
-    @staticmethod
-    def _ensure_dataframe(
-        X: FeatureLike,
-        expected_feature_names: Sequence[str] | None = None,
-    ) -> pd.DataFrame:
-        if isinstance(X, pd.Series):
-            df = X.to_frame().T
-        elif isinstance(X, pd.DataFrame):
-            df = X.copy()
-        elif isinstance(X, MutableMapping):
-            df = pd.DataFrame([X])
-        else:
-            arr = np.asarray(X, dtype=float)
-            if arr.ndim == 1:
-                arr = arr.reshape(1, -1)
-            if expected_feature_names is None:
-                columns = [f"x{i}" for i in range(arr.shape[1])]
-            else:
-                if arr.shape[1] != len(expected_feature_names):
-                    raise ValueError("Feature length does not match the fitted model.")
-                columns = list(expected_feature_names)
-            df = pd.DataFrame(arr, columns=columns)
-
-        if expected_feature_names is not None:
-            missing = [c for c in expected_feature_names if c not in df.columns]
-            if missing:
-                raise ValueError(f"Missing required features for multiples model: {missing}")
-            df = df.loc[:, list(expected_feature_names)]
-        return df
-
-    @property
-    def is_fitted(self) -> bool:
-        return self.coef_ is not None and self.intercept_ is not None
-
-    def fit(self, X: FeatureLike, y: Sequence[float] | np.ndarray) -> "MultiplesModel":
-        df = self._ensure_dataframe(X)
-        y_arr = np.asarray(y, dtype=float).reshape(-1, 1)
-        if df.shape[0] != y_arr.shape[0]:
-            raise ValueError("X and y must have the same number of rows.")
-        A = np.c_[np.ones(df.shape[0]), df.values]
-        beta, *_ = np.linalg.lstsq(A, y_arr, rcond=None)
-        self.intercept_ = float(beta[0, 0])
-        self.coef_ = beta[1:, 0]
-        self.feature_names_ = list(df.columns)
-        return self
-
-    def predict(self, X: FeatureLike) -> np.ndarray:
-        if not self.is_fitted:
-            raise ValueError("Multiples model must be fitted before predicting.")
-        df = self._ensure_dataframe(X, self.feature_names_)
-        preds = df.values @ self.coef_ + self.intercept_
-        return preds
-
-    def save(self, path: Union[str, Path]) -> None:
-        if not self.is_fitted or self.feature_names_ is None:
-            raise ValueError("Cannot save an unfitted multiples model.")
-        payload = {
-            "intercept": self.intercept_,
-            "coef": self.coef_.tolist() if self.coef_ is not None else [],
-            "feature_names": self.feature_names_,
-        }
-        Path(path).write_text(json.dumps(payload))
-
-    @classmethod
-    def load(cls, path: Union[str, Path]) -> "MultiplesModel":
-        payload = json.loads(Path(path).read_text())
-        model = cls(feature_names=payload.get("feature_names"))
-        model.intercept_ = float(payload["intercept"])
-        model.coef_ = np.asarray(payload["coef"], dtype=float)
-        return model
-
-
-@dataclass(slots=True)
+@dataclass
 class VCInputs:
     exit_year: int
     target_irr: float
@@ -508,68 +353,21 @@ class VCInputs:
 
 
 class VCValuator:
-    """Implements the classic VC method using the DCF results as inputs."""
-
-    def __init__(
-        self,
-        valuation_result: ValuationResult,
-        *,
-        default_exit_multiple: float | None = None,
-        multiples_model: "MultiplesModel" | None = None,
-    ) -> None:
-        if default_exit_multiple is not None and multiples_model is not None:
-            raise ValueError("Provide either a fixed multiple or a multiples model, not both.")
+    def __init__(self, valuation_result: ValuationResult):
         self.result = valuation_result
         self.model_config = valuation_result.portfolio.model_config
-        self.default_exit_multiple = default_exit_multiple
-        self.multiples_model = multiples_model
 
-    def _resolve_multiple(
-        self,
-        exit_year: int,
-        override_multiple: Optional[float],
-        multiple_features: "FeatureLike" | None,
-    ) -> float:
-        if override_multiple is not None:
-            return float(override_multiple)
-
-        if self.multiples_model is not None:
-            if exit_year not in self.result.consolidated.index:
-                raise ValueError("Exit year not in consolidated index")
-            feature_source: FeatureLike
-            if multiple_features is not None:
-                feature_source = multiple_features
-            else:
-                feature_source = self.result.consolidated.loc[exit_year]
-            prediction = self.multiples_model.predict(feature_source)
-            return float(prediction[0])
-
-        if self.default_exit_multiple is not None:
-            return float(self.default_exit_multiple)
-        return float(self.model_config.ev_ebitda_multiple)
-
-    def compute_exit_ev(
-        self,
-        exit_year: int,
-        multiple: Optional[float] = None,
-        *,
-        multiple_features: "FeatureLike" | None = None,
-    ) -> float:
+    def compute_exit_ev(self, exit_year: int, multiple: Optional[float] = None) -> float:
+        if multiple is None:
+            multiple = self.model_config.ev_ebitda_multiple
         cons = self.result.consolidated
         if exit_year not in cons.index:
             raise ValueError("Exit year not in consolidated index")
-        resolved_multiple = self._resolve_multiple(exit_year, multiple, multiple_features)
         exit_ebitda = cons.loc[exit_year, "ebitda"]
-        return float(exit_ebitda * resolved_multiple)
+        return float(exit_ebitda * multiple)
 
-    def vc_method(
-        self,
-        vc_inputs: VCInputs,
-        exit_multiple: Optional[float] = None,
-        *,
-        multiple_features: "FeatureLike" | None = None,
-    ) -> Dict[str, float]:
-        exit_ev = self.compute_exit_ev(vc_inputs.exit_year, exit_multiple, multiple_features=multiple_features)
+    def vc_method(self, vc_inputs: VCInputs, exit_multiple: Optional[float] = None) -> Dict[str, float]:
+        exit_ev = self.compute_exit_ev(vc_inputs.exit_year, exit_multiple)
         years_to_exit = vc_inputs.exit_year - self.model_config.first_year
         if years_to_exit <= 0:
             raise ValueError("Exit year must be after first model year")
@@ -590,78 +388,55 @@ class VCValuator:
         }
 
 
-# =========================
-# Scenario & stress testing
-# =========================
+# ============================
+# 5. Scenario & stress testing
+# ============================
 
 
-class ScenarioAdjustment(Protocol):
-    """Extension point that can adjust model-wide or per-product assumptions."""
-
-    name: str
-
-    def adjust_model_config(self, model_config: ModelConfig) -> ModelConfig:  # pragma: no cover - Protocol
-        ...
-
-    def adjust_product_config(
-        self, product_config: ProductConfig
-    ) -> ProductConfig:  # pragma: no cover - Protocol
-        ...
-
-
-@dataclass(slots=True)
-class Scenario(ScenarioAdjustment):
-    """Multiplicative scenario suitable for simple stress tests."""
-
+@dataclass
+class Scenario:
     name: str
     revenue_multiplier: float = 1.0
     cost_multiplier: float = 1.0
     discount_rate_shift: float = 0.0
     success_prob_multiplier: float = 1.0
 
-    def adjust_model_config(self, model_config: ModelConfig) -> ModelConfig:
-        cfg = replace(model_config)
-        cfg.discount_rate += self.discount_rate_shift
-        return cfg
-
-    def adjust_product_config(self, product_config: ProductConfig) -> ProductConfig:
-        cfg = replace(product_config)
-        cfg.patent_revenue_target *= self.revenue_multiplier
-        cfg.post_patent_revenue_target *= self.revenue_multiplier
-        cfg.cogs_patent *= self.cost_multiplier
-        cfg.cogs_post *= self.cost_multiplier
-        cfg.success_prob = max(0.0, min(1.0, cfg.success_prob * self.success_prob_multiplier))
-        return cfg
-
 
 class ScenarioEngine:
-    """Applies scenario adjustments and re-values the resulting portfolios."""
-
     def __init__(self, base_portfolio: Portfolio):
         self.base_portfolio = base_portfolio
+        self.base_model_config = base_portfolio.model_config
 
-    def _apply_adjustment(self, adjustment: ScenarioAdjustment) -> Portfolio:
-        new_model_cfg = adjustment.adjust_model_config(self.base_portfolio.model_config)
+    def _apply_scenario(self, scenario: Scenario) -> Portfolio:
+        new_model_cfg = ModelConfig(**asdict(self.base_model_config))
+        new_model_cfg.discount_rate += scenario.discount_rate_shift
+
         new_products: List[Product] = []
         for prod in self.base_portfolio.products:
-            new_cfg = adjustment.adjust_product_config(prod.config)
+            cfg = prod.config
+            cfg_dict = asdict(cfg)
+            cfg_dict["patent_revenue_target"] *= scenario.revenue_multiplier
+            cfg_dict["post_patent_revenue_target"] *= scenario.revenue_multiplier
+            cfg_dict["cogs_patent"] *= scenario.cost_multiplier
+            cfg_dict["cogs_post"] *= scenario.cost_multiplier
+            cfg_dict["success_prob"] = max(
+                0.0, min(1.0, cfg_dict["success_prob"] * scenario.success_prob_multiplier)
+            )
+            new_cfg = ProductConfig(**cfg_dict)
             new_products.append(Product(new_cfg, new_model_cfg))
+
         return Portfolio(new_products, new_model_cfg)
 
-    def run_scenarios(
-        self,
-        scenarios: Iterable[ScenarioAdjustment],
-        ebitda_year_offset: int = 0,
-    ) -> pd.DataFrame:
+    def run_scenarios(self, scenarios: List[Scenario], ebitda_year_offset: int = 0) -> pd.DataFrame:
         rows = []
 
         base_val = ValuationEngine(self.base_portfolio).run()
         base_cons = base_val.consolidated
-        base_year = self.base_portfolio.model_config.first_year + ebitda_year_offset
+        base_year = self.base_model_config.first_year + ebitda_year_offset
         rows.append(
             {
                 "scenario": "Base",
-                "discount_rate": self.base_portfolio.model_config.discount_rate,
+                "discount_rate": self.base_model_config.discount_rate,
                 "rnpv": base_val.rnpv,
                 "ebitda_year": base_year,
                 "ebitda_value": float(base_cons.loc[base_year, "ebitda"]),
@@ -669,7 +444,7 @@ class ScenarioEngine:
         )
 
         for sc in scenarios:
-            port_sc = self._apply_adjustment(sc)
+            port_sc = self._apply_scenario(sc)
             val = ValuationEngine(port_sc).run()
             cons = val.consolidated
             year = port_sc.model_config.first_year + ebitda_year_offset
@@ -687,13 +462,11 @@ class ScenarioEngine:
 
 
 # ==========================
-# Monte Carlo & risk engine
+# 6. Monte Carlo & risk
 # ==========================
 
 
 class MonteCarloEngine:
-    """Generates a distribution of rNPVs using simple multiplicative shocks."""
-
     def __init__(self, base_portfolio: Portfolio):
         self.base_portfolio = base_portfolio
 
@@ -741,80 +514,64 @@ class MonteCarloEngine:
         return float(tail.mean())
 
 
-# ==========================
-# Forecast engine & bridge
-# ==========================
+# ======================================
+# 8. ForecastEngine: ARIMA / Prophet / LSTM
+# ======================================
 
 
-class BaseForecastModel(Protocol):
-    """Interface for time-series forecasters."""
+class ForecastEngine:
+    def __init__(self, model_config: ModelConfig):
+        self.model_config = model_config
 
-    name: str
-
-    def forecast(self, *args, **kwargs):  # pragma: no cover - Protocol
-        ...
-
-
-class ARIMAForecastModel:
-    name = "arima"
-
-    def forecast(
+    def forecast_arima(
         self,
         series: pd.Series,
-        *,
         order: tuple[int, int, int] = (1, 1, 1),
         steps: Optional[int] = None,
-        model_config: ModelConfig,
     ) -> pd.Series:
         from statsmodels.tsa.arima.model import ARIMA
 
-        steps = steps or model_config.n_years
+        if steps is None:
+            steps = self.model_config.n_years
+
         model = ARIMA(series, order=order)
         fitted = model.fit()
         forecast = fitted.forecast(steps=steps)
         forecast.name = f"{series.name}_arima_forecast"
         return forecast
 
-
-class ProphetForecastModel:
-    name = "prophet"
-
-    def forecast(
+    def forecast_prophet(
         self,
         df: pd.DataFrame,
-        *,
         periods: Optional[int] = None,
         freq: str = "Y",
-        model_config: ModelConfig,
     ) -> pd.DataFrame:
         from prophet import Prophet
 
-        periods = periods or model_config.n_years
+        if periods is None:
+            periods = self.model_config.n_years
+
         m = Prophet()
         m.fit(df)
         future = m.make_future_dataframe(periods=periods, freq=freq)
         forecast = m.predict(future)
         return forecast
 
-
-class LSTMForecastModel:
-    name = "lstm"
-
-    def forecast(
+    def forecast_lstm(
         self,
         series: pd.Series,
-        *,
         lookback: int = 12,
         steps_ahead: Optional[int] = None,
         epochs: int = 50,
         batch_size: int = 16,
-        model_config: ModelConfig,
     ) -> np.ndarray:
         import numpy as np
-        from tensorflow.keras.layers import LSTM, Dense
         from tensorflow.keras.models import Sequential
+        from tensorflow.keras.layers import LSTM, Dense
 
-        steps_ahead = steps_ahead or model_config.n_years
+        if steps_ahead is None:
+            steps_ahead = self.model_config.n_years
+
         values = series.values.astype("float32")
         X, y = [], []
         for i in range(len(values) - lookback):
@@ -839,61 +596,62 @@ class LSTMForecastModel:
 
         return np.array(forecasts)
 
+    @staticmethod
+    def _implied_cagr_from_forecast(base_value: float, forecast_values: np.ndarray) -> float:
+        if base_value <= 0:
+            return 0.0
+        horizon = len(forecast_values)
+        avg_forecast = float(np.mean(forecast_values))
+        if avg_forecast <= 0:
+            return 0.0
+        return (avg_forecast / base_value) ** (1 / max(horizon, 1)) - 1
 
-class ForecastEngine:
-    """Registry of forecast models with convenience wrappers for built-ins."""
-
-    def __init__(
+    def apply_price_forecast_to_products(
         self,
-        model_config: ModelConfig,
-        models: Optional[MutableMapping[str, BaseForecastModel]] = None,
-    ) -> None:
-        self.model_config = model_config
-        self._models: Dict[str, BaseForecastModel] = models or {
-            "arima": ARIMAForecastModel(),
-            "prophet": ProphetForecastModel(),
-            "lstm": LSTMForecastModel(),
-        }
+        products: List[Product],
+        price_forecast: pd.Series,
+        base_price: float,
+        mode: str = "growth",
+        growth_scale: float = 1.0,
+        revenue_scale_max: float = 2.0,
+    ) -> List[Product]:
+        forecast_values = price_forecast.values
+        out: List[Product] = []
 
-    def register_model(self, model: BaseForecastModel) -> None:
-        self._models[model.name] = model
+        if mode == "growth":
+            implied_cagr = self._implied_cagr_from_forecast(base_price, forecast_values)
+            adj = growth_scale * implied_cagr
 
-    def forecast(self, model_name: str, *args, **kwargs):
-        if model_name not in self._models:
-            raise KeyError(f"Unknown forecast model '{model_name}'")
-        kwargs.setdefault("model_config", self.model_config)
-        return self._models[model_name].forecast(*args, **kwargs)
+            for prod in products:
+                cfg_dict = asdict(prod.config)
+                cfg_dict["market_growth_patent"] += adj
+                cfg_dict["market_growth_post"] += adj
+                new_cfg = ProductConfig(**cfg_dict)
+                out.append(Product(new_cfg, prod.model_config))
 
-    # Compatibility helpers -------------------------------------------------
-    def forecast_arima(
-        self, series: pd.Series, order: tuple[int, int, int] = (1, 1, 1), steps: Optional[int] = None
-    ) -> pd.Series:
-        return self.forecast("arima", series, order=order, steps=steps)
+        elif mode == "revenue_scale":
+            ratio = float(np.mean(forecast_values)) / base_price if base_price > 0 else 1.0
+            ratio = min(max(ratio, 0.0), revenue_scale_max)
 
-    def forecast_prophet(self, df: pd.DataFrame, periods: Optional[int] = None, freq: str = "Y") -> pd.DataFrame:
-        return self.forecast("prophet", df, periods=periods, freq=freq)
+            for prod in products:
+                cfg_dict = asdict(prod.config)
+                cfg_dict["patent_revenue_target"] *= ratio
+                cfg_dict["post_patent_revenue_target"] *= ratio
+                new_cfg = ProductConfig(**cfg_dict)
+                out.append(Product(new_cfg, prod.model_config))
 
-    def forecast_lstm(
-        self,
-        series: pd.Series,
-        lookback: int = 12,
-        steps_ahead: Optional[int] = None,
-        epochs: int = 50,
-        batch_size: int = 16,
-    ) -> np.ndarray:
-        return self.forecast(
-            "lstm",
-            series,
-            lookback=lookback,
-            steps_ahead=steps_ahead,
-            epochs=epochs,
-            batch_size=batch_size,
-        )
+        else:
+            raise ValueError("mode must be 'growth' or 'revenue_scale'")
+
+        return out
+
+
+# ===========================================================
+# 9. Forecast → Scenario bridge (Prophet-driven stress tests)
+# ===========================================================
 
 
 class ForecastScenarioBridge:
-    """Turns Prophet price forecasts into portfolio scenarios."""
-
     def __init__(self, base_portfolio: Portfolio, forecast_engine: ForecastEngine):
         self.base_portfolio = base_portfolio
         self.forecast_engine = forecast_engine
@@ -919,7 +677,8 @@ class ForecastScenarioBridge:
         forecast = self.forecast_engine.forecast_prophet(hist_df, periods=periods, freq=freq)
         last_hist_date = hist_df["ds"].max()
         future_fc = forecast[forecast["ds"] > last_hist_date].copy()
-        future_fc = future_fc.head(self.model_config.n_years)
+        n = self.model_config.n_years
+        future_fc = future_fc.head(n)
 
         base_series = future_fc["yhat"]
         pess_series = future_fc["yhat_lower"]
@@ -930,32 +689,41 @@ class ForecastScenarioBridge:
         pess_ratio = self._avg_ratio(pess_series, base_price)
         opt_ratio = self._avg_ratio(opt_series, base_price)
 
-        scenarios: List[ScenarioAdjustment] = [
+        scenarios: List[Scenario] = []
+        scenarios.append(
             Scenario(
                 name="Prophet Base",
                 revenue_multiplier=base_ratio,
                 cost_multiplier=1.0,
                 discount_rate_shift=0.0,
                 success_prob_multiplier=1.0,
-            ),
+            )
+        )
+        scenarios.append(
             Scenario(
                 name="Prophet Pessimistic",
                 revenue_multiplier=pess_ratio,
                 cost_multiplier=1.0 + cost_sensitivity,
                 discount_rate_shift=pessimistic_discount_uplift,
                 success_prob_multiplier=0.95,
-            ),
+            )
+        )
+        scenarios.append(
             Scenario(
                 name="Prophet Optimistic",
                 revenue_multiplier=opt_ratio,
                 cost_multiplier=max(0.0, 1.0 - cost_sensitivity),
                 discount_rate_shift=-optimistic_discount_reduction,
                 success_prob_multiplier=1.05,
-            ),
-        ]
+            )
+        )
 
         scen_engine = ScenarioEngine(self.base_portfolio)
-        return scen_engine.run_scenarios(scenarios=scenarios, ebitda_year_offset=ebitda_year_offset)
+        scen_results = scen_engine.run_scenarios(
+            scenarios=scenarios,
+            ebitda_year_offset=ebitda_year_offset,
+        )
+        return scen_results
 
 
 __all__ = [
@@ -967,12 +735,102 @@ __all__ = [
     "ValuationResult",
     "VCInputs",
     "VCValuator",
-    "MultiplesModel",
     "Scenario",
-    "ScenarioAdjustment",
     "ScenarioEngine",
     "MonteCarloEngine",
     "ForecastEngine",
     "ForecastScenarioBridge",
-    "DiscountedCashFlowValuation",
 ]
+
+
+if __name__ == "__main__":
+    model_cfg = ModelConfig()
+    moonshine_cfg = ProductConfig(
+        name="Vaccine_Moonshine",
+        stage="Market",
+        success_prob=1.0,
+        include_in_consolidation=True,
+        preexisting_market=True,
+        time_to_market=-20,
+        patent_years=20,
+        patent_revenue_target=11_250_000.0,
+        post_patent_revenue_target=6_300_000.0,
+        market_growth_patent=0.005,
+        market_growth_post=0.0,
+        cogs_patent=0.30,
+        cogs_post=0.50,
+        sales_marketing_pct=0.15,
+        gna_pct=0.10,
+        rd_annual_post_launch=500_000.0,
+        capex_annual_post_launch=100_000.0,
+    )
+
+    moonshine = Product(moonshine_cfg, model_cfg)
+    portfolio = Portfolio([moonshine], model_cfg)
+
+    engine = ValuationEngine(portfolio)
+    val_res = engine.run()
+    print("rNPV:", round(val_res.rnpv, 2), model_cfg.currency)
+
+    vc_inputs = VCInputs(
+        exit_year=model_cfg.first_year + 8,
+        target_irr=0.40,
+        investor_ownership_at_exit=0.25,
+        new_money=20_000_000.0,
+    )
+    vc_val = VCValuator(val_res)
+    vc_result = vc_val.vc_method(vc_inputs, exit_multiple=10.0)
+    print("VC implied pre-money:", round(vc_result["implied_pre_money"], 2))
+
+    drought = Scenario(
+        name="Drought",
+        revenue_multiplier=0.8,
+        cost_multiplier=1.1,
+        discount_rate_shift=0.02,
+        success_prob_multiplier=0.9,
+    )
+    disease = Scenario(
+        name="Disease",
+        revenue_multiplier=0.7,
+        cost_multiplier=1.15,
+        discount_rate_shift=0.03,
+        success_prob_multiplier=0.8,
+    )
+
+    scen_engine = ScenarioEngine(portfolio)
+    scen_df = scen_engine.run_scenarios([drought, disease], ebitda_year_offset=5)
+    print("\nScenario comparison:")
+    print(scen_df)
+
+    mc = MonteCarloEngine(portfolio)
+    sims = mc.simulate(n_sims=200, revenue_sigma=0.15, cost_sigma=0.10, random_seed=42)
+    print("\nMonte Carlo mean rNPV:", sims.mean())
+    print("95% VaR:", MonteCarloEngine.value_at_risk(sims, alpha=0.95))
+    print("95% CVaR:", MonteCarloEngine.conditional_value_at_risk(sims, alpha=0.95))
+
+    idx = pd.period_range("2015", "2023", freq="Y").to_timestamp()
+    hist_prices = pd.Series(
+        [100, 102, 105, 108, 110, 115, 118, 120, 123],
+        index=idx,
+        name="price",
+    )
+    fe = ForecastEngine(model_cfg)
+    price_fc = fe.forecast_arima(hist_prices, order=(1, 1, 1), steps=model_cfg.n_years)
+    products_forecasted = fe.apply_price_forecast_to_products(
+        portfolio.products,
+        price_fc,
+        base_price=hist_prices.iloc[-1],
+        mode="growth",
+        growth_scale=1.0,
+    )
+    port_fc = Portfolio(products_forecasted, model_cfg)
+    val_engine_fc = ValuationEngine(port_fc)
+    val_res_fc = val_engine_fc.run()
+    print("rNPV with price-linked growth:", round(val_res_fc.rnpv, 2), model_cfg.currency)
+
+    dates = pd.date_range("2015-01-01", periods=9, freq="Y")
+    hist_prices_df = pd.DataFrame({"ds": dates, "y": [100, 102, 105, 108, 110, 115, 118, 120, 123]})
+    bridge = ForecastScenarioBridge(portfolio, fe)
+    scen_results = bridge.build_price_scenarios_from_prophet(hist_prices_df, freq="Y", ebitda_year_offset=5)
+    print("\nProphet-driven scenario comparison:")
+    print(scen_results)

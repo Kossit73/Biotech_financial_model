@@ -19,7 +19,7 @@ from valuation_codex_package import (
     VCInputs,
     VCValuator,
     ValuationEngine,
-    MultiplesModel,
+    MonteCarloEngine,
 )
 
 
@@ -183,12 +183,102 @@ def _build_portfolio(product_df: pd.DataFrame, model_cfg: ModelConfig) -> Portfo
     return Portfolio(products, model_cfg)
 
 
-def _train_multiples_model(training_df: pd.DataFrame, target_column: str) -> MultiplesModel:
-    features = training_df.drop(columns=[target_column])
-    target = training_df[target_column]
-    model = MultiplesModel(feature_names=features.columns)
-    model.fit(features, target)
-    return model
+def _compute_financial_statements(
+    cons: pd.DataFrame, model_cfg: ModelConfig
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    years = cons.index
+    da_positive = -cons["da"]
+
+    perf_df = pd.DataFrame(
+        {
+            "Revenue": cons["revenue"],
+            "COGS": cons["cogs"],
+            "Sales & Marketing": cons["sales_marketing"],
+            "G&A": cons["gna"],
+            "Royalty": cons["royalty"],
+            "R&D expense": cons["rd_expense_pnl"],
+            "EBITDA": cons["ebitda"],
+            "EBIT": cons["ebit"],
+            "Tax": cons["tax"],
+            "NOPAT": cons["nopat"],
+        }
+    )
+
+    wc = model_cfg.working_capital_pct_sales * cons["revenue"]
+    wc_diff = wc.diff().fillna(wc)
+
+    intangible = []
+    ppe = []
+    working_capital_asset = []
+    retained = []
+    paid_in = []
+
+    intangible_val = 0.0
+    ppe_val = 0.0
+    wc_val = 0.0
+    retained_val = 0.0
+
+    for year in years:
+        rd_cap_add = cons.loc[year, "rd_cap_add"]
+        rd_amort = cons.loc[year, "rd_amort"]
+        capex_cash = cons.loc[year, "capex_cash"]
+        depreciation = cons.loc[year, "depreciation"]
+        nopat = cons.loc[year, "nopat"]
+
+        intangible_val += -rd_cap_add + rd_amort
+        ppe_val += -capex_cash + depreciation
+        wc_val += wc_diff.loc[year]
+        retained_val += nopat
+
+        total_assets = intangible_val + ppe_val + wc_val
+        paid_in_val = max(0.0, total_assets - retained_val)
+
+        intangible.append(intangible_val)
+        ppe.append(ppe_val)
+        working_capital_asset.append(wc_val)
+        retained.append(retained_val)
+        paid_in.append(paid_in_val)
+
+    position_df = pd.DataFrame(
+        {
+            "Intangibles": intangible,
+            "Property & equipment": ppe,
+            "Working capital": working_capital_asset,
+            "Total assets": np.array(intangible) + np.array(ppe) + np.array(working_capital_asset),
+            "Retained earnings": retained,
+            "Paid-in capital": paid_in,
+            "Total equity": np.array(retained) + np.array(paid_in),
+        },
+        index=years,
+    )
+
+    cash_from_ops = cons["nopat"] + da_positive - wc_diff
+    cash_from_investing = cons["capex_cash"] + cons["rd_cap_add"]
+    cash_from_financing = pd.Series(0.0, index=years)
+    net_cash = cash_from_ops + cash_from_investing + cash_from_financing
+
+    cash_flow_df = pd.DataFrame(
+        {
+            "Cash from operations": cash_from_ops,
+            "Cash from investing": cash_from_investing,
+            "Cash from financing": cash_from_financing,
+            "Net change in cash": net_cash,
+        }
+    )
+
+    return perf_df, position_df, cash_flow_df
+
+
+def _build_ratio_table(cons: pd.DataFrame) -> pd.DataFrame:
+    revenue = cons["revenue"].replace(0, np.nan)
+    gross_profit = cons["revenue"] + cons["cogs"]
+    ratios = pd.DataFrame(index=cons.index)
+    ratios["Gross margin"] = gross_profit / revenue
+    ratios["EBITDA margin"] = cons["ebitda"] / revenue
+    ratios["NOPAT margin"] = cons["nopat"] / revenue
+    ratios["R&D intensity"] = cons["rd_cash"].abs() / revenue
+    ratios["Capex intensity"] = (-cons["capex_cash"]) / revenue
+    return ratios.fillna(0.0)
 
 
 def main() -> None:
@@ -207,8 +297,22 @@ def main() -> None:
     portfolio: Portfolio | None = None
     valuation_result = None
 
-    config_tab, scenario_tab, vc_tab = st.tabs(
-        ["Model configuration", "Scenario analysis", "VC helper"]
+    (
+        config_tab,
+        financial_tab,
+        dashboard_tab,
+        analytics_tab,
+        scenario_tab,
+        vc_tab,
+    ) = st.tabs(
+        [
+            "Model configuration",
+            "Financial statements",
+            "Dashboard",
+            "Advanced analytics",
+            "Scenario analysis",
+            "VC helper",
+        ]
     )
 
     with config_tab:
@@ -278,11 +382,76 @@ def main() -> None:
                 cons_display.columns = ["Revenue", "EBITDA", "FCFF after WC"]
                 st.dataframe(cons_display.style.format("{:.0f}"))
                 st.line_chart(cons_display)
+    with financial_tab:
+        st.subheader("Financial statements")
+        if valuation_result is None or model_cfg is None:
+            st.info("Run the model configuration tab to populate the statements.")
+        else:
+            cons = valuation_result.consolidated
+            perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
+            st.markdown("**Statement of Financial Performance**")
+            st.dataframe(perf_df.style.format("{:.0f}"))
+            st.markdown("**Statement of Financial Position**")
+            st.dataframe(position_df.style.format("{:.0f}"))
+            st.markdown("**Statement of Cash Flows**")
+            st.dataframe(cash_flow_df.style.format("{:.0f}"))
+
+    with dashboard_tab:
+        st.subheader("Dashboard")
+        if valuation_result is None or model_cfg is None:
+            st.info("Configure and run the model to see dashboard metrics.")
+        else:
+            cons = valuation_result.consolidated
+            kpi_cols = st.columns(4)
+            kpi_cols[0].metric("Portfolio rNPV", f"{valuation_result.rnpv:,.0f} {model_cfg.currency}")
+            kpi_cols[1].metric("Peak revenue", f"{cons['revenue'].max():,.0f}")
+            avg_margin = cons["ebitda"].sum() / cons["revenue"].sum() if cons["revenue"].sum() else 0.0
+            kpi_cols[2].metric("Avg EBITDA margin", f"{avg_margin:.1%}")
+            kpi_cols[3].metric("Total FCFF after WC", f"{cons['fcff_after_wc'].sum():,.0f}")
+
+            chart_data = cons[["revenue", "ebitda", "fcff_after_wc"]]
+            st.area_chart(chart_data)
+            st.bar_chart(cons["fcff_after_wc"], use_container_width=True)
+
+    with analytics_tab:
+        st.subheader("Advanced financial analytics")
+        if valuation_result is None or model_cfg is None or portfolio is None:
+            st.info("Configure the model to unlock analytics.")
+        else:
+            cons = valuation_result.consolidated
+            ratios = _build_ratio_table(cons)
+            st.markdown("**Margin & intensity analysis**")
+            st.dataframe(ratios.style.format("{:.1%}"))
+
+            st.markdown("**Monte Carlo risk simulation**")
+            mc_cols = st.columns(4)
+            n_sims = mc_cols[0].number_input("Simulations", min_value=100, max_value=5000, value=1000, step=100)
+            rev_sigma = mc_cols[1].number_input("Revenue sigma", min_value=0.01, max_value=0.5, value=0.15, step=0.01)
+            cost_sigma = mc_cols[2].number_input("Cost sigma", min_value=0.01, max_value=0.5, value=0.1, step=0.01)
+            seed = mc_cols[3].number_input("Random seed", min_value=0, value=42)
+
+            if st.button("Run Monte Carlo simulation"):
+                sims = MonteCarloEngine(portfolio).simulate(
+                    n_sims=int(n_sims),
+                    revenue_sigma=float(rev_sigma),
+                    cost_sigma=float(cost_sigma),
+                    random_seed=int(seed),
+                )
+                st.session_state["mc_results"] = sims
+
+            sims = st.session_state.get("mc_results")
+            if sims is not None:
+                st.line_chart(sims.reset_index(drop=True))
+                var = MonteCarloEngine.value_at_risk(sims)
+                cvar = MonteCarloEngine.conditional_value_at_risk(sims)
+                st.write(
+                    f"Mean rNPV: {sims.mean():,.0f} | Std: {sims.std():,.0f} | VaR95: {var:,.0f} | CVaR95: {cvar:,.0f}"
+                )
 
     with scenario_tab:
         st.subheader("Scenario analysis")
         if portfolio is None:
-            st.info("Configure the model in the previous tab to enable scenarios.")
+            st.info("Configure the model in the first tab to enable scenarios.")
         else:
             col1, col2, col3, col4 = st.columns(4)
             rev_mult = col1.slider("Revenue multiplier", 0.25, 2.5, 1.0)
@@ -313,32 +482,7 @@ def main() -> None:
             new_money = vc_col4.number_input(
                 "New money ($)", min_value=1_000_000, value=50_000_000, step=5_000_000
             )
-
-            ml_model: MultiplesModel | None = st.session_state.get("multiples_model")
-            with st.expander("Optional: train an ML multiples model"):
-                uploaded = st.file_uploader("Training CSV", type="csv")
-                if uploaded is not None:
-                    train_df = pd.read_csv(uploaded)
-                    st.write("Detected columns:", list(train_df.columns))
-                    if len(train_df.columns) >= 2:
-                        target_col = st.selectbox(
-                            "Target column (EV/EBITDA multiple)",
-                            options=train_df.columns,
-                            key="target_column_selector",
-                        )
-                        if st.button("Train multiples model"):
-                            model = _train_multiples_model(train_df, target_col)
-                            st.session_state["multiples_model"] = model
-                            ml_model = model
-                            st.success("Multiples model trained and stored in session.")
-                    else:
-                        st.warning(
-                            "Upload a dataset with at least one feature column plus the target."
-                        )
-                if ml_model is not None:
-                    st.info(
-                        "A multiples model is available. It will consume consolidated metrics for the exit year."
-                    )
+            exit_multiple = st.slider("Exit EV/EBITDA multiple", 2.0, 25.0, model_cfg.ev_ebitda_multiple)
 
             vc_inputs = VCInputs(
                 exit_year=int(exit_year),
@@ -346,13 +490,8 @@ def main() -> None:
                 investor_ownership_at_exit=float(ownership),
                 new_money=float(new_money),
             )
-
-            vc_valuator = VCValuator(
-                valuation_result,
-                default_exit_multiple=None if ml_model else model_cfg.ev_ebitda_multiple,
-                multiples_model=ml_model,
-            )
-            vc_output = vc_valuator.vc_method(vc_inputs)
+            vc_valuator = VCValuator(valuation_result)
+            vc_output = vc_valuator.vc_method(vc_inputs, exit_multiple=float(exit_multiple))
             vc_df = pd.DataFrame(
                 {
                     "Metric": list(vc_output.keys()),
