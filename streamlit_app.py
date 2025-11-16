@@ -2054,7 +2054,10 @@ def main() -> None:
                         }
                     )
                 if stress_rows:
-                    st.dataframe(pd.DataFrame(stress_rows).style.format("{:.0f}"))
+                    stress_df = pd.DataFrame(stress_rows)
+                    numeric_cols = stress_df.select_dtypes(include="number").columns
+                    formatter = {col: "{:+,.0f}" if "impact" in col.lower() else "{:,}" for col in numeric_cols}
+                    st.dataframe(stress_df.style.format(formatter))
 
             with st.expander("Trend, seasonality & segmentation", expanded=False):
                 decomp_df = _compute_decomposition(cons)
