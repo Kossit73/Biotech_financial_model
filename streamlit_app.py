@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import asdict, fields
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+try:
+    import plotly.graph_objects as go
+except Exception:  # pragma: no cover - optional dependency
+    go = None
+
+try:  # optional optimisation + ML helpers
+    from scipy.optimize import minimize
+except Exception:  # pragma: no cover - optional dependency
+    minimize = None
+
+try:
+    from sklearn.cluster import KMeans
+    from sklearn.linear_model import LinearRegression, LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+except Exception:  # pragma: no cover - optional dependency
+    KMeans = None
+    LinearRegression = None
+    LogisticRegression = None
+    StandardScaler = None
 
 from valuation_codex_package import (
     ModelConfig,
@@ -16,9 +36,11 @@ from valuation_codex_package import (
     ProductConfig,
     Scenario,
     ScenarioEngine,
+    ForecastEngine,
     VCInputs,
     VCValuator,
     ValuationEngine,
+    ValuationResult,
     MonteCarloEngine,
 )
 
@@ -1047,6 +1069,364 @@ def _build_ratio_table(cons: pd.DataFrame) -> pd.DataFrame:
     return ratios.fillna(0.0)
 
 
+def _evaluate_portfolio_shock(
+    portfolio: Portfolio,
+    *,
+    revenue_multiplier: float = 1.0,
+    cost_multiplier: float = 1.0,
+    discount_shift: float = 0.0,
+    success_prob_multiplier: float = 1.0,
+) -> Optional[ValuationResult]:
+    """Run a valuation after applying a Scenario-style shock."""
+
+    if portfolio is None:
+        return None
+    scenario = Scenario(
+        name="analytics_scenario",
+        revenue_multiplier=revenue_multiplier,
+        cost_multiplier=cost_multiplier,
+        discount_rate_shift=discount_shift,
+        success_prob_multiplier=success_prob_multiplier,
+    )
+    scen_engine = ScenarioEngine(portfolio)
+    shocked_portfolio = scen_engine._apply_scenario(scenario)
+    return ValuationEngine(shocked_portfolio).run()
+
+
+def _run_sensitivity_matrix(
+    portfolio: Portfolio,
+    driver_settings: Dict[str, Tuple[float, str]],
+) -> pd.DataFrame:
+    """Evaluate +/- shocks for each driver and return the resulting rNPVs."""
+
+    rows: List[Dict[str, float]] = []
+    if portfolio is None:
+        return pd.DataFrame()
+
+    for driver, (delta, driver_type) in driver_settings.items():
+        for direction in (-(delta), 0.0, delta):
+            rev_mult = 1.0
+            cost_mult = 1.0
+            if driver_type == "revenue":
+                rev_mult = 1.0 + direction
+            elif driver_type == "cost":
+                cost_mult = 1.0 + direction
+            elif driver_type == "productivity":
+                rev_mult = 1.0 + direction
+                cost_mult = max(0.1, 1.0 - direction / 2)
+
+            result = _evaluate_portfolio_shock(
+                portfolio,
+                revenue_multiplier=rev_mult,
+                cost_multiplier=cost_mult,
+            )
+            if result is None:
+                continue
+            rows.append(
+                {
+                    "Driver": driver,
+                    "Change": f"{direction:+.0%}",
+                    "rNPV": result.rnpv,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Delta vs base"] = df.groupby("Driver")["rNPV"].transform(lambda x: x - x.iloc[1])
+    return df
+
+
+def _compute_decomposition(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Run a simple trend/seasonality decomposition on revenue if enough history exists."""
+
+    if len(cons) < 6:
+        return None
+    series = cons["revenue"].copy()
+    idx = pd.PeriodIndex(cons.index, freq="Y").to_timestamp()
+    ts = pd.Series(series.values, index=idx)
+    period = max(2, min(6, len(ts) // 2))
+    try:
+        from statsmodels.tsa.seasonal import seasonal_decompose
+    except Exception:
+        return None
+
+    result = seasonal_decompose(ts, model="additive", period=period, extrapolate_trend="freq")
+    return pd.DataFrame(
+        {
+            "observed": result.observed,
+            "trend": result.trend,
+            "seasonal": result.seasonal,
+            "resid": result.resid,
+        }
+    )
+
+
+def _build_segmentation_table(val_result) -> pd.DataFrame:
+    rows = []
+    if val_result is None:
+        return pd.DataFrame()
+    per_product = val_result.per_product_prob
+    total_rev = sum(df["revenue"].sum() for df in per_product.values()) or 1.0
+    for name, df in per_product.items():
+        revenue = df["revenue"].sum()
+        ebitda = df["ebitda"].sum()
+        fcff = df["fcff"].sum()
+        margin = ebitda / revenue if revenue else 0.0
+        rows.append(
+            {
+                "Product": name,
+                "Revenue share": revenue / total_rev,
+                "EBITDA margin": margin,
+                "FCFF (PV proxy)": fcff,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _goal_seek_revenue_multiplier(
+    portfolio: Portfolio, target_rnpv: float, tolerance: float = 1e-3, max_iter: int = 20
+) -> Tuple[float, Optional[float]]:
+    """Binary-search the revenue multiplier needed to hit a target rNPV."""
+
+    if portfolio is None:
+        return 1.0, None
+    low, high = 0.25, 3.0
+    solution = None
+    for _ in range(max_iter):
+        mid = (low + high) / 2
+        result = _evaluate_portfolio_shock(portfolio, revenue_multiplier=mid)
+        if result is None:
+            break
+        diff = result.rnpv - target_rnpv
+        if abs(diff) <= tolerance * max(1.0, target_rnpv):
+            solution = result.rnpv
+            return mid, solution
+        if diff < 0:
+            low = mid
+        else:
+            high = mid
+    if solution is None:
+        result = _evaluate_portfolio_shock(portfolio, revenue_multiplier=high)
+        solution = result.rnpv if result else None
+    return high, solution
+
+
+def _tornado_dataframe(portfolio: Portfolio, base_rnpv: float) -> pd.DataFrame:
+    """Compute +/- shocks for tornado and spider charts."""
+
+    drivers = [
+        ("Revenue", "revenue_multiplier"),
+        ("COGS", "cost_multiplier"),
+        ("Discount rate", "discount_rate"),
+        ("Success probability", "success"),
+    ]
+    records = []
+    for label, driver_type in drivers:
+        for change in (-0.2, 0.2):
+            kwargs = {
+                "revenue_multiplier": 1.0,
+                "cost_multiplier": 1.0,
+                "discount_shift": 0.0,
+                "success_prob_multiplier": 1.0,
+            }
+            if driver_type == "revenue_multiplier":
+                kwargs["revenue_multiplier"] += change
+            elif driver_type == "cost_multiplier":
+                kwargs["cost_multiplier"] += change
+            elif driver_type == "discount_rate":
+                kwargs["discount_shift"] = change * 0.5
+            else:
+                kwargs["success_prob_multiplier"] += change
+            result = _evaluate_portfolio_shock(portfolio, **kwargs)
+            if result is None:
+                continue
+            records.append(
+                {
+                    "Driver": label,
+                    "Change": f"{change:+.0%}",
+                    "rNPV": result.rnpv,
+                    "Delta": result.rnpv - base_rnpv,
+                }
+            )
+    return pd.DataFrame(records)
+
+
+def _run_linear_regressions(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
+    if LinearRegression is None or cons.empty:
+        return None
+    x = cons[["revenue"]].values
+    rows = []
+    for target in ["ebitda", "nopat", "fcff_after_wc"]:
+        y = cons[target].values
+        model = LinearRegression()
+        try:
+            model.fit(x, y)
+        except Exception:
+            return None
+        rows.append(
+            {
+                "Target": target.upper(),
+                "Intercept": model.intercept_,
+                "Revenue beta": model.coef_[0],
+                "R^2": model.score(x, y),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _run_classification_model(seg_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    if LogisticRegression is None or seg_df.empty:
+        return None
+    df = seg_df.copy()
+    df["High margin"] = (df["EBITDA margin"] > 0.3).astype(int)
+    X = df[["Revenue share", "EBITDA margin"]].values
+    y = df["High margin"].values
+    model = LogisticRegression()
+    try:
+        model.fit(X, y)
+    except Exception:
+        return None
+    probs = model.predict_proba(X)[:, 1]
+    df["High-margin probability"] = probs
+    return df[["Product", "Revenue share", "EBITDA margin", "High-margin probability"]]
+
+
+def _optimize_operations(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
+    if minimize is None or cons.empty:
+        return None
+
+    avg_rev = cons["revenue"].mean()
+    avg_cost = (-cons["cogs"].mean()) if not cons["cogs"].empty else 0.0
+
+    def objective(x: np.ndarray) -> float:
+        volume, efficiency = x
+        revenue = avg_rev * volume * efficiency
+        cost = avg_cost * volume * (2 - efficiency)
+        return -(revenue - cost)
+
+    cons_list = (
+        {"type": "ineq", "fun": lambda x: x[0] - 0.5},
+        {"type": "ineq", "fun": lambda x: x[1] - 0.5},
+        {"type": "ineq", "fun": lambda x: 2.0 - x[0]},
+        {"type": "ineq", "fun": lambda x: 1.5 - x[1]},
+    )
+    res = minimize(objective, x0=np.array([1.0, 1.0]), constraints=cons_list)
+    if not res.success:
+        return None
+    volume, efficiency = res.x
+    opt_profit = -res.fun
+    return pd.DataFrame(
+        {
+            "Metric": ["Optimal volume scale", "Optimal efficiency", "Profit"],
+            "Value": [volume, efficiency, opt_profit],
+        }
+    )
+
+
+def _mean_variance_portfolio(val_result) -> Optional[pd.DataFrame]:
+    if val_result is None:
+        return None
+    per_product = val_result.per_product_prob
+    rows = []
+    for name, df in per_product.items():
+        returns = df["fcff"].values
+        if len(returns) < 2:
+            continue
+        rows.append(
+            {
+                "Product": name,
+                "Mean": np.mean(returns),
+                "Std": np.std(returns),
+            }
+        )
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    inv_var = 1.0 / df["Std"].replace(0, np.nan)
+    inv_var = inv_var.fillna(0.0)
+    if inv_var.sum() > 0:
+        df["Suggested weight"] = inv_var / inv_var.sum()
+    else:
+        df["Suggested weight"] = 1.0 / len(df)
+    return df
+
+
+def _real_options_value(val_result, volatility: float = 0.35, years: int = 3) -> Optional[float]:
+    if val_result is None:
+        return None
+    underlying = max(val_result.rnpv, 0.0)
+    strike = val_result.consolidated["rd_cash"].abs().sum() / years if years else 1.0
+    if strike <= 0:
+        return None
+    # Black-Scholes call option approximation on project deferral
+    from math import log, sqrt
+    try:
+        from scipy.stats import norm
+    except Exception:
+        return None
+
+    r = 0.05
+    T = max(1e-6, years)
+    d1 = (log(underlying / strike) + (r + 0.5 * volatility**2) * T) / (volatility * sqrt(T))
+    d2 = d1 - volatility * sqrt(T)
+    option_value = underlying * norm.cdf(d1) - strike * np.exp(-r * T) * norm.cdf(d2)
+    return option_value
+
+
+def _copula_simulation(cons: pd.DataFrame, rho: float = 0.4, draws: int = 2000) -> Optional[pd.DataFrame]:
+    if cons.empty:
+        return None
+    mean_vec = np.array([cons["revenue"].mean(), cons["ebitda"].mean()])
+    std_vec = np.array([cons["revenue"].std(), cons["ebitda"].std()])
+    cov = np.array([[1.0, rho], [rho, 1.0]])
+    samples = np.random.multivariate_normal([0, 0], cov, size=draws)
+    revenue_sim = mean_vec[0] + std_vec[0] * samples[:, 0]
+    ebitda_sim = mean_vec[1] + std_vec[1] * samples[:, 1]
+    return pd.DataFrame({"Revenue": revenue_sim, "EBITDA": ebitda_sim})
+
+
+def _cluster_products(val_result) -> Optional[pd.DataFrame]:
+    if val_result is None or KMeans is None:
+        return None
+    per_product = val_result.per_product_prob
+    rows = []
+    for name, df in per_product.items():
+        revenue = df["revenue"].sum()
+        ebitda = df["ebitda"].sum()
+        growth = df["revenue"].pct_change().mean()
+        rows.append([name, revenue, ebitda, growth if pd.notna(growth) else 0.0])
+    if not rows:
+        return None
+    names, data = zip(*[(r[0], r[1:]) for r in rows])
+    scaler = StandardScaler() if StandardScaler else None
+    matrix = np.array(data, dtype=float)
+    if scaler is not None:
+        matrix = scaler.fit_transform(matrix)
+    n_clusters = min(3, len(matrix))
+    if n_clusters < 1:
+        return None
+    km = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
+    labels = km.fit_predict(matrix)
+    return pd.DataFrame({"Product": names, "Cluster": labels})
+
+
+def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
+    if LinearRegression is None or cons.empty:
+        return None
+    growth = cons["revenue"].pct_change().fillna(0.0)
+    features = pd.DataFrame(
+        {
+            "Revenue": cons["revenue"],
+            "EBITDA": cons["ebitda"],
+            "Growth": growth,
+        }
+    )
+    multiples = (cons["ebitda"].rolling(3).mean().fillna(method="bfill") + 1) / 1_000_000
+    model = LinearRegression()
+    model.fit(features.values, multiples.values)
+    pred = model.predict(features.values)
+    return pd.DataFrame({"Year": cons.index, "Predicted multiple": pred})
+
 def main() -> None:
     st.set_page_config(
         page_title="Biotech Financial Model",
@@ -1628,34 +2008,268 @@ def main() -> None:
             st.info("Configure the model to unlock analytics.")
         else:
             cons = valuation_result.consolidated
+            base_rnpv = valuation_result.rnpv
             ratios = _build_ratio_table(cons)
             st.markdown("**Margin & intensity analysis**")
             st.dataframe(ratios.style.format("{:.1%}"))
 
-            st.markdown("**Monte Carlo risk simulation**")
-            mc_cols = st.columns(4)
-            n_sims = mc_cols[0].number_input("Simulations", min_value=100, max_value=5000, value=1000, step=100)
-            rev_sigma = mc_cols[1].number_input("Revenue sigma", min_value=0.01, max_value=0.5, value=0.15, step=0.01)
-            cost_sigma = mc_cols[2].number_input("Cost sigma", min_value=0.01, max_value=0.5, value=0.1, step=0.01)
-            seed = mc_cols[3].number_input("Random seed", min_value=0, value=42)
+            with st.expander("Sensitivity & stress testing", expanded=True):
+                sens_cols = st.columns(3)
+                milk_delta = sens_cols[0].slider("Milk price swing", 0.0, 0.5, 0.15, help="Revenue-linked driver")
+                feed_delta = sens_cols[1].slider("Feed cost swing", 0.0, 0.5, 0.2)
+                productivity_delta = sens_cols[2].slider("Herd productivity swing", 0.0, 0.5, 0.1)
+                drivers = {
+                    "Milk price": (milk_delta, "revenue"),
+                    "Feed costs": (feed_delta, "cost"),
+                    "Herd productivity": (productivity_delta, "productivity"),
+                }
+                sens_df = _run_sensitivity_matrix(portfolio, drivers)
+                if sens_df.empty:
+                    st.info("Not enough data to compute sensitivities.")
+                else:
+                    st.dataframe(sens_df.style.format({"rNPV": "{:.0f}", "Delta vs base": "{:+,.0f}"}))
 
-            if st.button("Run Monte Carlo simulation"):
-                sims = MonteCarloEngine(portfolio).simulate(
-                    n_sims=int(n_sims),
-                    revenue_sigma=float(rev_sigma),
-                    cost_sigma=float(cost_sigma),
-                    random_seed=int(seed),
-                )
-                st.session_state["mc_results"] = sims
+                st.markdown("**Scenario stress testing**")
+                severe_cases = [
+                    ("Drought shock", 0.7, 1.25, 0.03, 0.9),
+                    ("Disease outbreak", 0.6, 1.35, 0.04, 0.8),
+                    ("Price collapse", 0.5, 1.05, 0.02, 0.95),
+                ]
+                stress_rows = []
+                for name, rev_mult, cost_mult, dr_shift, prob_mult in severe_cases:
+                    result = _evaluate_portfolio_shock(
+                        portfolio,
+                        revenue_multiplier=rev_mult,
+                        cost_multiplier=cost_mult,
+                        discount_shift=dr_shift,
+                        success_prob_multiplier=prob_mult,
+                    )
+                    if result is None:
+                        continue
+                    stress_rows.append(
+                        {
+                            "Scenario": name,
+                            "rNPV": result.rnpv,
+                            "EBITDA impact": result.consolidated["ebitda"].sum(),
+                        }
+                    )
+                if stress_rows:
+                    st.dataframe(pd.DataFrame(stress_rows).style.format("{:.0f}"))
 
-            sims = st.session_state.get("mc_results")
-            if sims is not None:
-                st.line_chart(sims.reset_index(drop=True))
-                var = MonteCarloEngine.value_at_risk(sims)
-                cvar = MonteCarloEngine.conditional_value_at_risk(sims)
+            with st.expander("Trend, seasonality & segmentation", expanded=False):
+                decomp_df = _compute_decomposition(cons)
+                if decomp_df is not None:
+                    st.line_chart(decomp_df)
+                else:
+                    st.info("Need more history to decompose trend/seasonality.")
+
+                seg_df = _build_segmentation_table(valuation_result)
+                if not seg_df.empty:
+                    st.dataframe(
+                        seg_df.style.format({
+                            "Revenue share": "{:.1%}",
+                            "EBITDA margin": "{:.1%}",
+                            "FCFF (PV proxy)": "{:.0f}",
+                        })
+                    )
+                    st.bar_chart(seg_df.set_index("Product")["Revenue share"])
+                else:
+                    st.info("Add probability-weighted products to see segmentation insights.")
+
+            with st.expander("Monte Carlo & probabilistic valuation", expanded=False):
+                mc_cols = st.columns(4)
+                n_sims = mc_cols[0].number_input("Simulations", min_value=100, max_value=5000, value=1000, step=100)
+                rev_sigma = mc_cols[1].number_input("Revenue sigma", min_value=0.01, max_value=0.5, value=0.15, step=0.01)
+                cost_sigma = mc_cols[2].number_input("Cost sigma", min_value=0.01, max_value=0.5, value=0.1, step=0.01)
+                seed = mc_cols[3].number_input("Random seed", min_value=0, value=42)
+
+                if st.button("Run Monte Carlo simulation"):
+                    sims = MonteCarloEngine(portfolio).simulate(
+                        n_sims=int(n_sims),
+                        revenue_sigma=float(rev_sigma),
+                        cost_sigma=float(cost_sigma),
+                        random_seed=int(seed),
+                    )
+                    st.session_state["mc_results"] = sims
+
+                sims = st.session_state.get("mc_results")
+                if sims is not None:
+                    st.line_chart(sims.reset_index(drop=True))
+                    hist = np.histogram(sims, bins=20)
+                    st.bar_chart(pd.DataFrame({"rNPV": hist[0]}, index=hist[1][:-1]))
+                    var = MonteCarloEngine.value_at_risk(sims)
+                    cvar = MonteCarloEngine.conditional_value_at_risk(sims)
+                    st.write(
+                        f"Mean rNPV: {sims.mean():,.0f} | Std: {sims.std():,.0f} | VaR95: {var:,.0f} | CVaR95: {cvar:,.0f}"
+                    )
+                    st.write(
+                        "Probabilistic valuation percentiles:",
+                        sims.quantile([0.1, 0.25, 0.5, 0.75, 0.9]).to_dict(),
+                    )
+                else:
+                    st.info("Run the simulation to unlock probabilistic metrics.")
+
+            with st.expander("What-if analysis & goal seek", expanded=False):
+                what_cols = st.columns(3)
+                what_rev = what_cols[0].slider("Revenue multiplier", 0.4, 2.0, 1.0)
+                what_cost = what_cols[1].slider("Cost multiplier", 0.5, 2.5, 1.0)
+                what_dr = what_cols[2].slider("Discount shift", -0.05, 0.1, 0.0)
+                if st.button("Evaluate what-if case"):
+                    result = _evaluate_portfolio_shock(
+                        portfolio,
+                        revenue_multiplier=float(what_rev),
+                        cost_multiplier=float(what_cost),
+                        discount_shift=float(what_dr),
+                    )
+                    if result is not None:
+                        st.success(f"What-if rNPV: {result.rnpv:,.0f}")
+
+                target_rnpv = st.number_input("Target rNPV for goal seek", value=base_rnpv)
+                if st.button("Solve revenue multiplier"):
+                    multiplier, achieved = _goal_seek_revenue_multiplier(portfolio, float(target_rnpv))
+                    if achieved is not None:
+                        st.write(
+                            f"Revenue multiplier {multiplier:.2f} approximates the goal (achieved rNPV {achieved:,.0f})."
+                        )
+                    else:
+                        st.warning("Goal seek failed—try adjusting the target or assumptions.")
+
+            with st.expander("Tornado & spider diagnostics", expanded=False):
+                tornado_df = _tornado_dataframe(portfolio, base_rnpv)
+                if tornado_df.empty:
+                    st.info("Unable to compute tornado deltas.")
+                else:
+                    st.dataframe(tornado_df.style.format({"rNPV": "{:.0f}", "Delta": "{:+,.0f}"}))
+                    if go is not None:
+                        tornado_fig = go.Figure()
+                        pos = tornado_df[tornado_df["Delta"] >= 0]
+                        neg = tornado_df[tornado_df["Delta"] < 0]
+                        tornado_fig.add_trace(
+                            go.Bar(
+                                y=pos["Driver"],
+                                x=pos["Delta"],
+                                orientation="h",
+                                name="Positive",
+                            )
+                        )
+                        tornado_fig.add_trace(
+                            go.Bar(
+                                y=neg["Driver"],
+                                x=neg["Delta"],
+                                orientation="h",
+                                name="Negative",
+                            )
+                        )
+                        tornado_fig.update_layout(barmode="relative", title="Tornado impact")
+                        st.plotly_chart(tornado_fig, use_container_width=True)
+
+                        spider_fig = go.Figure()
+                        pivot = tornado_df.pivot(index="Driver", columns="Change", values="rNPV").fillna(base_rnpv)
+                        spider_fig.add_trace(
+                            go.Scatterpolar(r=pivot.get("+20%", [base_rnpv]), theta=pivot.index, name="Upside")
+                        )
+                        spider_fig.add_trace(
+                            go.Scatterpolar(r=pivot.get("-20%", [base_rnpv]), theta=pivot.index, name="Downside")
+                        )
+                        st.plotly_chart(spider_fig, use_container_width=True)
+
+            with st.expander("Regression & classification models", expanded=False):
+                reg_df = _run_linear_regressions(cons)
+                if reg_df is not None:
+                    st.table(reg_df.style.format({"Intercept": "{:.0f}", "Revenue beta": "{:.2f}", "R^2": "{:.2f}"}))
+                else:
+                    st.info("Install scikit-learn to unlock regression diagnostics.")
+
+                seg_df = _build_segmentation_table(valuation_result)
+                class_df = _run_classification_model(seg_df)
+                if class_df is not None:
+                    st.dataframe(class_df.style.format({
+                        "Revenue share": "{:.1%}",
+                        "EBITDA margin": "{:.1%}",
+                        "High-margin probability": "{:.1%}",
+                    }))
+                else:
+                    st.caption("Classification output requires scikit-learn and at least one product.")
+
+            with st.expander("Time-series & ML forecasting", expanded=False):
+                ts_metric = st.selectbox("Series to forecast", ["revenue", "ebitda"], key="forecast_metric")
+                method = st.selectbox("Forecast model", ["ARIMA", "Prophet", "LSTM"], key="forecast_method")
+                horizon = st.slider("Forecast steps", 5, 25, 10)
+                if st.button("Run time-series model"):
+                    fe = ForecastEngine(model_cfg)
+                    period_index = pd.period_range(str(model_cfg.first_year), periods=len(cons), freq="Y")
+                    series = pd.Series(cons[ts_metric].values, index=period_index)
+                    series.index = series.index.to_timestamp()
+                    try:
+                        if method == "ARIMA":
+                            forecast = fe.forecast_arima(series, steps=horizon)
+                            st.line_chart(forecast)
+                        elif method == "Prophet":
+                            hist_df = pd.DataFrame({"ds": series.index, "y": series.values})
+                            forecast = fe.forecast_prophet(hist_df, periods=horizon)
+                            st.line_chart(forecast.set_index("ds")["yhat"])
+                        else:
+                            forecast = fe.forecast_lstm(series, steps_ahead=horizon)
+                            st.line_chart(pd.Series(forecast))
+                    except Exception as exc:
+                        st.warning(f"Forecast failed: {exc}")
+
+            with st.expander("Optimisation, portfolio design & real options", expanded=False):
+                opt_df = _optimize_operations(cons)
+                if opt_df is not None:
+                    st.table(opt_df.style.format({"Value": "{:.2f}"}))
+                else:
+                    st.caption("Install SciPy to enable nonlinear optimisation.")
+
+                mv_df = _mean_variance_portfolio(valuation_result)
+                if mv_df is not None:
+                    st.dataframe(
+                        mv_df.style.format({"Mean": "{:.0f}", "Std": "{:.0f}", "Suggested weight": "{:.1%}"})
+                    )
+
+                option_val = _real_options_value(valuation_result)
+                if option_val is not None:
+                    st.write(f"Real option (deferral) value estimate: {option_val:,.0f}")
+                else:
+                    st.caption("Provide R&D cash flows and install SciPy to compute real options.")
+
+            with st.expander("Risk, copulas, macro & ESG linkages", expanded=False):
+                copula_df = _copula_simulation(cons)
+                if copula_df is not None:
+                    st.scatter_chart(copula_df)
+
+                macro_cols = st.columns(4)
+                inflation = macro_cols[0].slider("Inflation", 0.0, 0.15, 0.03)
+                gdp = macro_cols[1].slider("GDP growth", -0.05, 0.1, 0.02)
+                fx = macro_cols[2].slider("FX depreciation", -0.1, 0.2, 0.0)
+                sentiment = macro_cols[3].slider("Market sentiment", -0.3, 0.3, 0.0)
+                macro_revenue = cons["revenue"] * (1 + inflation + gdp + sentiment - fx)
+                st.line_chart(pd.DataFrame({"Original": cons["revenue"], "Macro-adjusted": macro_revenue}))
+
+                esg_cols = st.columns(3)
+                carbon_price = esg_cols[0].slider("Carbon price ($/t)", 0, 200, 75)
+                emissions = esg_cols[1].slider("Emissions (kt)", 0, 500, 120)
+                renewable_share = esg_cols[2].slider("Renewable share", 0.0, 1.0, 0.35)
+                esg_cost = carbon_price * emissions * (1 - renewable_share)
+                st.write(f"ESG-adjusted annual carbon cost: {esg_cost:,.0f}")
+
+                intel_score = st.slider("Market intelligence sentiment", -1.0, 1.0, 0.1)
                 st.write(
-                    f"Mean rNPV: {sims.mean():,.0f} | Std: {sims.std():,.0f} | VaR95: {var:,.0f} | CVaR95: {cvar:,.0f}"
+                    f"Sentiment-adjusted revenue uplift: {(intel_score * 5):+.1f}% applied to TAM during scenario planning."
                 )
+
+            with st.expander("Comparative & ML-based valuation", expanded=False):
+                cluster_df = _cluster_products(valuation_result)
+                if cluster_df is not None:
+                    st.dataframe(cluster_df)
+                else:
+                    st.caption("Need scikit-learn and multiple products for clustering.")
+
+                ml_mult_df = _machine_learning_multiple(cons)
+                if ml_mult_df is not None:
+                    st.line_chart(ml_mult_df.set_index("Year"))
+                else:
+                    st.caption("Install scikit-learn to run ML-driven multiple predictions.")
 
     with scenario_tab:
         st.subheader("Scenario analysis")
