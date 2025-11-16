@@ -132,6 +132,130 @@ def _default_market_sizes_table() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _default_vaccine_development_table(first_year: int = 2024) -> pd.DataFrame:
+    data = [
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Stage": "Phase II",
+            "Success Probability %": 35.0,
+            "Consolidation": True,
+            "First year forecast": first_year + 2,
+            "Time to market": 4,
+            "Market entry year": first_year + 6,
+            "Patent duration years": 15,
+            "End patent year": first_year + 20,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "Stage": "Phase III",
+            "Success Probability %": 55.0,
+            "Consolidation": True,
+            "First year forecast": first_year + 1,
+            "Time to market": 2,
+            "Market entry year": first_year + 3,
+            "Patent duration years": 17,
+            "End patent year": first_year + 19,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_market_size_estimation_table() -> pd.DataFrame:
+    data = [
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Market size (# customers)": 5_000_000,
+            "Average spend (USD/customer)": 120,
+            "Serviceable Available Market (% TAM)": 60.0,
+            "Serviceable Available Market (% Market size)": 45.0,
+            "Serviceable Obtainable Market (%)": 25.0,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "Market size (# customers)": 8_000_000,
+            "Average spend (USD/customer)": 150,
+            "Serviceable Available Market (% TAM)": 55.0,
+            "Serviceable Available Market (% Market size)": 35.0,
+            "Serviceable Obtainable Market (%)": 18.0,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_vaccine_revenue_table() -> pd.DataFrame:
+    data = [
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Patent customers per year": 3_000_000,
+            "Patent price (USD/customer)": 50,
+            "Post patent customer adj. %": 80.0,
+            "Post patent price adj. %": 85.0,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "Patent customers per year": 4_200_000,
+            "Patent price (USD/customer)": 65,
+            "Post patent customer adj. %": 75.0,
+            "Post patent price adj. %": 80.0,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_royalty_table() -> pd.DataFrame:
+    data = [
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Monetization model": "Product Sale",
+            "Royalty rate (%)": 5.0,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "Monetization model": "Licensing",
+            "Royalty rate (%)": 6.5,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_market_share_table() -> pd.DataFrame:
+    data = [
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Relevant market type": "Global row crops",
+            "Relevant market size (USD)": 4_500_000_000,
+            "Revenue target - patent %": 12.0,
+            "Revenue target - post %": 8.0,
+            "Market share patent %": 6.0,
+            "Market share post %": 4.0,
+            "Market growth %": 5.0,
+            "Sales growth %": 8.0,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "Relevant market type": "Specialty crops",
+            "Relevant market size (USD)": 3_200_000_000,
+            "Revenue target - patent %": 15.0,
+            "Revenue target - post %": 10.0,
+            "Market share patent %": 7.5,
+            "Market share post %": 5.0,
+            "Market growth %": 4.0,
+            "Sales growth %": 6.0,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
 def _default_ramp_schedule() -> pd.DataFrame:
     """Return the seed schedule for global sales ramp factors."""
 
@@ -141,6 +265,10 @@ def _default_ramp_schedule() -> pd.DataFrame:
         "Ramp factor": default_ramp,
     }
     return pd.DataFrame(data)
+
+
+def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
+    return pd.to_numeric(series, errors="coerce").fillna(default)
 
 
 def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
@@ -506,6 +634,219 @@ def main() -> None:
         )
 
         st.subheader("Product assumptions")
+
+        if "vaccine_development_table" not in st.session_state:
+            st.session_state["vaccine_development_table"] = _default_vaccine_development_table(
+                int(first_year)
+            )
+        dev_df = st.data_editor(
+            st.session_state["vaccine_development_table"],
+            num_rows="dynamic",
+            hide_index=True,
+            key="dev_stage_editor",
+            column_config={
+                "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
+                "Consolidation": st.column_config.CheckboxColumn("Consolidate", default=True),
+                "Success Probability %": st.column_config.NumberColumn(
+                    "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
+                ),
+            },
+        )
+        entry_calc = _coerce_numeric(dev_df.get("First year forecast", pd.Series(dtype=float))) + _coerce_numeric(
+            dev_df.get("Time to market", pd.Series(dtype=float))
+        )
+        if "Market entry year" not in dev_df.columns:
+            dev_df["Market entry year"] = entry_calc
+        else:
+            missing_entry = dev_df["Market entry year"].isna()
+            dev_df.loc[missing_entry, "Market entry year"] = entry_calc[missing_entry]
+        if "End patent year" not in dev_df.columns:
+            dev_df["End patent year"] = dev_df["Market entry year"] + _coerce_numeric(
+                dev_df.get("Patent duration years", pd.Series(dtype=float)), default=0
+            ) - 1
+        else:
+            mask_patent = dev_df["End patent year"].isna()
+            dev_df.loc[mask_patent, "End patent year"] = (
+                dev_df.loc[mask_patent, "Market entry year"]
+                + _coerce_numeric(
+                    dev_df.loc[mask_patent, "Patent duration years"],
+                    default=0,
+                )
+                - 1
+            )
+        st.session_state["vaccine_development_table"] = dev_df
+        st.caption("Track each vaccine's readiness, probability of success, and patent end year.")
+
+        with st.expander("Vaccine market size estimation", expanded=True):
+            if "market_size_estimation" not in st.session_state:
+                st.session_state["market_size_estimation"] = _default_market_size_estimation_table()
+            market_size_df = st.data_editor(
+                st.session_state["market_size_estimation"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="market_size_editor",
+            )
+            market_size = _coerce_numeric(market_size_df.get("Market size (# customers)", pd.Series(dtype=float)))
+            avg_spend = _coerce_numeric(
+                market_size_df.get("Average spend (USD/customer)", pd.Series(dtype=float))
+            )
+            tam = market_size * avg_spend
+            market_size_df["Total Addressable Market Size (USD)"] = tam
+            sam_pct = _coerce_numeric(
+                market_size_df.get("Serviceable Available Market (% TAM)", pd.Series(dtype=float))
+            )
+            market_size_df["Serviceable Available Market (USD)"] = tam * sam_pct.div(100)
+            som_pct = _coerce_numeric(
+                market_size_df.get("Serviceable Obtainable Market (%)", pd.Series(dtype=float))
+            )
+            market_size_df["Serviceable Obtainable Market (USD)"] = tam * som_pct.div(100)
+            st.session_state["market_size_estimation"] = market_size_df
+            st.dataframe(
+                market_size_df[[
+                    "ID_vaccine",
+                    "Vaccine name",
+                    "Total Addressable Market Size (USD)",
+                    "Serviceable Available Market (USD)",
+                    "Serviceable Obtainable Market (USD)",
+                ]].style.format("{:.0f}")
+            )
+
+        with st.expander("Vaccines revenue estimation", expanded=True):
+            if "vaccine_revenue_table" not in st.session_state:
+                st.session_state["vaccine_revenue_table"] = _default_vaccine_revenue_table()
+            revenue_df = st.data_editor(
+                st.session_state["vaccine_revenue_table"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="revenue_estimation_editor",
+            )
+            patent_customers = _coerce_numeric(
+                revenue_df.get("Patent customers per year", pd.Series(dtype=float))
+            )
+            patent_price = _coerce_numeric(
+                revenue_df.get("Patent price (USD/customer)", pd.Series(dtype=float))
+            )
+            revenue_df["Patent revenue target (USD)"] = patent_customers * patent_price
+            cust_adj = _coerce_numeric(
+                revenue_df.get("Post patent customer adj. %", pd.Series(dtype=float))
+            ).div(100).replace(0, np.nan)
+            price_adj = _coerce_numeric(
+                revenue_df.get("Post patent price adj. %", pd.Series(dtype=float))
+            ).div(100).replace(0, np.nan)
+            if "Post patent customers per year" not in revenue_df.columns:
+                revenue_df["Post patent customers per year"] = patent_customers * cust_adj.fillna(1.0)
+            else:
+                mask_missing = revenue_df["Post patent customers per year"].isna()
+                revenue_df.loc[mask_missing, "Post patent customers per year"] = (
+                    patent_customers[mask_missing] * cust_adj.fillna(1.0)[mask_missing]
+                )
+            if "Post patent price (USD/customer)" not in revenue_df.columns:
+                revenue_df["Post patent price (USD/customer)"] = patent_price * price_adj.fillna(1.0)
+            else:
+                mask_price = revenue_df["Post patent price (USD/customer)"].isna()
+                revenue_df.loc[mask_price, "Post patent price (USD/customer)"] = (
+                    patent_price[mask_price] * price_adj.fillna(1.0)[mask_price]
+                )
+            revenue_df["Post patent revenue target (USD)"] = (
+                _coerce_numeric(revenue_df["Post patent customers per year"], 0)
+                * _coerce_numeric(revenue_df["Post patent price (USD/customer)"], 0)
+            )
+            st.session_state["vaccine_revenue_table"] = revenue_df
+            st.dataframe(
+                revenue_df[[
+                    "ID_vaccine",
+                    "Vaccine name",
+                    "Patent revenue target (USD)",
+                    "Post patent revenue target (USD)",
+                ]].style.format("{:.0f}")
+            )
+
+        with st.expander("Vaccines royalty revenues", expanded=True):
+            if "vaccine_royalty_table" not in st.session_state:
+                st.session_state["vaccine_royalty_table"] = _default_royalty_table()
+            royalty_df = st.data_editor(
+                st.session_state["vaccine_royalty_table"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="royalty_editor",
+                column_config={
+                    "Monetization model": st.column_config.SelectboxColumn(
+                        "Monetization model", options=["Product Sale", "Licensing"]
+                    )
+                },
+            )
+            revenue_lookup = st.session_state.get("vaccine_revenue_table", pd.DataFrame())
+            patent_lookup = revenue_lookup.set_index("ID_vaccine").get(
+                "Patent revenue target (USD)", pd.Series(dtype=float)
+            )
+            post_lookup = revenue_lookup.set_index("ID_vaccine").get(
+                "Post patent revenue target (USD)", pd.Series(dtype=float)
+            )
+            royalty_rate = _coerce_numeric(royalty_df.get("Royalty rate (%)", pd.Series(dtype=float))).div(100)
+            royalty_df["Patent revenue (USD)"] = royalty_df["ID_vaccine"].map(patent_lookup)
+            royalty_df["Post patent revenue (USD)"] = royalty_df["ID_vaccine"].map(post_lookup)
+            royalty_df["Royalty income (USD)"] = royalty_df["Patent revenue (USD)"] * royalty_rate
+            st.session_state["vaccine_royalty_table"] = royalty_df
+            st.dataframe(
+                royalty_df[[
+                    "ID_vaccine",
+                    "Vaccine name",
+                    "Royalty rate (%)",
+                    "Royalty income (USD)",
+                    "Patent revenue (USD)",
+                    "Post patent revenue (USD)",
+                ]].style.format({
+                    "Royalty rate (%)": "{:.1f}",
+                    "Royalty income (USD)": "{:.0f}",
+                    "Patent revenue (USD)": "{:.0f}",
+                    "Post patent revenue (USD)": "{:.0f}",
+                })
+            )
+
+        with st.expander("Vaccines market share", expanded=True):
+            if "vaccine_market_share_table" not in st.session_state:
+                st.session_state["vaccine_market_share_table"] = _default_market_share_table()
+            market_share_df = st.data_editor(
+                st.session_state["vaccine_market_share_table"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="market_share_editor",
+            )
+            relevant_market = _coerce_numeric(
+                market_share_df.get("Relevant market size (USD)", pd.Series(dtype=float))
+            )
+            patent_target_pct = _coerce_numeric(
+                market_share_df.get("Revenue target - patent %", pd.Series(dtype=float))
+            ).div(100)
+            post_target_pct = _coerce_numeric(
+                market_share_df.get("Revenue target - post %", pd.Series(dtype=float))
+            ).div(100)
+            market_share_df["Revenue target patent (USD)"] = relevant_market * patent_target_pct
+            market_share_df["Revenue target post (USD)"] = relevant_market * post_target_pct
+            st.session_state["vaccine_market_share_table"] = market_share_df
+            st.dataframe(
+                market_share_df[[
+                    "ID_vaccine",
+                    "Vaccine name",
+                    "Relevant market type",
+                    "Relevant market size (USD)",
+                    "Revenue target patent (USD)",
+                    "Revenue target post (USD)",
+                    "Market share patent %",
+                    "Market share post %",
+                    "Market growth %",
+                    "Sales growth %",
+                ]].style.format({
+                    "Relevant market size (USD)": "{:.0f}",
+                    "Revenue target patent (USD)": "{:.0f}",
+                    "Revenue target post (USD)": "{:.0f}",
+                    "Market share patent %": "{:.1f}",
+                    "Market share post %": "{:.1f}",
+                    "Market growth %": "{:.1f}",
+                    "Sales growth %": "{:.1f}",
+                })
+            )
+
         if "product_table" not in st.session_state:
             st.session_state["product_table"] = _default_products()
 
