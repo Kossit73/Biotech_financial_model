@@ -81,12 +81,78 @@ def _default_products() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
-def _parse_sales_ramp(text: str) -> List[float]:
-    try:
-        return [float(v.strip()) for v in text.split(",") if v.strip()]
-    except ValueError:
-        st.warning("Sales ramp factors invalid. Using default ramp instead.")
-        return [0.2, 0.6, 1.0, 1.0, 1.0]
+def _default_ramp_schedule() -> pd.DataFrame:
+    """Return the seed schedule for global sales ramp factors."""
+
+    default_ramp = [0.2, 0.6, 1.0, 1.0, 1.0]
+    data = {
+        "Year offset": list(range(len(default_ramp))),
+        "Ramp factor": default_ramp,
+    }
+    return pd.DataFrame(data)
+
+
+def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
+    """Render a reusable schedule editor with manual controls.
+
+    The widget exposes explicit Edit / Add Row / Remove Row controls in addition to a
+    "Yearly Increment Helper" that can seed values from a starting point.
+    """
+
+    if session_key not in st.session_state:
+        st.session_state[session_key] = _default_ramp_schedule().copy()
+
+    schedule_df: pd.DataFrame = st.session_state[session_key]
+    st.markdown(f"**{title}**")
+    toolbar_cols = st.columns(4)
+    edit_mode = toolbar_cols[0].toggle("Edit", value=True, key=f"{session_key}_edit")
+
+    if toolbar_cols[1].button("Add Row", key=f"{session_key}_add"):
+        next_year = int(schedule_df["Year offset"].max() + 1) if not schedule_df.empty else 0
+        last_value = (
+            float(schedule_df["Ramp factor"].iloc[-1]) if not schedule_df.empty else 1.0
+        )
+        schedule_df.loc[len(schedule_df)] = [next_year, last_value]
+        st.session_state[session_key] = schedule_df
+
+    if toolbar_cols[2].button("Remove Row", key=f"{session_key}_remove") and not schedule_df.empty:
+        schedule_df = schedule_df.iloc[:-1]
+        st.session_state[session_key] = schedule_df
+
+    with toolbar_cols[3]:
+        with st.expander("Yearly Increment Helper"):
+            start_year = st.number_input(
+                "Start year offset", min_value=0, value=0, key=f"{session_key}_start"
+            )
+            start_value = st.number_input(
+                "Starting value", min_value=0.0, value=0.2, step=0.05, key=f"{session_key}_value"
+            )
+            increment = st.number_input(
+                "Increment per year", value=0.2, step=0.05, key=f"{session_key}_increment"
+            )
+            n_periods = st.number_input(
+                "Number of periods", min_value=1, max_value=40, value=5, key=f"{session_key}_periods"
+            )
+            if st.button("Apply helper", key=f"{session_key}_apply"):
+                rows = []
+                for i in range(int(n_periods)):
+                    rows.append(
+                        {
+                            "Year offset": int(start_year + i),
+                            "Ramp factor": float(start_value + increment * i),
+                        }
+                    )
+                schedule_df = pd.DataFrame(rows)
+                st.session_state[session_key] = schedule_df
+
+    edited_df = st.data_editor(
+        schedule_df,
+        hide_index=True,
+        disabled=not edit_mode,
+        key=f"{session_key}_editor",
+    )
+    st.session_state[session_key] = edited_df
+    return edited_df
 
 
 def _sanitize_product_records(df: pd.DataFrame) -> List[Dict]:
@@ -159,10 +225,13 @@ def main() -> None:
             wc_pct = st.slider("Working capital (% sales)", 0.0, 0.3, 0.08)
             ev_multiple = st.slider("Base EV/EBITDA multiple", 2.0, 25.0, 8.0)
 
-        sales_ramp_text = st.text_input(
-            "Sales ramp factors (comma separated)", value="0.2,0.6,1.0,1.0,1.0"
-        )
-        ramp = _parse_sales_ramp(sales_ramp_text)
+        ramp_df = _render_schedule_editor("Sales ramp schedule", "sales_ramp_schedule")
+        ramp_df = ramp_df.sort_values("Year offset")
+        if ramp_df.empty:
+            st.warning("Ramp schedule empty. Reverting to default values.")
+            ramp = _default_ramp_schedule()["Ramp factor"].tolist()
+        else:
+            ramp = ramp_df["Ramp factor"].astype(float).tolist()
 
         model_cfg = ModelConfig(
             first_year=int(first_year),
