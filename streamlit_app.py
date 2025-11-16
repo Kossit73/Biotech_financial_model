@@ -256,6 +256,80 @@ def _default_market_share_table() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _default_vaccine_cost_table() -> pd.DataFrame:
+    data = [
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "COGS patent % of sales": 32.0,
+            "COGS post % of sales": 48.0,
+            "Marketing annual % of sales": 18.0,
+            "Marketing launch cost (USD)": 25_000_000,
+            "Indirect staff cost (USD)": 8_500_000,
+            "Electricity (USD)": 1_800_000,
+            "Depreciation (USD)": 3_200_000,
+            "Interest & amortization (USD)": 2_000_000,
+            "Royalties cost % of sales": 4.0,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "COGS patent % of sales": 28.0,
+            "COGS post % of sales": 45.0,
+            "Marketing annual % of sales": 16.0,
+            "Marketing launch cost (USD)": 30_000_000,
+            "Indirect staff cost (USD)": 6_750_000,
+            "Electricity (USD)": 1_400_000,
+            "Depreciation (USD)": 2_750_000,
+            "Interest & amortization (USD)": 1_500_000,
+            "Royalties cost % of sales": 3.5,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_vaccine_rd_table() -> pd.DataFrame:
+    data = [
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Cost accounting (capitalisation)": "50% capitalised",
+            "Pre-GTM spent to date (USD)": 120_000_000,
+            "Pre-GTM remaining (USD)": 60_000_000,
+            "Post-GTM annual cost (USD/year)": 12_000_000,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "Cost accounting (capitalisation)": "40% capitalised",
+            "Pre-GTM spent to date (USD)": 80_000_000,
+            "Pre-GTM remaining (USD)": 40_000_000,
+            "Post-GTM annual cost (USD/year)": 9_500_000,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_vaccine_capex_table() -> pd.DataFrame:
+    data = [
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Pre-GTM capex spent (USD)": 55_000_000,
+            "Pre-GTM capex remaining (USD)": 25_000_000,
+            "Post-GTM yearly capex (USD)": 6_500_000,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "Pre-GTM capex spent (USD)": 35_000_000,
+            "Pre-GTM capex remaining (USD)": 15_000_000,
+            "Post-GTM yearly capex (USD)": 4_000_000,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
 def _default_ramp_schedule() -> pd.DataFrame:
     """Return the seed schedule for global sales ramp factors."""
 
@@ -773,6 +847,120 @@ def main() -> None:
                     }
                 )
             )
+
+        with st.expander("Vaccine cost assumptions", expanded=True):
+            if "vaccine_cost_table" not in st.session_state:
+                st.session_state["vaccine_cost_table"] = _default_vaccine_cost_table()
+            cost_df = st.data_editor(
+                st.session_state["vaccine_cost_table"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="cost_assumption_editor",
+            )
+            cogs_patent = _coerce_numeric(cost_df.get("COGS patent % of sales", pd.Series(dtype=float)))
+            cogs_post = _coerce_numeric(cost_df.get("COGS post % of sales", pd.Series(dtype=float)))
+            marketing_pct = _coerce_numeric(cost_df.get("Marketing annual % of sales", pd.Series(dtype=float)))
+            royalty_pct = _coerce_numeric(cost_df.get("Royalties cost % of sales", pd.Series(dtype=float)))
+            gna_cols = [
+                "Indirect staff cost (USD)",
+                "Electricity (USD)",
+                "Depreciation (USD)",
+                "Interest & amortization (USD)",
+            ]
+            cost_df["G&A total (USD)"] = cost_df[gna_cols].sum(axis=1)
+            cost_df["Patent operating cost %"] = cogs_patent + marketing_pct + royalty_pct
+            cost_df["Post operating cost %"] = cogs_post + marketing_pct + royalty_pct
+            st.session_state["vaccine_cost_table"] = cost_df
+            cost_display = cost_df[
+                [
+                    "ID_vaccine",
+                    "Vaccine name",
+                    "COGS patent % of sales",
+                    "COGS post % of sales",
+                    "Marketing annual % of sales",
+                    "Marketing launch cost (USD)",
+                    "Royalties cost % of sales",
+                    "G&A total (USD)",
+                    "Patent operating cost %",
+                    "Post operating cost %",
+                ]
+            ]
+            percent_cols = [
+                "COGS patent % of sales",
+                "COGS post % of sales",
+                "Marketing annual % of sales",
+                "Royalties cost % of sales",
+                "Patent operating cost %",
+                "Post operating cost %",
+            ]
+            percent_fmt = {col: "{:.1f}%" for col in percent_cols if col in cost_display.columns}
+            currency_fmt = {
+                col: "{:.0f}"
+                for col in ["Marketing launch cost (USD)", "G&A total (USD)"]
+                if col in cost_display.columns
+            }
+            st.dataframe(cost_display.style.format({**percent_fmt, **currency_fmt}))
+
+        with st.expander("Vaccines research & development (R&D)", expanded=True):
+            if "vaccine_rd_table" not in st.session_state:
+                st.session_state["vaccine_rd_table"] = _default_vaccine_rd_table()
+            rd_df = st.data_editor(
+                st.session_state["vaccine_rd_table"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="rd_editor",
+            )
+            rd_df["Pre-GTM total (USD)"] = _coerce_numeric(
+                rd_df.get("Pre-GTM spent to date (USD)", pd.Series(dtype=float))
+            ) + _coerce_numeric(rd_df.get("Pre-GTM remaining (USD)", pd.Series(dtype=float)))
+            st.session_state["vaccine_rd_table"] = rd_df
+            rd_display = rd_df[
+                [
+                    "ID_vaccine",
+                    "Vaccine name",
+                    "Cost accounting (capitalisation)",
+                    "Pre-GTM spent to date (USD)",
+                    "Pre-GTM remaining (USD)",
+                    "Pre-GTM total (USD)",
+                    "Post-GTM annual cost (USD/year)",
+                ]
+            ]
+            rd_fmt = {
+                col: "{:.0f}"
+                for col in rd_display.columns
+                if col not in ["ID_vaccine", "Vaccine name", "Cost accounting (capitalisation)"]
+            }
+            st.dataframe(rd_display.style.format(rd_fmt))
+
+        with st.expander("Vaccine CAPEX assumptions", expanded=True):
+            if "vaccine_capex_table" not in st.session_state:
+                st.session_state["vaccine_capex_table"] = _default_vaccine_capex_table()
+            capex_df = st.data_editor(
+                st.session_state["vaccine_capex_table"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="capex_editor",
+            )
+            capex_df["Total Pre-GTM capex (USD)"] = _coerce_numeric(
+                capex_df.get("Pre-GTM capex spent (USD)", pd.Series(dtype=float))
+            ) + _coerce_numeric(capex_df.get("Pre-GTM capex remaining (USD)", pd.Series(dtype=float)))
+            st.session_state["vaccine_capex_table"] = capex_df
+            capex_display = capex_df[
+                [
+                    "ID_vaccine",
+                    "Vaccine name",
+                    "Pre-GTM capex spent (USD)",
+                    "Pre-GTM capex remaining (USD)",
+                    "Total Pre-GTM capex (USD)",
+                    "Post-GTM yearly capex (USD)",
+                ]
+            ]
+            capex_fmt = {
+                col: "{:.0f}"
+                for col in capex_display.columns
+                if col not in ["ID_vaccine", "Vaccine name"]
+            }
+            st.dataframe(capex_display.style.format(capex_fmt))
 
         with st.expander("Vaccines royalty revenues", expanded=True):
             if "vaccine_royalty_table" not in st.session_state:
