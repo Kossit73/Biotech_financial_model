@@ -701,14 +701,21 @@ def main() -> None:
             )
             market_size_df["Serviceable Obtainable Market (USD)"] = tam * som_pct.div(100)
             st.session_state["market_size_estimation"] = market_size_df
+            market_size_display = market_size_df[[
+                "ID_vaccine",
+                "Vaccine name",
+                "Total Addressable Market Size (USD)",
+                "Serviceable Available Market (USD)",
+                "Serviceable Obtainable Market (USD)",
+            ]]
             st.dataframe(
-                market_size_df[[
-                    "ID_vaccine",
-                    "Vaccine name",
-                    "Total Addressable Market Size (USD)",
-                    "Serviceable Available Market (USD)",
-                    "Serviceable Obtainable Market (USD)",
-                ]].style.format("{:.0f}")
+                market_size_display.style.format(
+                    {
+                        "Total Addressable Market Size (USD)": "{:.0f}",
+                        "Serviceable Available Market (USD)": "{:.0f}",
+                        "Serviceable Obtainable Market (USD)": "{:.0f}",
+                    }
+                )
             )
 
         with st.expander("Vaccines revenue estimation", expanded=True):
@@ -752,13 +759,19 @@ def main() -> None:
                 * _coerce_numeric(revenue_df["Post patent price (USD/customer)"], 0)
             )
             st.session_state["vaccine_revenue_table"] = revenue_df
+            revenue_display = revenue_df[[
+                "ID_vaccine",
+                "Vaccine name",
+                "Patent revenue target (USD)",
+                "Post patent revenue target (USD)",
+            ]]
             st.dataframe(
-                revenue_df[[
-                    "ID_vaccine",
-                    "Vaccine name",
-                    "Patent revenue target (USD)",
-                    "Post patent revenue target (USD)",
-                ]].style.format("{:.0f}")
+                revenue_display.style.format(
+                    {
+                        "Patent revenue target (USD)": "{:.0f}",
+                        "Post patent revenue target (USD)": "{:.0f}",
+                    }
+                )
             )
 
         with st.expander("Vaccines royalty revenues", expanded=True):
@@ -878,7 +891,15 @@ def main() -> None:
                 cons = valuation_result.consolidated.copy()
                 cons_display = cons[["revenue", "ebitda", "fcff_after_wc"]].copy()
                 cons_display.columns = ["Revenue", "EBITDA", "FCFF after WC"]
-                st.dataframe(cons_display.style.format("{:.0f}"))
+                st.dataframe(
+                    cons_display.style.format(
+                        {
+                            "Revenue": "{:.0f}",
+                            "EBITDA": "{:.0f}",
+                            "FCFF after WC": "{:.0f}",
+                        }
+                    )
+                )
                 st.line_chart(cons_display)
     with financial_tab:
         st.subheader("Financial statements")
@@ -888,11 +909,17 @@ def main() -> None:
             cons = valuation_result.consolidated
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
             st.markdown("**Statement of Financial Performance**")
-            st.dataframe(perf_df.style.format("{:.0f}"))
+            st.dataframe(
+                perf_df.style.format({col: "{:.0f}" for col in perf_df.columns})
+            )
             st.markdown("**Statement of Financial Position**")
-            st.dataframe(position_df.style.format("{:.0f}"))
+            st.dataframe(
+                position_df.style.format({col: "{:.0f}" for col in position_df.columns})
+            )
             st.markdown("**Statement of Cash Flows**")
-            st.dataframe(cash_flow_df.style.format("{:.0f}"))
+            st.dataframe(
+                cash_flow_df.style.format({col: "{:.0f}" for col in cash_flow_df.columns})
+            )
 
     with dashboard_tab:
         st.subheader("Dashboard")
