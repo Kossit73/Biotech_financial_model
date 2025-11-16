@@ -32,6 +32,14 @@ STAGE_OPTIONS = [
     "Commercial",
 ]
 
+SELECTOR_OPTIONS = [
+    "Base case",
+    "Upside",
+    "Downside",
+    "Aggressive expansion",
+    "Defensive posture",
+]
+
 
 def _default_products() -> pd.DataFrame:
     """Seed table with two representative products."""
@@ -77,6 +85,49 @@ def _default_products() -> pd.DataFrame:
             "capex_remaining_pre_launch": 35_000_000,
             "capex_annual_post_launch": 4_500_000,
         },
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_vaccine_sales_table(first_year: int = 2024) -> pd.DataFrame:
+    years = [first_year + i for i in range(5)]
+    data = {
+        "Year": years,
+        "Doses (M)": [5, 7, 10, 12, 12],
+        "Price per dose": [25, 26, 27, 27, 28],
+        "Comments": ["", "", "", "", ""],
+    }
+    return pd.DataFrame(data)
+
+
+def _default_uses_table() -> pd.DataFrame:
+    data = [
+        {"Item": "Clinical trials", "Amount": 150_000_000},
+        {"Item": "Manufacturing scale-up", "Amount": 90_000_000},
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_sources_table() -> pd.DataFrame:
+    data = [
+        {"Item": "Existing cash", "Amount": 40_000_000},
+        {"Item": "New equity", "Amount": 200_000_000},
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_shareholders_table() -> pd.DataFrame:
+    data = [
+        {"Shareholder": "Founders", "Ownership %": 0.35, "Investment": 25_000_000},
+        {"Shareholder": "Series A fund", "Ownership %": 0.4, "Investment": 80_000_000},
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_market_sizes_table() -> pd.DataFrame:
+    data = [
+        {"Segment": "Global vaccine market", "Value": 80_000_000_000},
+        {"Segment": "Target indication", "Value": 12_000_000_000},
     ]
     return pd.DataFrame(data)
 
@@ -316,32 +367,138 @@ def main() -> None:
     )
 
     with config_tab:
-        st.subheader("Global assumptions")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            first_year = st.number_input("First forecast year", value=2024)
-            n_years = st.number_input("Number of years", min_value=5, max_value=40, value=25)
-            currency = st.text_input("Currency", value="USD")
-        with col2:
-            discount_rate = st.slider("Discount rate", min_value=0.02, max_value=0.25, value=0.1)
-            tax_rate = st.slider("Tax rate", min_value=0.0, max_value=0.35, value=0.25)
-        with col3:
-            wc_pct = st.slider("Working capital (% sales)", 0.0, 0.3, 0.08)
-            ev_multiple = st.slider("Base EV/EBITDA multiple", 2.0, 25.0, 8.0)
+        st.subheader("Model assumptions")
 
-        ramp_df = _render_schedule_editor("Sales ramp schedule", "sales_ramp_schedule")
-        ramp_df = ramp_df.sort_values("Year offset")
-        if ramp_df.empty:
-            st.warning("Ramp schedule empty. Reverting to default values.")
-            ramp = _default_ramp_schedule()["Ramp factor"].tolist()
-        else:
-            ramp = ramp_df["Ramp factor"].astype(float).tolist()
+        with st.expander("General assumptions", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                first_year = st.number_input("First forecast year", value=2024)
+                n_years = st.number_input("Number of years", min_value=5, max_value=40, value=25)
+                currency = st.text_input("Currency", value="USD")
+            with col2:
+                tax_rate = st.slider("Tax rate", min_value=0.0, max_value=0.35, value=0.25)
+                wc_pct = st.slider("Working capital (% sales)", 0.0, 0.3, 0.08)
+            with col3:
+                inflation = st.number_input("Inflation assumption", value=0.02, min_value=0.0, max_value=0.25, step=0.005)
+                base_fx = st.text_input("Reporting FX pair", value="USD/EUR")
+            st.caption("Set the macro baseline for the consolidated forecast and disclosures.")
 
+        with st.expander("Forecast assumptions", expanded=True):
+            ramp_df = _render_schedule_editor("Sales ramp schedule", "sales_ramp_schedule")
+            ramp_df = ramp_df.sort_values("Year offset")
+            if ramp_df.empty:
+                st.warning("Ramp schedule empty. Reverting to default values.")
+                ramp = _default_ramp_schedule()["Ramp factor"].tolist()
+            else:
+                ramp = ramp_df["Ramp factor"].astype(float).tolist()
+            st.caption("Ramp factors feed revenue build-ups across every product.")
+
+        with st.expander("Vaccine sales"):
+            if "vaccine_sales_table" not in st.session_state:
+                st.session_state["vaccine_sales_table"] = _default_vaccine_sales_table(int(first_year))
+            vaccine_df = st.data_editor(
+                st.session_state["vaccine_sales_table"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="vaccine_sales_editor",
+            )
+            doses = pd.to_numeric(vaccine_df.get("Doses (M)", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
+            price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
+            vaccine_df["Implied revenue"] = doses * 1e6 * price
+            st.session_state["vaccine_sales_table"] = vaccine_df
+            st.metric("Five-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
+
+        with st.expander("Uses and sources of funds"):
+            uses_col, sources_col = st.columns(2)
+            if "uses_table" not in st.session_state:
+                st.session_state["uses_table"] = _default_uses_table()
+            if "sources_table" not in st.session_state:
+                st.session_state["sources_table"] = _default_sources_table()
+            with uses_col:
+                st.markdown("**Uses**")
+                uses_df = st.data_editor(
+                    st.session_state["uses_table"],
+                    num_rows="dynamic",
+                    hide_index=True,
+                    key="uses_editor",
+                )
+                st.session_state["uses_table"] = uses_df
+                uses_total = float(uses_df.get("Amount", pd.Series(dtype=float)).sum())
+                st.metric("Total uses", f"{uses_total:,.0f}")
+            with sources_col:
+                st.markdown("**Sources**")
+                sources_df = st.data_editor(
+                    st.session_state["sources_table"],
+                    num_rows="dynamic",
+                    hide_index=True,
+                    key="sources_editor",
+                )
+                st.session_state["sources_table"] = sources_df
+                sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
+                st.metric("Total sources", f"{sources_total:,.0f}")
+            delta = sources_total - uses_total
+            st.info(f"Funding gap (sources - uses): {delta:,.0f}")
+
+        with st.expander("Risk-adjusted DCF valuation method - assumptions"):
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                discount_rate = st.slider("Discount rate", min_value=0.02, max_value=0.30, value=0.10)
+            with col_b:
+                ev_multiple = st.slider("Terminal EV/EBITDA multiple", 2.0, 30.0, 8.0)
+            with col_c:
+                risk_buffer = st.number_input(
+                    "Additional risk premium", min_value=0.0, max_value=0.20, value=0.0, step=0.01
+                )
+            st.caption("Discount rate + premium governs the rNPV and terminal value." )
+
+        with st.expander("Funding required"):
+            funding_required = st.number_input(
+                "Total funding required", value=250_000_000.0, step=5_000_000.0, format="%0.0f"
+            )
+
+        with st.expander("Shareholders / Investors"):
+            if "shareholders_table" not in st.session_state:
+                st.session_state["shareholders_table"] = _default_shareholders_table()
+            shareholders_df = st.data_editor(
+                st.session_state["shareholders_table"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="shareholders_editor",
+                column_config={
+                    "Ownership %": st.column_config.NumberColumn("Ownership %", min_value=0.0, max_value=1.0, step=0.01),
+                },
+            )
+            st.session_state["shareholders_table"] = shareholders_df
+            st.metric("Total ownership reported", f"{shareholders_df['Ownership %'].sum():.0%}")
+
+        with st.expander("Relevant market sizes"):
+            if "market_sizes_table" not in st.session_state:
+                st.session_state["market_sizes_table"] = _default_market_sizes_table()
+            market_df = st.data_editor(
+                st.session_state["market_sizes_table"],
+                num_rows="dynamic",
+                hide_index=True,
+                key="market_editor",
+            )
+            st.session_state["market_sizes_table"] = market_df
+
+        with st.expander("New equity issued"):
+            new_equity = st.number_input(
+                "Planned new equity", value=200_000_000.0, step=5_000_000.0, format="%0.0f"
+            )
+
+        with st.expander("Selectors"):
+            selector_choices = st.multiselect(
+                "Tag this run with selectors", options=SELECTOR_OPTIONS, default=["Base case"]
+            )
+            st.write("Active selectors:", ", ".join(selector_choices) or "None")
+
+        effective_discount_rate = float(min(0.40, discount_rate + risk_buffer))
         model_cfg = ModelConfig(
             first_year=int(first_year),
             n_years=int(n_years),
             currency=currency,
-            discount_rate=float(discount_rate),
+            discount_rate=effective_discount_rate,
             tax_rate=float(tax_rate),
             working_capital_pct_sales=float(wc_pct),
             ev_ebitda_multiple=float(ev_multiple),
