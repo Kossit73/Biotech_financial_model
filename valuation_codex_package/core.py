@@ -9,10 +9,30 @@ forecasting strategies.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from typing import Dict, Iterable, List, MutableMapping, Optional, Protocol
+from pathlib import Path
+import json
+from typing import (
+    Dict,
+    Iterable,
+    List,
+    MutableMapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Union,
+)
 
 import numpy as np
 import pandas as pd
+
+
+FeatureLike = Union[
+    pd.DataFrame,
+    pd.Series,
+    MutableMapping[str, float],
+    Sequence[float],
+    np.ndarray,
+]
 
 
 # =========================
@@ -399,6 +419,86 @@ class ValuationEngine:
 # ==================
 
 
+class MultiplesModel:
+    """Simple linear model that predicts EV/EBITDA multiples."""
+
+    def __init__(self, feature_names: Sequence[str] | None = None) -> None:
+        self.feature_names_: list[str] | None = list(feature_names) if feature_names else None
+        self.coef_: np.ndarray | None = None
+        self.intercept_: float | None = None
+
+    @staticmethod
+    def _ensure_dataframe(
+        X: FeatureLike,
+        expected_feature_names: Sequence[str] | None = None,
+    ) -> pd.DataFrame:
+        if isinstance(X, pd.Series):
+            df = X.to_frame().T
+        elif isinstance(X, pd.DataFrame):
+            df = X.copy()
+        elif isinstance(X, MutableMapping):
+            df = pd.DataFrame([X])
+        else:
+            arr = np.asarray(X, dtype=float)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            if expected_feature_names is None:
+                columns = [f"x{i}" for i in range(arr.shape[1])]
+            else:
+                if arr.shape[1] != len(expected_feature_names):
+                    raise ValueError("Feature length does not match the fitted model.")
+                columns = list(expected_feature_names)
+            df = pd.DataFrame(arr, columns=columns)
+
+        if expected_feature_names is not None:
+            missing = [c for c in expected_feature_names if c not in df.columns]
+            if missing:
+                raise ValueError(f"Missing required features for multiples model: {missing}")
+            df = df.loc[:, list(expected_feature_names)]
+        return df
+
+    @property
+    def is_fitted(self) -> bool:
+        return self.coef_ is not None and self.intercept_ is not None
+
+    def fit(self, X: FeatureLike, y: Sequence[float] | np.ndarray) -> "MultiplesModel":
+        df = self._ensure_dataframe(X)
+        y_arr = np.asarray(y, dtype=float).reshape(-1, 1)
+        if df.shape[0] != y_arr.shape[0]:
+            raise ValueError("X and y must have the same number of rows.")
+        A = np.c_[np.ones(df.shape[0]), df.values]
+        beta, *_ = np.linalg.lstsq(A, y_arr, rcond=None)
+        self.intercept_ = float(beta[0, 0])
+        self.coef_ = beta[1:, 0]
+        self.feature_names_ = list(df.columns)
+        return self
+
+    def predict(self, X: FeatureLike) -> np.ndarray:
+        if not self.is_fitted:
+            raise ValueError("Multiples model must be fitted before predicting.")
+        df = self._ensure_dataframe(X, self.feature_names_)
+        preds = df.values @ self.coef_ + self.intercept_
+        return preds
+
+    def save(self, path: Union[str, Path]) -> None:
+        if not self.is_fitted or self.feature_names_ is None:
+            raise ValueError("Cannot save an unfitted multiples model.")
+        payload = {
+            "intercept": self.intercept_,
+            "coef": self.coef_.tolist() if self.coef_ is not None else [],
+            "feature_names": self.feature_names_,
+        }
+        Path(path).write_text(json.dumps(payload))
+
+    @classmethod
+    def load(cls, path: Union[str, Path]) -> "MultiplesModel":
+        payload = json.loads(Path(path).read_text())
+        model = cls(feature_names=payload.get("feature_names"))
+        model.intercept_ = float(payload["intercept"])
+        model.coef_ = np.asarray(payload["coef"], dtype=float)
+        return model
+
+
 @dataclass(slots=True)
 class VCInputs:
     exit_year: int
@@ -410,21 +510,66 @@ class VCInputs:
 class VCValuator:
     """Implements the classic VC method using the DCF results as inputs."""
 
-    def __init__(self, valuation_result: ValuationResult) -> None:
+    def __init__(
+        self,
+        valuation_result: ValuationResult,
+        *,
+        default_exit_multiple: float | None = None,
+        multiples_model: "MultiplesModel" | None = None,
+    ) -> None:
+        if default_exit_multiple is not None and multiples_model is not None:
+            raise ValueError("Provide either a fixed multiple or a multiples model, not both.")
         self.result = valuation_result
         self.model_config = valuation_result.portfolio.model_config
+        self.default_exit_multiple = default_exit_multiple
+        self.multiples_model = multiples_model
 
-    def compute_exit_ev(self, exit_year: int, multiple: Optional[float] = None) -> float:
-        if multiple is None:
-            multiple = self.model_config.ev_ebitda_multiple
+    def _resolve_multiple(
+        self,
+        exit_year: int,
+        override_multiple: Optional[float],
+        multiple_features: "FeatureLike" | None,
+    ) -> float:
+        if override_multiple is not None:
+            return float(override_multiple)
+
+        if self.multiples_model is not None:
+            if exit_year not in self.result.consolidated.index:
+                raise ValueError("Exit year not in consolidated index")
+            feature_source: FeatureLike
+            if multiple_features is not None:
+                feature_source = multiple_features
+            else:
+                feature_source = self.result.consolidated.loc[exit_year]
+            prediction = self.multiples_model.predict(feature_source)
+            return float(prediction[0])
+
+        if self.default_exit_multiple is not None:
+            return float(self.default_exit_multiple)
+        return float(self.model_config.ev_ebitda_multiple)
+
+    def compute_exit_ev(
+        self,
+        exit_year: int,
+        multiple: Optional[float] = None,
+        *,
+        multiple_features: "FeatureLike" | None = None,
+    ) -> float:
         cons = self.result.consolidated
         if exit_year not in cons.index:
             raise ValueError("Exit year not in consolidated index")
+        resolved_multiple = self._resolve_multiple(exit_year, multiple, multiple_features)
         exit_ebitda = cons.loc[exit_year, "ebitda"]
-        return float(exit_ebitda * multiple)
+        return float(exit_ebitda * resolved_multiple)
 
-    def vc_method(self, vc_inputs: VCInputs, exit_multiple: Optional[float] = None) -> Dict[str, float]:
-        exit_ev = self.compute_exit_ev(vc_inputs.exit_year, exit_multiple)
+    def vc_method(
+        self,
+        vc_inputs: VCInputs,
+        exit_multiple: Optional[float] = None,
+        *,
+        multiple_features: "FeatureLike" | None = None,
+    ) -> Dict[str, float]:
+        exit_ev = self.compute_exit_ev(vc_inputs.exit_year, exit_multiple, multiple_features=multiple_features)
         years_to_exit = vc_inputs.exit_year - self.model_config.first_year
         if years_to_exit <= 0:
             raise ValueError("Exit year must be after first model year")
@@ -822,6 +967,7 @@ __all__ = [
     "ValuationResult",
     "VCInputs",
     "VCValuator",
+    "MultiplesModel",
     "Scenario",
     "ScenarioAdjustment",
     "ScenarioEngine",
