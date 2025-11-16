@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, fields
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -350,6 +350,293 @@ def _default_vaccine_capex_table() -> pd.DataFrame:
         },
     ]
     return pd.DataFrame(data)
+
+
+def _next_vaccine_id(df: pd.DataFrame) -> str:
+    """Return the next sequential vaccine identifier (VAC-XXX)."""
+
+    existing = set()
+    if "ID_vaccine" in df.columns:
+        existing = {
+            str(val)
+            for val in df["ID_vaccine"].astype(str).tolist()
+            if val and val != "nan"
+        }
+    idx = 1
+    while True:
+        candidate = f"VAC-{idx:03d}"
+        if candidate not in existing:
+            return candidate
+        idx += 1
+
+
+def _blank_vaccine_development_row(df: pd.DataFrame, first_year: int) -> Dict:
+    next_id = _next_vaccine_id(df)
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": "New vaccine",
+        "Stage": "Discovery",
+        "Success Probability %": 30.0,
+        "Consolidation": True,
+        "First year forecast": first_year,
+        "Time to market": 3,
+        "Market entry year": first_year + 3,
+        "Patent duration years": 15,
+        "End patent year": first_year + 17,
+    }
+
+
+def _blank_market_size_row(df: pd.DataFrame) -> Dict:
+    next_id = _next_vaccine_id(df)
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": "New vaccine",
+        "Market size (# customers)": 1_000_000,
+        "Average spend (USD/customer)": 100.0,
+        "Serviceable Available Market (% TAM)": 50.0,
+        "Serviceable Available Market (% Market size)": 40.0,
+        "Serviceable Obtainable Market (%)": 20.0,
+    }
+
+
+def _blank_vaccine_revenue_row(df: pd.DataFrame) -> Dict:
+    next_id = _next_vaccine_id(df)
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": "New vaccine",
+        "Patent customers per year": 1_000_000,
+        "Patent price (USD/customer)": 50.0,
+        "Post patent customer adj. %": 80.0,
+        "Post patent price adj. %": 85.0,
+    }
+
+
+def _blank_vaccine_cost_row(df: pd.DataFrame) -> Dict:
+    next_id = _next_vaccine_id(df)
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": "New vaccine",
+        "COGS patent % of sales": 30.0,
+        "COGS post % of sales": 45.0,
+        "Marketing annual % of sales": 15.0,
+        "Marketing launch cost (USD)": 10_000_000,
+        "Indirect staff cost (USD)": 5_000_000,
+        "Electricity (USD)": 1_000_000,
+        "Depreciation (USD)": 2_000_000,
+        "Interest & amortization (USD)": 1_000_000,
+        "Royalties cost % of sales": 3.0,
+    }
+
+
+def _blank_vaccine_rd_row(df: pd.DataFrame) -> Dict:
+    next_id = _next_vaccine_id(df)
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": "New vaccine",
+        "Cost accounting (capitalisation)": "50% capitalised",
+        "Pre-GTM spent to date (USD)": 20_000_000,
+        "Pre-GTM remaining (USD)": 10_000_000,
+        "Post-GTM annual cost (USD/year)": 5_000_000,
+    }
+
+
+def _blank_vaccine_capex_row(df: pd.DataFrame) -> Dict:
+    next_id = _next_vaccine_id(df)
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": "New vaccine",
+        "Pre-GTM capex spent (USD)": 10_000_000,
+        "Pre-GTM capex remaining (USD)": 5_000_000,
+        "Post-GTM yearly capex (USD)": 2_000_000,
+    }
+
+
+def _blank_vaccine_royalty_row(df: pd.DataFrame) -> Dict:
+    next_id = _next_vaccine_id(df)
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": "New vaccine",
+        "Monetization model": "Licensing",
+        "Royalty rate (%)": 5.0,
+    }
+
+
+def _blank_vaccine_market_share_row(df: pd.DataFrame) -> Dict:
+    next_id = _next_vaccine_id(df)
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": "New vaccine",
+        "Relevant market type": "New segment",
+        "Relevant market size (USD)": 1_000_000_000,
+        "Revenue target - patent %": 10.0,
+        "Revenue target - post %": 5.0,
+        "Market share patent %": 5.0,
+        "Market share post %": 3.0,
+        "Market growth %": 5.0,
+        "Sales growth %": 8.0,
+    }
+
+
+def _ensure_table_state(key: str, default_factory: Callable[[], pd.DataFrame]) -> pd.DataFrame:
+    if key not in st.session_state or st.session_state[key] is None:
+        st.session_state[key] = default_factory()
+    return st.session_state[key]
+
+
+def _format_row_label(
+    df: pd.DataFrame,
+    idx,
+    id_column: Optional[str],
+    name_column: Optional[str],
+) -> str:
+    parts: List[str] = []
+    if id_column and id_column in df.columns:
+        val = df.at[idx, id_column]
+        if pd.notna(val):
+            parts.append(str(val))
+    if name_column and name_column in df.columns:
+        val = df.at[idx, name_column]
+        if pd.notna(val):
+            parts.append(str(val))
+    if not parts:
+        pos = df.index.get_loc(idx) if idx in df.index else 0
+        parts.append(f"Row {pos + 1}")
+    return " - ".join(parts)
+
+
+def _render_row_selector(
+    df: pd.DataFrame,
+    select_key: str,
+    id_column: Optional[str],
+    name_column: Optional[str],
+) -> Optional[int]:
+    if df.empty:
+        st.caption("No rows available yet.")
+        st.session_state[select_key] = None
+        return None
+
+    options = list(df.index)
+    default_value = st.session_state.get(select_key, options[0])
+    if default_value not in options:
+        default_value = options[0]
+        st.session_state[select_key] = default_value
+
+    def _format(idx):
+        return _format_row_label(df, idx, id_column, name_column)
+
+    selected = st.selectbox(
+        "Select row",
+        options=options,
+        format_func=_format,
+        index=options.index(default_value),
+        key=select_key,
+    )
+    return selected
+
+
+def _apply_yearly_increment(
+    section_key: str,
+    df: pd.DataFrame,
+    selected_idx: Optional[int],
+) -> pd.DataFrame:
+    st.markdown("**Yearly Increment Helper**")
+    if df.empty or selected_idx is None:
+        st.caption("Select a row to apply increments.")
+        return df
+
+    numeric_cols = [
+        col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])
+    ]
+    if not numeric_cols:
+        st.caption("No numeric columns available.")
+        return df
+
+    target_col = st.selectbox(
+        "Column",
+        options=numeric_cols,
+        key=f"{section_key}_inc_col",
+    )
+    increment = st.number_input(
+        "Increment per year",
+        value=1.0,
+        step=0.1,
+        key=f"{section_key}_inc_value",
+    )
+    years = st.number_input(
+        "Years to apply",
+        min_value=1,
+        max_value=50,
+        value=1,
+        key=f"{section_key}_inc_years",
+    )
+
+    base_value = df.at[selected_idx, target_col]
+    if pd.isna(base_value):
+        base_value = 0.0
+    st.caption(f"Current value: {base_value:,.2f}")
+
+    if st.button("Apply increment", key=f"{section_key}_inc_apply", use_container_width=True):
+        df.at[selected_idx, target_col] = float(base_value) + increment * years
+        st.session_state[section_key] = df
+        st.success("Increment applied")
+    return st.session_state.get(section_key, df)
+
+
+def _render_product_assumption_table(
+    *,
+    session_key: str,
+    default_factory: Callable[[], pd.DataFrame],
+    blank_row_factory: Callable[[pd.DataFrame], Dict],
+    column_config: Optional[Dict] = None,
+    id_column: Optional[str] = "ID_vaccine",
+    name_column: Optional[str] = "Vaccine name",
+) -> pd.DataFrame:
+    df = _ensure_table_state(session_key, default_factory).copy()
+    select_key = f"{session_key}_row_select"
+    selected_idx = _render_row_selector(df, select_key, id_column, name_column)
+
+    toolbar_cols = st.columns([0.18, 0.2, 0.2, 0.42])
+    edit_key = f"{session_key}_editing"
+    editing_enabled = st.session_state.get(edit_key, True)
+    if toolbar_cols[0].button("Edit", key=f"{session_key}_edit_btn", use_container_width=True):
+        editing_enabled = not editing_enabled
+        st.session_state[edit_key] = editing_enabled
+    toolbar_cols[0].caption("On" if editing_enabled else "Off")
+
+    if toolbar_cols[1].button("Add Row", key=f"{session_key}_add_btn", use_container_width=True):
+        new_row = blank_row_factory(df.copy())
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        st.session_state[session_key] = df
+        st.session_state[select_key] = df.index[-1]
+        selected_idx = df.index[-1]
+
+    remove_disabled = df.empty or selected_idx is None
+    if toolbar_cols[2].button(
+        "Remove Row",
+        key=f"{session_key}_remove_btn",
+        use_container_width=True,
+        disabled=remove_disabled,
+    ):
+        if selected_idx is not None and selected_idx in df.index:
+            df = df.drop(index=selected_idx).reset_index(drop=True)
+            st.session_state[session_key] = df
+            st.session_state[select_key] = df.index[-1] if not df.empty else None
+            selected_idx = st.session_state[select_key]
+
+    with toolbar_cols[3]:
+        df = _apply_yearly_increment(session_key, df, selected_idx)
+
+    df = st.session_state.get(session_key, df)
+    edited_df = st.data_editor(
+        df,
+        num_rows="dynamic",
+        hide_index=True,
+        disabled=not editing_enabled,
+        key=f"{session_key}_editor",
+        column_config=column_config,
+    )
+    st.session_state[session_key] = edited_df
+    return edited_df
 
 
 def _default_ramp_schedule() -> pd.DataFrame:
@@ -765,15 +1052,10 @@ def main() -> None:
 
         st.subheader("Product assumptions")
 
-        if "vaccine_development_table" not in st.session_state:
-            st.session_state["vaccine_development_table"] = _default_vaccine_development_table(
-                int(first_year)
-            )
-        dev_df = st.data_editor(
-            st.session_state["vaccine_development_table"],
-            num_rows="dynamic",
-            hide_index=True,
-            key="dev_stage_editor",
+        dev_df = _render_product_assumption_table(
+            session_key="vaccine_development_table",
+            default_factory=lambda: _default_vaccine_development_table(int(first_year)),
+            blank_row_factory=lambda df: _blank_vaccine_development_row(df, int(first_year)),
             column_config={
                 "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
                 "Consolidation": st.column_config.CheckboxColumn("Consolidate", default=True),
@@ -808,13 +1090,10 @@ def main() -> None:
         st.caption("Track each vaccine's readiness, probability of success, and patent end year.")
 
         with st.expander("Vaccine market size estimation", expanded=True):
-            if "market_size_estimation" not in st.session_state:
-                st.session_state["market_size_estimation"] = _default_market_size_estimation_table()
-            market_size_df = st.data_editor(
-                st.session_state["market_size_estimation"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="market_size_editor",
+            market_size_df = _render_product_assumption_table(
+                session_key="market_size_estimation",
+                default_factory=_default_market_size_estimation_table,
+                blank_row_factory=_blank_market_size_row,
             )
             market_size = _coerce_numeric(market_size_df.get("Market size (# customers)", pd.Series(dtype=float)))
             avg_spend = _coerce_numeric(
@@ -849,13 +1128,10 @@ def main() -> None:
             )
 
         with st.expander("Vaccines revenue estimation", expanded=True):
-            if "vaccine_revenue_table" not in st.session_state:
-                st.session_state["vaccine_revenue_table"] = _default_vaccine_revenue_table()
-            revenue_df = st.data_editor(
-                st.session_state["vaccine_revenue_table"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="revenue_estimation_editor",
+            revenue_df = _render_product_assumption_table(
+                session_key="vaccine_revenue_table",
+                default_factory=_default_vaccine_revenue_table,
+                blank_row_factory=_blank_vaccine_revenue_row,
             )
             patent_customers = _coerce_numeric(
                 revenue_df.get("Patent customers per year", pd.Series(dtype=float))
@@ -905,13 +1181,10 @@ def main() -> None:
             )
 
         with st.expander("Vaccine cost assumptions", expanded=True):
-            if "vaccine_cost_table" not in st.session_state:
-                st.session_state["vaccine_cost_table"] = _default_vaccine_cost_table()
-            cost_df = st.data_editor(
-                st.session_state["vaccine_cost_table"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="cost_assumption_editor",
+            cost_df = _render_product_assumption_table(
+                session_key="vaccine_cost_table",
+                default_factory=_default_vaccine_cost_table,
+                blank_row_factory=_blank_vaccine_cost_row,
             )
             cogs_patent = _coerce_numeric(cost_df.get("COGS patent % of sales", pd.Series(dtype=float)))
             cogs_post = _coerce_numeric(cost_df.get("COGS post % of sales", pd.Series(dtype=float)))
@@ -958,13 +1231,10 @@ def main() -> None:
             st.dataframe(cost_display.style.format({**percent_fmt, **currency_fmt}))
 
         with st.expander("Vaccines research & development (R&D)", expanded=True):
-            if "vaccine_rd_table" not in st.session_state:
-                st.session_state["vaccine_rd_table"] = _default_vaccine_rd_table()
-            rd_df = st.data_editor(
-                st.session_state["vaccine_rd_table"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="rd_editor",
+            rd_df = _render_product_assumption_table(
+                session_key="vaccine_rd_table",
+                default_factory=_default_vaccine_rd_table,
+                blank_row_factory=_blank_vaccine_rd_row,
             )
             rd_df["Pre-GTM total (USD)"] = _coerce_numeric(
                 rd_df.get("Pre-GTM spent to date (USD)", pd.Series(dtype=float))
@@ -989,13 +1259,10 @@ def main() -> None:
             st.dataframe(rd_display.style.format(rd_fmt))
 
         with st.expander("Vaccine CAPEX assumptions", expanded=True):
-            if "vaccine_capex_table" not in st.session_state:
-                st.session_state["vaccine_capex_table"] = _default_vaccine_capex_table()
-            capex_df = st.data_editor(
-                st.session_state["vaccine_capex_table"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="capex_editor",
+            capex_df = _render_product_assumption_table(
+                session_key="vaccine_capex_table",
+                default_factory=_default_vaccine_capex_table,
+                blank_row_factory=_blank_vaccine_capex_row,
             )
             capex_df["Total Pre-GTM capex (USD)"] = _coerce_numeric(
                 capex_df.get("Pre-GTM capex spent (USD)", pd.Series(dtype=float))
@@ -1019,13 +1286,10 @@ def main() -> None:
             st.dataframe(capex_display.style.format(capex_fmt))
 
         with st.expander("Vaccines royalty revenues", expanded=True):
-            if "vaccine_royalty_table" not in st.session_state:
-                st.session_state["vaccine_royalty_table"] = _default_royalty_table()
-            royalty_df = st.data_editor(
-                st.session_state["vaccine_royalty_table"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="royalty_editor",
+            royalty_df = _render_product_assumption_table(
+                session_key="vaccine_royalty_table",
+                default_factory=_default_royalty_table,
+                blank_row_factory=_blank_vaccine_royalty_row,
                 column_config={
                     "Monetization model": st.column_config.SelectboxColumn(
                         "Monetization model", options=["Product Sale", "Licensing"]
@@ -1061,13 +1325,10 @@ def main() -> None:
             )
 
         with st.expander("Vaccines market share", expanded=True):
-            if "vaccine_market_share_table" not in st.session_state:
-                st.session_state["vaccine_market_share_table"] = _default_market_share_table()
-            market_share_df = st.data_editor(
-                st.session_state["vaccine_market_share_table"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="market_share_editor",
+            market_share_df = _render_product_assumption_table(
+                session_key="vaccine_market_share_table",
+                default_factory=_default_market_share_table,
+                blank_row_factory=_blank_vaccine_market_share_row,
             )
             relevant_market = _coerce_numeric(
                 market_share_df.get("Relevant market size (USD)", pd.Series(dtype=float))
@@ -1104,57 +1365,10 @@ def main() -> None:
                 })
             )
 
-        if "product_table" not in st.session_state:
-            st.session_state["product_table"] = _default_products()
-
-        product_toolbar = st.columns([0.22, 0.33, 0.45])
-        with product_toolbar[0]:
-            edit_enabled = st.toggle(
-                "Edit rows",
-                value=st.session_state.get("product_edit_enabled", True),
-                key="product_edit_toggle",
-            )
-            st.session_state["product_edit_enabled"] = edit_enabled
-
-        with product_toolbar[1]:
-            new_name = st.text_input(
-                "New product name",
-                value="New vaccine",
-                key="product_new_name",
-            )
-            if st.button("Add row", use_container_width=True):
-                # Append a template row whenever the analyst adds a new vaccine.
-                df = st.session_state["product_table"].copy()
-                default_row = _blank_product_row(new_name or f"Product {len(df) + 1}")
-                df = pd.concat([df, pd.DataFrame([default_row])], ignore_index=True)
-                st.session_state["product_table"] = df
-
-        with product_toolbar[2]:
-            df = st.session_state["product_table"].copy()
-            if df.empty:
-                st.caption("No products to remove.")
-            else:
-                removal_options = list(range(len(df)))
-                remove_labels = [
-                    f"{idx + 1}. {df.loc[idx, 'name'] or 'Unnamed'}" for idx in removal_options
-                ]
-                selected_idx = st.selectbox(
-                    "Select product to remove",
-                    options=removal_options,
-                    format_func=lambda i, labels=remove_labels: labels[i],
-                    key="product_remove_idx",
-                )
-                if st.button("Remove row", use_container_width=True):
-                    # Drop the chosen product while keeping other rows intact.
-                    df = df.drop(df.index[selected_idx]).reset_index(drop=True)
-                    st.session_state["product_table"] = df
-
-        product_df = st.data_editor(
-            st.session_state["product_table"],
-            num_rows="dynamic",
-            hide_index=True,
-            disabled=not st.session_state.get("product_edit_enabled", True),
-            key="product_editor",
+        product_df = _render_product_assumption_table(
+            session_key="product_table",
+            default_factory=_default_products,
+            blank_row_factory=lambda df: _blank_product_row(f"Product {len(df) + 1}"),
             column_config={
                 "stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
                 "include_in_consolidation": st.column_config.CheckboxColumn("Include", default=True),
@@ -1162,6 +1376,8 @@ def main() -> None:
                     "Success probability", min_value=0.0, max_value=1.0, step=0.05
                 ),
             },
+            id_column=None,
+            name_column="name",
         )
         product_df = _validate_product_df(product_df)
         st.session_state["product_table"] = product_df
