@@ -122,12 +122,41 @@ def _default_vaccine_sales_table(first_year: int = 2024) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
+    next_year = first_year
+    if "Year" in df.columns and not df.empty:
+        with pd.option_context("mode.use_inf_as_na", True):
+            existing_years = pd.to_numeric(df["Year"], errors="coerce").dropna()
+        if not existing_years.empty:
+            next_year = int(existing_years.max()) + 1
+    doses = 5.0
+    price = 25.0
+    if "Doses (M)" in df.columns and not df.empty:
+        last_doses = pd.to_numeric(df["Doses (M)"], errors="coerce").dropna()
+        if not last_doses.empty:
+            doses = float(last_doses.iloc[-1])
+    if "Price per dose" in df.columns and not df.empty:
+        last_price = pd.to_numeric(df["Price per dose"], errors="coerce").dropna()
+        if not last_price.empty:
+            price = float(last_price.iloc[-1])
+    return {
+        "Year": next_year,
+        "Doses (M)": doses,
+        "Price per dose": price,
+        "Comments": "",
+    }
+
+
 def _default_uses_table() -> pd.DataFrame:
     data = [
         {"Item": "Clinical trials", "Amount": 150_000_000},
         {"Item": "Manufacturing scale-up", "Amount": 90_000_000},
     ]
     return pd.DataFrame(data)
+
+
+def _blank_use_row(df: pd.DataFrame) -> Dict:
+    return {"Item": "New use", "Amount": 0.0}
 
 
 def _default_sources_table() -> pd.DataFrame:
@@ -138,6 +167,10 @@ def _default_sources_table() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _blank_source_row(df: pd.DataFrame) -> Dict:
+    return {"Item": "New source", "Amount": 0.0}
+
+
 def _default_shareholders_table() -> pd.DataFrame:
     data = [
         {"Shareholder": "Founders", "Ownership %": 0.35, "Investment": 25_000_000},
@@ -146,12 +179,20 @@ def _default_shareholders_table() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _blank_shareholder_row(df: pd.DataFrame) -> Dict:
+    return {"Shareholder": "New investor", "Ownership %": 0.05, "Investment": 0.0}
+
+
 def _default_market_sizes_table() -> pd.DataFrame:
     data = [
         {"Segment": "Global vaccine market", "Value": 80_000_000_000},
         {"Segment": "Target indication", "Value": 12_000_000_000},
     ]
     return pd.DataFrame(data)
+
+
+def _blank_relevant_market_row(df: pd.DataFrame) -> Dict:
+    return {"Segment": "New segment", "Value": 1_000_000}
 
 
 def _default_vaccine_development_table(first_year: int = 2024) -> pd.DataFrame:
@@ -1068,13 +1109,19 @@ def main() -> None:
             st.caption("Ramp factors feed revenue build-ups across every product.")
 
         with st.expander("Vaccine sales"):
-            if "vaccine_sales_table" not in st.session_state:
-                st.session_state["vaccine_sales_table"] = _default_vaccine_sales_table(int(first_year))
-            vaccine_df = st.data_editor(
-                st.session_state["vaccine_sales_table"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="vaccine_sales_editor",
+            vaccine_df = _render_product_assumption_table(
+                session_key="vaccine_sales_table",
+                default_factory=lambda: _default_vaccine_sales_table(int(first_year)),
+                blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
+                id_column=None,
+                name_column="Year",
+                column_config={
+                    "Year": st.column_config.NumberColumn("Year", step=1),
+                    "Doses (M)": st.column_config.NumberColumn("Doses (M)", min_value=0.0, step=0.5),
+                    "Price per dose": st.column_config.NumberColumn(
+                        "Price per dose", min_value=0.0, step=1.0
+                    ),
+                },
             )
             doses = pd.to_numeric(vaccine_df.get("Doses (M)", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
             price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
@@ -1084,30 +1131,32 @@ def main() -> None:
 
         with st.expander("Uses and sources of funds"):
             uses_col, sources_col = st.columns(2)
-            if "uses_table" not in st.session_state:
-                st.session_state["uses_table"] = _default_uses_table()
-            if "sources_table" not in st.session_state:
-                st.session_state["sources_table"] = _default_sources_table()
             with uses_col:
                 st.markdown("**Uses**")
-                uses_df = st.data_editor(
-                    st.session_state["uses_table"],
-                    num_rows="dynamic",
-                    hide_index=True,
-                    key="uses_editor",
+                uses_df = _render_product_assumption_table(
+                    session_key="uses_table",
+                    default_factory=_default_uses_table,
+                    blank_row_factory=_blank_use_row,
+                    id_column=None,
+                    name_column="Item",
+                    column_config={
+                        "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
+                    },
                 )
-                st.session_state["uses_table"] = uses_df
                 uses_total = float(uses_df.get("Amount", pd.Series(dtype=float)).sum())
                 st.metric("Total uses", f"{uses_total:,.0f}")
             with sources_col:
                 st.markdown("**Sources**")
-                sources_df = st.data_editor(
-                    st.session_state["sources_table"],
-                    num_rows="dynamic",
-                    hide_index=True,
-                    key="sources_editor",
+                sources_df = _render_product_assumption_table(
+                    session_key="sources_table",
+                    default_factory=_default_sources_table,
+                    blank_row_factory=_blank_source_row,
+                    id_column=None,
+                    name_column="Item",
+                    column_config={
+                        "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
+                    },
                 )
-                st.session_state["sources_table"] = sources_df
                 sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
                 st.metric("Total sources", f"{sources_total:,.0f}")
             delta = sources_total - uses_total
@@ -1131,30 +1180,32 @@ def main() -> None:
             )
 
         with st.expander("Shareholders / Investors"):
-            if "shareholders_table" not in st.session_state:
-                st.session_state["shareholders_table"] = _default_shareholders_table()
-            shareholders_df = st.data_editor(
-                st.session_state["shareholders_table"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="shareholders_editor",
+            shareholders_df = _render_product_assumption_table(
+                session_key="shareholders_table",
+                default_factory=_default_shareholders_table,
+                blank_row_factory=_blank_shareholder_row,
+                id_column=None,
+                name_column="Shareholder",
                 column_config={
-                    "Ownership %": st.column_config.NumberColumn("Ownership %", min_value=0.0, max_value=1.0, step=0.01),
+                    "Ownership %": st.column_config.NumberColumn(
+                        "Ownership %", min_value=0.0, max_value=1.0, step=0.01
+                    ),
+                    "Investment": st.column_config.NumberColumn("Investment", step=1_000_000.0),
                 },
             )
-            st.session_state["shareholders_table"] = shareholders_df
             st.metric("Total ownership reported", f"{shareholders_df['Ownership %'].sum():.0%}")
 
         with st.expander("Relevant market sizes"):
-            if "market_sizes_table" not in st.session_state:
-                st.session_state["market_sizes_table"] = _default_market_sizes_table()
-            market_df = st.data_editor(
-                st.session_state["market_sizes_table"],
-                num_rows="dynamic",
-                hide_index=True,
-                key="market_editor",
+            market_df = _render_product_assumption_table(
+                session_key="market_sizes_table",
+                default_factory=_default_market_sizes_table,
+                blank_row_factory=_blank_relevant_market_row,
+                id_column=None,
+                name_column="Segment",
+                column_config={
+                    "Value": st.column_config.NumberColumn("Value", step=1_000_000.0),
+                },
             )
-            st.session_state["market_sizes_table"] = market_df
 
         with st.expander("New equity issued"):
             new_equity = st.number_input(
