@@ -582,6 +582,154 @@ def _apply_yearly_increment(
     return st.session_state.get(section_key, df)
 
 
+def _widget_value(label: str, value, key: str):
+    """Render an input widget based on the inferred data type of ``value``."""
+
+    label_lower = label.lower()
+    if label == "Stage":
+        current = value if value in STAGE_OPTIONS else STAGE_OPTIONS[0]
+        return st.selectbox(label, options=STAGE_OPTIONS, index=STAGE_OPTIONS.index(current), key=key)
+
+    bool_like = isinstance(value, (bool, np.bool_)) or label_lower in {
+        "include_in_consolidation",
+        "consolidation",
+    }
+    if bool_like:
+        return st.checkbox(label, value=bool(value), key=key)
+
+    # Treat missing numeric values as zero for editing convenience.
+    numeric_like = isinstance(value, (int, float, np.number)) or (
+        isinstance(value, str) and value.strip().replace(".", "", 1).isdigit()
+    )
+    if numeric_like:
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            numeric_value = 0.0
+        min_value: Optional[float] = None
+        max_value: Optional[float] = None
+        step = 0.1 if abs(numeric_value) < 1 else 1.0
+        if "%" in label or "prob" in label_lower or "growth" in label_lower or "share" in label_lower:
+            min_value = 0.0
+        if "%" in label or "prob" in label_lower or "probability" in label_lower:
+            max_value = 100.0
+        kwargs = {"value": float(numeric_value), "step": step, "key": key}
+        if min_value is not None:
+            kwargs["min_value"] = float(min_value)
+        if max_value is not None:
+            kwargs["max_value"] = float(max_value)
+        return st.number_input(label, **kwargs)
+
+    safe_value = "" if value is None or (isinstance(value, float) and pd.isna(value)) else str(value)
+    return st.text_input(label, value=safe_value, key=key)
+
+
+def _render_row_form(
+    *,
+    section_key: str,
+    form_key: str,
+    title: str,
+    columns: List[str],
+    initial_values: Dict,
+    submit_label: str,
+) -> Optional[Dict]:
+    """Generic helper that renders a form for editing/adding a row."""
+
+    with st.form(f"{section_key}_{form_key}"):
+        st.caption(title)
+        new_values: Dict = {}
+        for col in columns:
+            val = initial_values.get(col, "")
+            widget_key = f"{section_key}_{form_key}_{col}"
+            new_values[col] = _widget_value(col, val, widget_key)
+        submitted = st.form_submit_button(submit_label, use_container_width=True)
+    if submitted:
+        return new_values
+    return None
+
+
+def _edit_selected_row(
+    section_key: str,
+    df: pd.DataFrame,
+    selected_idx: Optional[int],
+) -> pd.DataFrame:
+    """Allow inline editing of the currently selected row."""
+
+    if df.empty or selected_idx is None:
+        st.caption("Select a row to edit.")
+        return df
+
+    columns = list(df.columns)
+    initial_values = df.loc[selected_idx].to_dict()
+    edited_values = _render_row_form(
+        section_key=section_key,
+        form_key="edit",
+        title="Edit selected row",
+        columns=columns,
+        initial_values=initial_values,
+        submit_label="Save changes",
+    )
+    if edited_values is not None:
+        for col, val in edited_values.items():
+            df.at[selected_idx, col] = val
+        st.session_state[section_key] = df
+        st.success("Row updated")
+    return st.session_state.get(section_key, df)
+
+
+def _add_row_via_form(
+    section_key: str,
+    df: pd.DataFrame,
+    blank_row_factory: Callable[[pd.DataFrame], Dict],
+    select_key: str,
+) -> pd.DataFrame:
+    """Render an add-row form so users can insert new entries with custom values."""
+
+    template_row = blank_row_factory(df.copy())
+    columns = list(df.columns) if not df.empty else list(template_row.keys())
+    initial_values = {col: template_row.get(col, "") for col in columns}
+    new_row = _render_row_form(
+        section_key=section_key,
+        form_key="add",
+        title="Add a new row",
+        columns=columns,
+        initial_values=initial_values,
+        submit_label="Add row",
+    )
+    if new_row is not None:
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        st.session_state[section_key] = df
+        st.session_state[select_key] = df.index[-1]
+        st.success("Row added")
+    return st.session_state.get(section_key, df)
+
+
+def _remove_selected_row(
+    section_key: str,
+    df: pd.DataFrame,
+    selected_idx: Optional[int],
+    select_key: str,
+) -> pd.DataFrame:
+    """Delete the selected row when the user confirms the removal."""
+
+    disabled = df.empty or selected_idx is None or selected_idx not in df.index
+    if st.button(
+        "Remove row",
+        key=f"{section_key}_remove",
+        use_container_width=True,
+        disabled=disabled,
+    ):
+        if selected_idx is not None and selected_idx in df.index:
+            df = df.drop(index=selected_idx).reset_index(drop=True)
+            st.session_state[section_key] = df
+            if not df.empty:
+                st.session_state[select_key] = df.index[-1]
+            else:
+                st.session_state[select_key] = None
+            st.success("Row removed")
+    return st.session_state.get(section_key, df)
+
+
 def _render_product_assumption_table(
     *,
     session_key: str,
@@ -595,35 +743,17 @@ def _render_product_assumption_table(
     select_key = f"{session_key}_row_select"
     selected_idx = _render_row_selector(df, select_key, id_column, name_column)
 
-    toolbar_cols = st.columns([0.18, 0.2, 0.2, 0.42])
-    edit_key = f"{session_key}_editing"
-    editing_enabled = st.session_state.get(edit_key, True)
-    if toolbar_cols[0].button("Edit", key=f"{session_key}_edit_btn", use_container_width=True):
-        editing_enabled = not editing_enabled
-        st.session_state[edit_key] = editing_enabled
-    toolbar_cols[0].caption("On" if editing_enabled else "Off")
-
-    if toolbar_cols[1].button("Add Row", key=f"{session_key}_add_btn", use_container_width=True):
-        new_row = blank_row_factory(df.copy())
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        st.session_state[session_key] = df
-        st.session_state[select_key] = df.index[-1]
-        selected_idx = df.index[-1]
-
-    remove_disabled = df.empty or selected_idx is None
-    if toolbar_cols[2].button(
-        "Remove Row",
-        key=f"{session_key}_remove_btn",
-        use_container_width=True,
-        disabled=remove_disabled,
-    ):
-        if selected_idx is not None and selected_idx in df.index:
-            df = df.drop(index=selected_idx).reset_index(drop=True)
-            st.session_state[session_key] = df
-            st.session_state[select_key] = df.index[-1] if not df.empty else None
-            selected_idx = st.session_state[select_key]
-
-    with toolbar_cols[3]:
+    action_cols = st.columns(4)
+    with action_cols[0]:
+        df = _edit_selected_row(session_key, df, selected_idx)
+        selected_idx = st.session_state.get(select_key, selected_idx)
+    with action_cols[1]:
+        df = _add_row_via_form(session_key, df, blank_row_factory, select_key)
+        selected_idx = st.session_state.get(select_key, selected_idx)
+    with action_cols[2]:
+        df = _remove_selected_row(session_key, df, selected_idx, select_key)
+        selected_idx = st.session_state.get(select_key, selected_idx)
+    with action_cols[3]:
         df = _apply_yearly_increment(session_key, df, selected_idx)
 
     df = st.session_state.get(session_key, df)
@@ -631,7 +761,6 @@ def _render_product_assumption_table(
         df,
         num_rows="dynamic",
         hide_index=True,
-        disabled=not editing_enabled,
         key=f"{session_key}_editor",
         column_config=column_config,
     )
