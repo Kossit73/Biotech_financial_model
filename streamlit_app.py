@@ -1951,8 +1951,13 @@ def main() -> None:
                 f"Run complete: portfolio rNPV = {valuation_result.rnpv:,.0f} {model_cfg.currency}."
             )
 
+    with financial_tab:
+        st.subheader("Financial statements")
+        if valuation_result is None or model_cfg is None:
+            st.info("Run the model configuration tab to populate the statements.")
+        else:
+            cons = valuation_result.consolidated
             with st.expander("Consolidated forecast", expanded=True):
-                cons = valuation_result.consolidated.copy()
                 cons_display = cons[["revenue", "ebitda", "fcff_after_wc"]].copy()
                 cons_display.columns = ["Revenue", "EBITDA", "FCFF after WC"]
                 st.dataframe(
@@ -1965,12 +1970,6 @@ def main() -> None:
                     )
                 )
                 st.line_chart(cons_display)
-    with financial_tab:
-        st.subheader("Financial statements")
-        if valuation_result is None or model_cfg is None:
-            st.info("Run the model configuration tab to populate the statements.")
-        else:
-            cons = valuation_result.consolidated
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
             st.markdown("**Statement of Financial Performance**")
             st.dataframe(
