@@ -1484,6 +1484,7 @@ def _cluster_products(val_result) -> Optional[pd.DataFrame]:
     names, data = zip(*[(r[0], r[1:]) for r in rows])
     scaler = StandardScaler() if StandardScaler else None
     matrix = np.array(data, dtype=float)
+    matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
     if scaler is not None:
         matrix = scaler.fit_transform(matrix)
     n_clusters = min(3, len(matrix))
