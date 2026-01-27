@@ -1509,25 +1509,31 @@ def _render_rag_assistant_page() -> None:
         "a report that highlights risks, catalysts, and valuation proof points."
     )
 
-    hero_cols = st.columns([2, 1])
-    with hero_cols[0]:
-        st.markdown("### What you can do")
-        st.markdown(
-            "- **Capture a model snapshot** with key KPIs and scenario outputs.\n"
-            "- **Ingest evidence packs** (clinical readouts, market research, diligence).\n"
-            "- **Generate a feasibility report** with citations and risk callouts."
-        )
-    with hero_cols[1]:
-        st.markdown("### Readiness checklist")
-        st.metric("Model snapshot", "Ready")
-        st.metric("Evidence library", "Awaiting upload")
-        st.metric("Report draft", "Not generated")
+    with st.container(border=True):
+        hero_cols = st.columns([2, 1])
+        with hero_cols[0]:
+            st.markdown("### What you can do")
+            st.markdown(
+                "- **Capture a model snapshot** with key KPIs and scenario outputs.\n"
+                "- **Ingest evidence packs** (clinical readouts, market research, diligence).\n"
+                "- **Generate a feasibility report** with citations and risk callouts."
+            )
+            st.markdown("**Best for:** investor memos, internal IC reviews, and diligence briefs.")
+        with hero_cols[1]:
+            st.markdown("### Readiness checklist")
+            st.metric("Model snapshot", "Ready")
+            st.metric("Evidence library", "Awaiting upload")
+            st.metric("Report draft", "Not generated")
 
     st.markdown("### Launch plan")
     step_cols = st.columns(3)
     step_cols[0].markdown("**1. Collect**\n\nSend the financial snapshot to the `/collect` endpoint.")
     step_cols[1].markdown("**2. Ingest**\n\nUpload supporting documents to `/ingest`.")
     step_cols[2].markdown("**3. Generate**\n\nTrigger `/generate` to build `report.md`.")
+    st.info(
+        "Once the report is generated, the assistant can summarize risks, highlight catalysts, "
+        "and trace each claim back to a supporting document."
+    )
 
     with st.expander("View sample snapshot payload", expanded=False):
         snapshot_payload = {
