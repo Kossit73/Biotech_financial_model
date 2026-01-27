@@ -573,6 +573,10 @@ def _render_row_selector(
     id_column: Optional[str],
     name_column: Optional[str],
 ) -> Optional[int]:
+    pending_key = f"{select_key}_pending"
+    if pending_key in st.session_state:
+        st.session_state[select_key] = st.session_state.pop(pending_key)
+
     if df.empty:
         st.caption("No rows available yet.")
         st.session_state[select_key] = None
@@ -762,7 +766,7 @@ def _add_row_via_form(
     if new_row is not None:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         st.session_state[section_key] = df
-        st.session_state[select_key] = df.index[-1]
+        st.session_state[f"{select_key}_pending"] = df.index[-1]
         st.success("Row added")
     return st.session_state.get(section_key, df)
 
@@ -786,9 +790,9 @@ def _remove_selected_row(
             df = df.drop(index=selected_idx).reset_index(drop=True)
             st.session_state[section_key] = df
             if not df.empty:
-                st.session_state[select_key] = df.index[-1]
+                st.session_state[f"{select_key}_pending"] = df.index[-1]
             else:
-                st.session_state[select_key] = None
+                st.session_state[f"{select_key}_pending"] = None
             st.success("Row removed")
     return st.session_state.get(section_key, df)
 
