@@ -567,26 +567,93 @@ def _format_row_label(
     return " - ".join(parts)
 
 
+def _pending_selection_key(select_key: str) -> str:
+    return f"{select_key}_pending"
+
+
+def _set_pending_selection(select_key: str, value: Optional[object]) -> None:
+    st.session_state[_pending_selection_key(select_key)] = value
+
+
+def _consume_pending_selection(select_key: str) -> Optional[object]:
+    pending_key = _pending_selection_key(select_key)
+    if pending_key in st.session_state:
+        value = st.session_state.pop(pending_key)
+        st.session_state[select_key] = value
+        return value
+    return None
+
+
+def _row_identifier(df: pd.DataFrame, idx: int, id_column: Optional[str]) -> object:
+    if id_column and id_column in df.columns:
+        value = df.at[idx, id_column]
+        if pd.isna(value):
+            return idx
+        return value
+    return idx
+
+
+def _resolve_selected_index(
+    df: pd.DataFrame,
+    select_key: str,
+    id_column: Optional[str],
+) -> Optional[int]:
+    if df.empty:
+        return None
+
+    selected_id = st.session_state.get(select_key)
+    if id_column and id_column in df.columns and selected_id is not None:
+        matches = df.index[df[id_column] == selected_id]
+        if len(matches):
+            return matches[0]
+
+    if selected_id in df.index:
+        return selected_id
+    return df.index[0]
+
+
+def _validate_selection(
+    df: pd.DataFrame,
+    select_key: str,
+    id_column: Optional[str],
+) -> None:
+    if df.empty:
+        _set_pending_selection(select_key, None)
+        return
+
+    selected_idx = _resolve_selected_index(df, select_key, id_column)
+    if selected_idx is None:
+        _set_pending_selection(select_key, _row_identifier(df, df.index[0], id_column))
+        return
+
+    selected_id = _row_identifier(df, selected_idx, id_column)
+    if selected_id != st.session_state.get(select_key):
+        _set_pending_selection(select_key, selected_id)
+
+
 def _render_row_selector(
     df: pd.DataFrame,
     select_key: str,
     id_column: Optional[str],
     name_column: Optional[str],
 ) -> Optional[int]:
-    pending_key = f"{select_key}_pending"
-    if pending_key in st.session_state:
-        st.session_state[select_key] = st.session_state.pop(pending_key)
+    widget_key = f"{select_key}_widget"
+    _consume_pending_selection(select_key)
 
     if df.empty:
         st.caption("No rows available yet.")
         st.session_state[select_key] = None
+        st.session_state.pop(_pending_selection_key(select_key), None)
+        st.session_state.pop(widget_key, None)
         return None
 
     options = list(df.index)
-    default_value = st.session_state.get(select_key, options[0])
-    if default_value not in options:
-        default_value = options[0]
-        st.session_state[select_key] = default_value
+    default_idx = _resolve_selected_index(df, select_key, id_column)
+    if default_idx is None or default_idx not in options:
+        default_idx = options[0]
+    default_id = _row_identifier(df, default_idx, id_column)
+    if default_id != st.session_state.get(select_key):
+        st.session_state[select_key] = default_id
 
     def _format(idx):
         return _format_row_label(df, idx, id_column, name_column)
@@ -595,9 +662,10 @@ def _render_row_selector(
         "Select row",
         options=options,
         format_func=_format,
-        index=options.index(default_value),
-        key=select_key,
+        index=options.index(default_idx),
+        key=widget_key,
     )
+    st.session_state[select_key] = _row_identifier(df, selected, id_column)
     return selected
 
 
@@ -749,6 +817,7 @@ def _add_row_via_form(
     df: pd.DataFrame,
     blank_row_factory: Callable[[pd.DataFrame], Dict],
     select_key: str,
+    id_column: Optional[str],
 ) -> pd.DataFrame:
     """Render an add-row form so users can insert new entries with custom values."""
 
@@ -766,7 +835,7 @@ def _add_row_via_form(
     if new_row is not None:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         st.session_state[section_key] = df
-        st.session_state[f"{select_key}_pending"] = df.index[-1]
+        _set_pending_selection(select_key, _row_identifier(df, df.index[-1], id_column))
         st.success("Row added")
     return st.session_state.get(section_key, df)
 
@@ -776,6 +845,7 @@ def _remove_selected_row(
     df: pd.DataFrame,
     selected_idx: Optional[int],
     select_key: str,
+    id_column: Optional[str],
 ) -> pd.DataFrame:
     """Delete the selected row when the user confirms the removal."""
 
@@ -790,9 +860,9 @@ def _remove_selected_row(
             df = df.drop(index=selected_idx).reset_index(drop=True)
             st.session_state[section_key] = df
             if not df.empty:
-                st.session_state[f"{select_key}_pending"] = df.index[-1]
+                _set_pending_selection(select_key, _row_identifier(df, df.index[-1], id_column))
             else:
-                st.session_state[f"{select_key}_pending"] = None
+                _set_pending_selection(select_key, None)
             st.success("Row removed")
     return st.session_state.get(section_key, df)
 
@@ -813,13 +883,10 @@ def _render_product_assumption_table(
     action_cols = st.columns(4)
     with action_cols[0]:
         df = _edit_selected_row(session_key, df, selected_idx)
-        selected_idx = st.session_state.get(select_key, selected_idx)
     with action_cols[1]:
-        df = _add_row_via_form(session_key, df, blank_row_factory, select_key)
-        selected_idx = st.session_state.get(select_key, selected_idx)
+        df = _add_row_via_form(session_key, df, blank_row_factory, select_key, id_column)
     with action_cols[2]:
-        df = _remove_selected_row(session_key, df, selected_idx, select_key)
-        selected_idx = st.session_state.get(select_key, selected_idx)
+        df = _remove_selected_row(session_key, df, selected_idx, select_key, id_column)
     with action_cols[3]:
         df = _apply_yearly_increment(session_key, df, selected_idx)
 
@@ -832,6 +899,7 @@ def _render_product_assumption_table(
         column_config=column_config,
     )
     st.session_state[session_key] = edited_df
+    _validate_selection(edited_df, select_key, id_column)
     return edited_df
 
 
