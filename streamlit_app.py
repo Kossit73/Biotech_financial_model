@@ -1598,7 +1598,7 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="collapsed",
     )
-    st.title("Biotech Valuation Sandbox")
+    st.title("Biotech")
     st.write(
         "Configure a portfolio, run discounted cash flow valuations, and explore VC "
         "method estimates or stress scenarios."
