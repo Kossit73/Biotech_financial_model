@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, fields
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -1499,6 +1500,67 @@ def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
     pred = model.predict(features.values)
     return pd.DataFrame({"Year": cons.index, "Predicted multiple": pred})
 
+
+def _render_rag_assistant_page() -> None:
+    st.subheader("RAG Assistant")
+    st.write(
+        "Use the RAG service to ingest supporting documents, capture the model snapshot, "
+        "and generate a feasibility study grounded in both the workbook and evidence library."
+    )
+
+    st.markdown("### Workflow")
+    st.markdown(
+        "1. **Collect model outputs** → `POST /collect` with the financial snapshot.\n"
+        "2. **Ingest evidence** → `POST /ingest` with up to 1 GB of files.\n"
+        "3. **Generate report** → `POST /generate` to create `report.md`."
+    )
+
+    st.markdown("### Sample snapshot payload")
+    snapshot_payload = {
+        "project_id": "example-project",
+        "financial_snapshot": {
+            "currency": "USD",
+            "npv": 54000000,
+            "irr": 0.19,
+            "dscr_min": 1.35,
+            "payback_years": 5.6,
+            "capex_total": 120000000,
+            "opex_annual": 8500000,
+            "revenue_annual": 23500000,
+            "scenarios": [
+                {"name": "Base", "npv": 54000000, "irr": 0.19},
+                {"name": "Downside", "npv": 30000000, "irr": 0.14},
+                {"name": "Upside", "npv": 78000000, "irr": 0.24},
+            ],
+        },
+        "cell_map": {
+            "npv": "Assumptions!B12",
+            "irr": "Assumptions!B13",
+            "dscr_min": "Debt!F22",
+        },
+        "workbook_hash": "sha256-hash-here",
+    }
+    st.code(snapshot_payload, language="json")
+    st.download_button(
+        "Download sample JSON",
+        data=json.dumps(snapshot_payload, indent=2),
+        file_name="rag_snapshot_sample.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
+    st.markdown("### Service endpoints")
+    st.code(
+        "\n".join(
+            [
+                "POST http://<rag-host>/collect",
+                "POST http://<rag-host>/ingest",
+                "POST http://<rag-host>/generate",
+            ]
+        ),
+        language="bash",
+    )
+
 def main() -> None:
     st.set_page_config(
         page_title="Biotech Financial Model",
@@ -1522,6 +1584,7 @@ def main() -> None:
         analytics_tab,
         scenario_tab,
         vc_tab,
+        rag_tab,
     ) = st.tabs(
         [
             "Model configuration",
@@ -1530,6 +1593,7 @@ def main() -> None:
             "Advanced analytics",
             "Scenario analysis",
             "VC helper",
+            "RAG Assistant",
         ]
     )
 
@@ -2399,6 +2463,9 @@ def main() -> None:
                 }
             )
             st.table(vc_df)
+
+    with rag_tab:
+        _render_rag_assistant_page()
 
     st.caption(
         "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
