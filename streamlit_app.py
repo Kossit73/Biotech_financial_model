@@ -1504,50 +1504,64 @@ def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
 def _render_rag_assistant_page() -> None:
     st.subheader("RAG Assistant")
     st.write(
-        "Use the RAG service to ingest supporting documents, capture the model snapshot, "
-        "and generate a feasibility study grounded in both the workbook and evidence library."
+        "Turn your valuation workbook into an evidence-backed investment memo. "
+        "The RAG Assistant gathers model outputs, ingests external research, and drafts "
+        "a report that highlights risks, catalysts, and valuation proof points."
     )
 
-    st.markdown("### Workflow")
-    st.markdown(
-        "1. **Collect model outputs** → `POST /collect` with the financial snapshot.\n"
-        "2. **Ingest evidence** → `POST /ingest` with up to 1 GB of files.\n"
-        "3. **Generate report** → `POST /generate` to create `report.md`."
-    )
+    hero_cols = st.columns([2, 1])
+    with hero_cols[0]:
+        st.markdown("### What you can do")
+        st.markdown(
+            "- **Capture a model snapshot** with key KPIs and scenario outputs.\n"
+            "- **Ingest evidence packs** (clinical readouts, market research, diligence).\n"
+            "- **Generate a feasibility report** with citations and risk callouts."
+        )
+    with hero_cols[1]:
+        st.markdown("### Readiness checklist")
+        st.metric("Model snapshot", "Ready")
+        st.metric("Evidence library", "Awaiting upload")
+        st.metric("Report draft", "Not generated")
 
-    st.markdown("### Sample snapshot payload")
-    snapshot_payload = {
-        "project_id": "example-project",
-        "financial_snapshot": {
-            "currency": "USD",
-            "npv": 54000000,
-            "irr": 0.19,
-            "dscr_min": 1.35,
-            "payback_years": 5.6,
-            "capex_total": 120000000,
-            "opex_annual": 8500000,
-            "revenue_annual": 23500000,
-            "scenarios": [
-                {"name": "Base", "npv": 54000000, "irr": 0.19},
-                {"name": "Downside", "npv": 30000000, "irr": 0.14},
-                {"name": "Upside", "npv": 78000000, "irr": 0.24},
-            ],
-        },
-        "cell_map": {
-            "npv": "Assumptions!B12",
-            "irr": "Assumptions!B13",
-            "dscr_min": "Debt!F22",
-        },
-        "workbook_hash": "sha256-hash-here",
-    }
-    st.code(snapshot_payload, language="json")
-    st.download_button(
-        "Download sample JSON",
-        data=json.dumps(snapshot_payload, indent=2),
-        file_name="rag_snapshot_sample.json",
-        mime="application/json",
-        use_container_width=True,
-    )
+    st.markdown("### Launch plan")
+    step_cols = st.columns(3)
+    step_cols[0].markdown("**1. Collect**\n\nSend the financial snapshot to the `/collect` endpoint.")
+    step_cols[1].markdown("**2. Ingest**\n\nUpload supporting documents to `/ingest`.")
+    step_cols[2].markdown("**3. Generate**\n\nTrigger `/generate` to build `report.md`.")
+
+    with st.expander("View sample snapshot payload", expanded=False):
+        snapshot_payload = {
+            "project_id": "example-project",
+            "financial_snapshot": {
+                "currency": "USD",
+                "npv": 54000000,
+                "irr": 0.19,
+                "dscr_min": 1.35,
+                "payback_years": 5.6,
+                "capex_total": 120000000,
+                "opex_annual": 8500000,
+                "revenue_annual": 23500000,
+                "scenarios": [
+                    {"name": "Base", "npv": 54000000, "irr": 0.19},
+                    {"name": "Downside", "npv": 30000000, "irr": 0.14},
+                    {"name": "Upside", "npv": 78000000, "irr": 0.24},
+                ],
+            },
+            "cell_map": {
+                "npv": "Assumptions!B12",
+                "irr": "Assumptions!B13",
+                "dscr_min": "Debt!F22",
+            },
+            "workbook_hash": "sha256-hash-here",
+        }
+        st.code(snapshot_payload, language="json")
+        st.download_button(
+            "Download sample JSON",
+            data=json.dumps(snapshot_payload, indent=2),
+            file_name="rag_snapshot_sample.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
     st.markdown("### Service endpoints")
     st.code(
