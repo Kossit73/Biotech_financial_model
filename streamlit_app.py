@@ -1608,6 +1608,19 @@ def main() -> None:
     portfolio: Portfolio | None = None
     valuation_result = None
 
+    page_choice = st.sidebar.radio(
+        "Navigate",
+        ["Model workspace", "RAG Assistant"],
+        index=0,
+    )
+
+    if page_choice == "RAG Assistant":
+        _render_rag_assistant_page()
+        st.caption(
+            "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
+        )
+        return
+
     (
         config_tab,
         financial_tab,
@@ -1615,7 +1628,6 @@ def main() -> None:
         analytics_tab,
         scenario_tab,
         vc_tab,
-        rag_tab,
     ) = st.tabs(
         [
             "Model configuration",
@@ -1624,7 +1636,6 @@ def main() -> None:
             "Advanced analytics",
             "Scenario analysis",
             "VC helper",
-            "RAG Assistant",
         ]
     )
 
@@ -2500,9 +2511,6 @@ def main() -> None:
                 }
             )
             st.table(vc_df)
-
-    with rag_tab:
-        _render_rag_assistant_page()
 
     st.caption(
         "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
