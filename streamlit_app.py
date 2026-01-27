@@ -2164,13 +2164,19 @@ def main() -> None:
 
             with st.expander("Sensitivity & stress testing", expanded=True):
                 sens_cols = st.columns(3)
-                milk_delta = sens_cols[0].slider("Milk price swing", 0.0, 0.5, 0.15, help="Revenue-linked driver")
-                feed_delta = sens_cols[1].slider("Feed cost swing", 0.0, 0.5, 0.2)
-                productivity_delta = sens_cols[2].slider("Herd productivity swing", 0.0, 0.5, 0.1)
+                pricing_delta = sens_cols[0].slider(
+                    "Pricing pressure swing",
+                    0.0,
+                    0.5,
+                    0.15,
+                    help="Revenue-linked driver",
+                )
+                manufacturing_delta = sens_cols[1].slider("Manufacturing cost swing", 0.0, 0.5, 0.2)
+                clinical_delta = sens_cols[2].slider("Clinical success swing", 0.0, 0.5, 0.1)
                 drivers = {
-                    "Milk price": (milk_delta, "revenue"),
-                    "Feed costs": (feed_delta, "cost"),
-                    "Herd productivity": (productivity_delta, "productivity"),
+                    "Pricing pressure": (pricing_delta, "revenue"),
+                    "Manufacturing costs": (manufacturing_delta, "cost"),
+                    "Clinical success": (clinical_delta, "productivity"),
                 }
                 sens_df = _run_sensitivity_matrix(portfolio, drivers)
                 if sens_df.empty:
@@ -2180,9 +2186,9 @@ def main() -> None:
 
                 st.markdown("**Scenario stress testing**")
                 severe_cases = [
-                    ("Drought shock", 0.7, 1.25, 0.03, 0.9),
-                    ("Disease outbreak", 0.6, 1.35, 0.04, 0.8),
-                    ("Price collapse", 0.5, 1.05, 0.02, 0.95),
+                    ("Regulatory delay", 0.7, 1.2, 0.03, 0.9),
+                    ("Trial failure", 0.6, 1.3, 0.04, 0.75),
+                    ("Pricing squeeze", 0.5, 1.05, 0.02, 0.95),
                 ]
                 stress_rows = []
                 for name, rev_mult, cost_mult, dr_shift, prob_mult in severe_cases:
