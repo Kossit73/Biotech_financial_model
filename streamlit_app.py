@@ -613,6 +613,22 @@ def _resolve_selected_index(
     return df.index[0]
 
 
+def _resolve_selected_index_from_value(
+    df: pd.DataFrame,
+    selected_id: Optional[object],
+    id_column: Optional[str],
+) -> Optional[int]:
+    if df.empty:
+        return None
+    if id_column and id_column in df.columns and selected_id is not None:
+        matches = df.index[df[id_column] == selected_id]
+        if len(matches):
+            return matches[0]
+    if selected_id in df.index:
+        return selected_id
+    return df.index[0]
+
+
 def _validate_selection(
     df: pd.DataFrame,
     select_key: str,
@@ -638,23 +654,19 @@ def _render_row_selector(
     id_column: Optional[str],
     name_column: Optional[str],
 ) -> Optional[int]:
-    widget_key = f"{select_key}_widget"
-    _consume_pending_selection(select_key)
+    pending = _consume_pending_selection(select_key)
 
     if df.empty:
         st.caption("No rows available yet.")
-        st.session_state[select_key] = None
+        st.session_state.pop(select_key, None)
         st.session_state.pop(_pending_selection_key(select_key), None)
-        st.session_state.pop(widget_key, None)
         return None
 
     options = list(df.index)
-    default_idx = _resolve_selected_index(df, select_key, id_column)
+    selected_id = pending if pending is not None else st.session_state.get(select_key)
+    default_idx = _resolve_selected_index_from_value(df, selected_id, id_column)
     if default_idx is None or default_idx not in options:
         default_idx = options[0]
-    default_id = _row_identifier(df, default_idx, id_column)
-    if default_id != st.session_state.get(select_key):
-        st.session_state[select_key] = default_id
 
     def _format(idx):
         return _format_row_label(df, idx, id_column, name_column)
@@ -664,9 +676,8 @@ def _render_row_selector(
         options=options,
         format_func=_format,
         index=options.index(default_idx),
-        key=widget_key,
+        key=select_key,
     )
-    st.session_state[select_key] = _row_identifier(df, selected, id_column)
     return selected
 
 
@@ -1504,50 +1515,70 @@ def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
 def _render_rag_assistant_page() -> None:
     st.subheader("RAG Assistant")
     st.write(
-        "Use the RAG service to ingest supporting documents, capture the model snapshot, "
-        "and generate a feasibility study grounded in both the workbook and evidence library."
+        "Turn your valuation workbook into an evidence-backed investment memo. "
+        "The RAG Assistant gathers model outputs, ingests external research, and drafts "
+        "a report that highlights risks, catalysts, and valuation proof points."
     )
 
-    st.markdown("### Workflow")
-    st.markdown(
-        "1. **Collect model outputs** → `POST /collect` with the financial snapshot.\n"
-        "2. **Ingest evidence** → `POST /ingest` with up to 1 GB of files.\n"
-        "3. **Generate report** → `POST /generate` to create `report.md`."
+    with st.container(border=True):
+        hero_cols = st.columns([2, 1])
+        with hero_cols[0]:
+            st.markdown("### What you can do")
+            st.markdown(
+                "- **Capture a model snapshot** with key KPIs and scenario outputs.\n"
+                "- **Ingest evidence packs** (clinical readouts, market research, diligence).\n"
+                "- **Generate a feasibility report** with citations and risk callouts."
+            )
+            st.markdown("**Best for:** investor memos, internal IC reviews, and diligence briefs.")
+        with hero_cols[1]:
+            st.markdown("### Readiness checklist")
+            st.metric("Model snapshot", "Ready")
+            st.metric("Evidence library", "Awaiting upload")
+            st.metric("Report draft", "Not generated")
+
+    st.markdown("### Launch plan")
+    step_cols = st.columns(3)
+    step_cols[0].markdown("**1. Collect**\n\nSend the financial snapshot to the `/collect` endpoint.")
+    step_cols[1].markdown("**2. Ingest**\n\nUpload supporting documents to `/ingest`.")
+    step_cols[2].markdown("**3. Generate**\n\nTrigger `/generate` to build `report.md`.")
+    st.info(
+        "Once the report is generated, the assistant can summarize risks, highlight catalysts, "
+        "and trace each claim back to a supporting document."
     )
 
-    st.markdown("### Sample snapshot payload")
-    snapshot_payload = {
-        "project_id": "example-project",
-        "financial_snapshot": {
-            "currency": "USD",
-            "npv": 54000000,
-            "irr": 0.19,
-            "dscr_min": 1.35,
-            "payback_years": 5.6,
-            "capex_total": 120000000,
-            "opex_annual": 8500000,
-            "revenue_annual": 23500000,
-            "scenarios": [
-                {"name": "Base", "npv": 54000000, "irr": 0.19},
-                {"name": "Downside", "npv": 30000000, "irr": 0.14},
-                {"name": "Upside", "npv": 78000000, "irr": 0.24},
-            ],
-        },
-        "cell_map": {
-            "npv": "Assumptions!B12",
-            "irr": "Assumptions!B13",
-            "dscr_min": "Debt!F22",
-        },
-        "workbook_hash": "sha256-hash-here",
-    }
-    st.code(snapshot_payload, language="json")
-    st.download_button(
-        "Download sample JSON",
-        data=json.dumps(snapshot_payload, indent=2),
-        file_name="rag_snapshot_sample.json",
-        mime="application/json",
-        use_container_width=True,
-    )
+    with st.expander("View sample snapshot payload", expanded=False):
+        snapshot_payload = {
+            "project_id": "example-project",
+            "financial_snapshot": {
+                "currency": "USD",
+                "npv": 54000000,
+                "irr": 0.19,
+                "dscr_min": 1.35,
+                "payback_years": 5.6,
+                "capex_total": 120000000,
+                "opex_annual": 8500000,
+                "revenue_annual": 23500000,
+                "scenarios": [
+                    {"name": "Base", "npv": 54000000, "irr": 0.19},
+                    {"name": "Downside", "npv": 30000000, "irr": 0.14},
+                    {"name": "Upside", "npv": 78000000, "irr": 0.24},
+                ],
+            },
+            "cell_map": {
+                "npv": "Assumptions!B12",
+                "irr": "Assumptions!B13",
+                "dscr_min": "Debt!F22",
+            },
+            "workbook_hash": "sha256-hash-here",
+        }
+        st.code(snapshot_payload, language="json")
+        st.download_button(
+            "Download sample JSON",
+            data=json.dumps(snapshot_payload, indent=2),
+            file_name="rag_snapshot_sample.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
     st.markdown("### Service endpoints")
     st.code(
@@ -1567,7 +1598,7 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="collapsed",
     )
-    st.title("Biotech / Agro Valuation Sandbox")
+    st.title("Biotech")
     st.write(
         "Configure a portfolio, run discounted cash flow valuations, and explore VC "
         "method estimates or stress scenarios."
@@ -1577,6 +1608,19 @@ def main() -> None:
     portfolio: Portfolio | None = None
     valuation_result = None
 
+    page_choice = st.sidebar.radio(
+        "Navigate",
+        ["Model workspace", "RAG Assistant"],
+        index=0,
+    )
+
+    if page_choice == "RAG Assistant":
+        _render_rag_assistant_page()
+        st.caption(
+            "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
+        )
+        return
+
     (
         config_tab,
         financial_tab,
@@ -1584,7 +1628,6 @@ def main() -> None:
         analytics_tab,
         scenario_tab,
         vc_tab,
-        rag_tab,
     ) = st.tabs(
         [
             "Model configuration",
@@ -1593,7 +1636,6 @@ def main() -> None:
             "Advanced analytics",
             "Scenario analysis",
             "VC helper",
-            "RAG Assistant",
         ]
     )
 
@@ -2150,13 +2192,19 @@ def main() -> None:
 
             with st.expander("Sensitivity & stress testing", expanded=True):
                 sens_cols = st.columns(3)
-                milk_delta = sens_cols[0].slider("Milk price swing", 0.0, 0.5, 0.15, help="Revenue-linked driver")
-                feed_delta = sens_cols[1].slider("Feed cost swing", 0.0, 0.5, 0.2)
-                productivity_delta = sens_cols[2].slider("Herd productivity swing", 0.0, 0.5, 0.1)
+                pricing_delta = sens_cols[0].slider(
+                    "Pricing pressure swing",
+                    0.0,
+                    0.5,
+                    0.15,
+                    help="Revenue-linked driver",
+                )
+                manufacturing_delta = sens_cols[1].slider("Manufacturing cost swing", 0.0, 0.5, 0.2)
+                clinical_delta = sens_cols[2].slider("Clinical success swing", 0.0, 0.5, 0.1)
                 drivers = {
-                    "Milk price": (milk_delta, "revenue"),
-                    "Feed costs": (feed_delta, "cost"),
-                    "Herd productivity": (productivity_delta, "productivity"),
+                    "Pricing pressure": (pricing_delta, "revenue"),
+                    "Manufacturing costs": (manufacturing_delta, "cost"),
+                    "Clinical success": (clinical_delta, "productivity"),
                 }
                 sens_df = _run_sensitivity_matrix(portfolio, drivers)
                 if sens_df.empty:
@@ -2166,9 +2214,9 @@ def main() -> None:
 
                 st.markdown("**Scenario stress testing**")
                 severe_cases = [
-                    ("Drought shock", 0.7, 1.25, 0.03, 0.9),
-                    ("Disease outbreak", 0.6, 1.35, 0.04, 0.8),
-                    ("Price collapse", 0.5, 1.05, 0.02, 0.95),
+                    ("Regulatory delay", 0.7, 1.2, 0.03, 0.9),
+                    ("Trial failure", 0.6, 1.3, 0.04, 0.75),
+                    ("Pricing squeeze", 0.5, 1.05, 0.02, 0.95),
                 ]
                 stress_rows = []
                 for name, rev_mult, cost_mult, dr_shift, prob_mult in severe_cases:
@@ -2463,9 +2511,6 @@ def main() -> None:
                 }
             )
             st.table(vc_df)
-
-    with rag_tab:
-        _render_rag_assistant_page()
 
     st.caption(
         "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."

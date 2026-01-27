@@ -89,18 +89,20 @@ class Product:
 
     @staticmethod
     def _rolling_amortization(additions: pd.Series, life: int) -> pd.Series:
-        years = additions.index
-        amort = pd.Series(0.0, index=years)
         if life <= 0:
-            return amort
-        for i in range(len(years)):
-            add = additions.iloc[i]
-            if add == 0:
-                continue
-            annual = add / life
-            for j in range(i, min(i + life, len(years))):
-                amort.iloc[j] += annual
-        return amort
+            return pd.Series(0.0, index=additions.index)
+        weights = np.ones(life) / life
+        amort_values = np.convolve(additions.values, weights, mode="full")[: len(additions)]
+        return pd.Series(amort_values, index=additions.index)
+
+    @staticmethod
+    def _spread_prelaunch_cashflow(total: float, years: int, index: np.ndarray) -> pd.Series:
+        values = np.zeros(len(index))
+        if total <= 0 or years <= 0:
+            return pd.Series(values, index=index)
+        annual = total / years
+        values[:years] = -annual
+        return pd.Series(values, index=index)
 
     def build_revenue_series(self) -> pd.Series:
         years = self.model_config.years
@@ -163,14 +165,10 @@ class Product:
         rd_cash = pd.Series(0.0, index=years)
         if cfg.rd_remaining_pre_launch > 0 and not cfg.preexisting_market:
             pre_years = max(1, cfg.time_to_market)
-            annual_pre = cfg.rd_remaining_pre_launch / pre_years
-            for i in range(pre_years):
-                rd_cash.iloc[i] -= annual_pre
+            rd_cash += self._spread_prelaunch_cashflow(cfg.rd_remaining_pre_launch, pre_years, years)
 
         launch_year = self._launch_year()
-        for i, year in enumerate(years):
-            if year >= launch_year:
-                rd_cash.iloc[i] -= cfg.rd_annual_post_launch
+        rd_cash.loc[years >= launch_year] -= cfg.rd_annual_post_launch
         df["rd_cash"] = rd_cash
 
         rd_cap_add = rd_cash * cfg.rd_capitalization_ratio
@@ -183,13 +181,9 @@ class Product:
         capex_cash = pd.Series(0.0, index=years)
         if cfg.capex_remaining_pre_launch > 0 and not cfg.preexisting_market:
             pre_years = max(1, cfg.time_to_market)
-            annual_pre_cx = cfg.capex_remaining_pre_launch / pre_years
-            for i in range(pre_years):
-                capex_cash.iloc[i] -= annual_pre_cx
+            capex_cash += self._spread_prelaunch_cashflow(cfg.capex_remaining_pre_launch, pre_years, years)
 
-        for i, year in enumerate(years):
-            if year >= launch_year:
-                capex_cash.iloc[i] -= cfg.capex_annual_post_launch
+        capex_cash.loc[years >= launch_year] -= cfg.capex_annual_post_launch
         df["capex_cash"] = capex_cash
 
         depreciation = self._rolling_amortization(capex_cash, cfg.capex_dep_years)
