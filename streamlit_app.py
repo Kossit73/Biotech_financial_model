@@ -613,6 +613,22 @@ def _resolve_selected_index(
     return df.index[0]
 
 
+def _resolve_selected_index_from_value(
+    df: pd.DataFrame,
+    selected_id: Optional[object],
+    id_column: Optional[str],
+) -> Optional[int]:
+    if df.empty:
+        return None
+    if id_column and id_column in df.columns and selected_id is not None:
+        matches = df.index[df[id_column] == selected_id]
+        if len(matches):
+            return matches[0]
+    if selected_id in df.index:
+        return selected_id
+    return df.index[0]
+
+
 def _validate_selection(
     df: pd.DataFrame,
     select_key: str,
@@ -638,23 +654,19 @@ def _render_row_selector(
     id_column: Optional[str],
     name_column: Optional[str],
 ) -> Optional[int]:
-    widget_key = f"{select_key}_widget"
-    _consume_pending_selection(select_key)
+    pending = _consume_pending_selection(select_key)
 
     if df.empty:
         st.caption("No rows available yet.")
-        st.session_state[select_key] = None
+        st.session_state.pop(select_key, None)
         st.session_state.pop(_pending_selection_key(select_key), None)
-        st.session_state.pop(widget_key, None)
         return None
 
     options = list(df.index)
-    default_idx = _resolve_selected_index(df, select_key, id_column)
+    selected_id = pending if pending is not None else st.session_state.get(select_key)
+    default_idx = _resolve_selected_index_from_value(df, selected_id, id_column)
     if default_idx is None or default_idx not in options:
         default_idx = options[0]
-    default_id = _row_identifier(df, default_idx, id_column)
-    if default_id != st.session_state.get(select_key):
-        st.session_state[select_key] = default_id
 
     def _format(idx):
         return _format_row_label(df, idx, id_column, name_column)
@@ -664,9 +676,8 @@ def _render_row_selector(
         options=options,
         format_func=_format,
         index=options.index(default_idx),
-        key=widget_key,
+        key=select_key,
     )
-    st.session_state[select_key] = _row_identifier(df, selected, id_column)
     return selected
 
 
