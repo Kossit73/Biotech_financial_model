@@ -1944,9 +1944,16 @@ def _render_rag_assistant_page() -> None:
                     st.error(f"Failed to ingest files: {exc}")
 
         st.markdown("### Generate report")
+        default_outline = _rag_section_outline()
+        selected_outline = st.multiselect(
+            "Sections to include",
+            options=default_outline,
+            default=default_outline,
+            key=f"{rag_key_prefix}_section_select",
+        )
         outline_input = st.text_area(
             "Section outline (one per line)",
-            value="\n".join(_rag_section_outline()),
+            value="\n".join(selected_outline),
             height=160,
             key=f"{rag_key_prefix}_outline",
         )
