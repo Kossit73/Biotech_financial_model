@@ -1886,23 +1886,9 @@ def _render_rag_assistant_page() -> None:
         )
         snapshot_state["scenarios"] = scenarios_df.to_dict(orient="records")
 
-    cell_map_raw = st.text_area(
-        "Cell map (JSON)",
-        value=json.dumps(snapshot_state.get("cell_map", {}), indent=2),
-        height=140,
-        key=f"{rag_key_prefix}_cell_map",
-    )
-    try:
-        cell_map = json.loads(cell_map_raw) if cell_map_raw.strip() else {}
-    except json.JSONDecodeError:
-        st.error("Cell map must be valid JSON.")
-        cell_map = {}
-    snapshot_state["cell_map"] = cell_map
-
     snapshot_payload = {
         "project_id": project_id,
         "financial_snapshot": snapshot_state,
-        "cell_map": cell_map,
         "workbook_hash": snapshot_state.get("workbook_hash"),
     }
 
