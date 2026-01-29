@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, fields
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -1717,8 +1718,15 @@ def _render_rag_assistant_page() -> None:
 
     rag_key_prefix = "rag_assistant"
     st.markdown("## Upload reference documents")
-    project_id = st.session_state.get(f"{rag_key_prefix}_project_id", "default-project")
-    rag_host = st.session_state.get(f"{rag_key_prefix}_rag_host", "http://localhost:8000")
+    project_id = st.session_state.get(
+        f"{rag_key_prefix}_project_id",
+        os.environ.get("RAG_PROJECT_ID", "default-project"),
+    )
+    rag_host = st.session_state.get(
+        f"{rag_key_prefix}_rag_host",
+        os.environ.get("RAG_HOST", "http://localhost:8000"),
+    )
+    st.caption("Set RAG_HOST and RAG_PROJECT_ID env vars to override defaults.")
 
     uploads = st.file_uploader(
         "Upload reference documents",
@@ -1912,7 +1920,12 @@ def _render_rag_assistant_page() -> None:
             st.session_state["rag_last_ingest"] = response.json()
             st.success(response.json())
         except requests.RequestException as exc:
-            st.error(f"Failed to ingest files: {exc}")
+            if isinstance(exc, requests.ConnectionError):
+                st.warning(
+                    "RAG service unreachable. Start the service or update RAG_HOST to a reachable URL."
+                )
+            else:
+                st.error(f"Failed to ingest files: {exc}")
     if not has_uploads:
         st.caption("Upload reference documents to enable indexing.")
 
@@ -1937,7 +1950,12 @@ def _render_rag_assistant_page() -> None:
             st.session_state["rag_last_report"] = response.json()
             st.success(response.json())
         except requests.RequestException as exc:
-            st.error(f"Failed to run AI insights: {exc}")
+            if isinstance(exc, requests.ConnectionError):
+                st.warning(
+                    "RAG service unreachable. Start the service or update RAG_HOST to a reachable URL."
+                )
+            else:
+                st.error(f"Failed to run AI insights: {exc}")
     if not has_indexed:
         st.caption("Index documents before running AI insights.")
 
