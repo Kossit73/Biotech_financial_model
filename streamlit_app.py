@@ -1714,11 +1714,6 @@ def _rag_blueprint_markdown() -> str:
 
 def _render_rag_assistant_page() -> None:
     st.subheader("RAG Assistant")
-    st.write(
-        "Turn your valuation workbook into an evidence-backed investment memo. "
-        "The RAG Assistant gathers model outputs, ingests external research, and drafts "
-        "a report that highlights risks, catalysts, and valuation proof points."
-    )
 
     rag_key_prefix = "rag_assistant"
     st.markdown("## Upload reference documents")
