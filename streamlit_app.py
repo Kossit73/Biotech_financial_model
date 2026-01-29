@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from io import BytesIO
 from dataclasses import asdict, fields
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -1637,6 +1638,21 @@ def _default_scenario_pack(portfolio: Optional[Portfolio]) -> List[dict]:
     return scenarios
 
 
+def _build_financial_excel(
+    cons: pd.DataFrame,
+    perf_df: pd.DataFrame,
+    position_df: pd.DataFrame,
+    cash_flow_df: pd.DataFrame,
+) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        cons.to_excel(writer, sheet_name="Consolidated forecast")
+        perf_df.to_excel(writer, sheet_name="Financial performance")
+        position_df.to_excel(writer, sheet_name="Financial position")
+        cash_flow_df.to_excel(writer, sheet_name="Cash flows")
+    return output.getvalue()
+
+
 def _rag_section_outline() -> List[str]:
     return [
         "Executive Summary",
@@ -2553,6 +2569,33 @@ def main() -> None:
             st.dataframe(
                 cash_flow_df.style.format({col: "{:.0f}" for col in cash_flow_df.columns})
             )
+            st.markdown("**Excel Model Download**")
+            excel_bytes = st.session_state.get("financial_excel_bytes")
+            download_container = st.container()
+            with download_container:
+                if not excel_bytes:
+                    if st.button("Prepare Excel Model", key="prepare_financial_excel"):
+                        with st.spinner("Preparing Excel workbook..."):
+                            excel_bytes = _build_financial_excel(
+                                cons,
+                                perf_df,
+                                position_df,
+                                cash_flow_df,
+                            )
+                        st.session_state["financial_excel_bytes"] = excel_bytes
+                if excel_bytes:
+                    st.download_button(
+                        "Download Excel Model",
+                        data=excel_bytes,
+                        file_name="Financial_Report.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_financial_excel",
+                    )
+                    if st.button("Clear Prepared Excel", key="clear_financial_excel"):
+                        st.session_state.pop("financial_excel_bytes", None)
+                        excel_bytes = None
+                if not excel_bytes:
+                    st.info("Click 'Prepare Excel Model' to generate the workbook for download.")
 
     with dashboard_tab:
         st.subheader("Dashboard")
