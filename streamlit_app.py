@@ -1602,7 +1602,7 @@ def _build_snapshot_from_result(
             "discount_rate": model_cfg.discount_rate,
             "tax_rate": model_cfg.tax_rate,
             "working_capital_pct": model_cfg.working_capital_pct_sales,
-            "inflation_rate": model_cfg.inflation_rate,
+            "inflation_rate": getattr(model_cfg, "inflation_rate", None),
         },
     }
     return snapshot
