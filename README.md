@@ -40,3 +40,16 @@ Combine configuration objects with the modelling helpers to build forecasts, run
 8. **Incorporate forecasts** with `ForecastEngine` (ARIMA/Prophet/LSTM) and convert those views into scenario inputs through `ForecastScenarioBridge`, enabling Prophet-derived base/pessimistic/optimistic paths to feed directly into the scenario engine.
 
 The accompanying `streamlit_app.py` surfaces these workflows in a browser-based UI featuring dedicated tabs for configuration, financial statements, dashboards, advanced analytics, scenarios, and VC valuation so that non-technical users can operate the model interactively.
+
+## Recommended improvements
+
+If you want to increase realism and analytical depth, consider extending the model with:
+
+- **Stage-gated probability curves** that evolve by development phase (e.g., discovery → preclinical → Phase I/II/III) instead of a single static probability. This can be paired with milestone costs to better reflect attrition over time.
+- **Tax loss carryforwards and net operating loss (NOL) utilization**, so early negative EBIT carries forward and reduces future cash taxes rather than assuming taxes only when EBIT is positive.
+- **Time-varying discount rates** (or risk-adjusted rates per product), especially to reflect de-risking as assets progress through phases.
+- **Correlated Monte Carlo shocks** (e.g., shared market or pricing shocks) to avoid treating each product as independent in portfolio simulations.
+- **Explicit dilution and financing rounds** to capture ownership changes, bridge financing, and the impact on VC method outputs.
+- **Regional launch curves** (US/EU/ROW) with staggered timing, differing price/reimbursement assumptions, and localized market growth.
+- **Working-capital and inventory dynamics** by product segment (especially for therapies with long manufacturing lead times).
+- **Scenario libraries** for regulatory, reimbursement, and competitive events (e.g., earlier generic entry, biosimilar penetration, pricing compression).

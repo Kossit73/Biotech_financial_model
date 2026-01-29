@@ -930,6 +930,156 @@ def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(default)
 
 
+def _format_currency_axis(value: float) -> str:
+    abs_value = abs(value)
+    if abs_value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f}B"
+    if abs_value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if abs_value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return f"{value:.0f}"
+
+
+def _plot_timeseries(
+    df: pd.DataFrame,
+    *,
+    title: str,
+    yaxis_title: str,
+    chart_type: str = "line",
+) -> None:
+    if df.empty:
+        st.info("No data available for charting.")
+        return
+    if go is None:
+        if chart_type == "area":
+            st.area_chart(df)
+        else:
+            st.line_chart(df)
+        return
+    fig = go.Figure()
+    for col in df.columns:
+        if chart_type == "area":
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df[col],
+                    mode="lines",
+                    name=col,
+                    stackgroup="one",
+                    hovertemplate="%{x}<br>%{y:,.0f}<extra>%{fullData.name}</extra>",
+                )
+            )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df[col],
+                    mode="lines+markers",
+                    name=col,
+                    hovertemplate="%{x}<br>%{y:,.0f}<extra>%{fullData.name}</extra>",
+                )
+            )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Year",
+        yaxis_title=yaxis_title,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=340,
+    )
+    fig.update_yaxes(tickformat=",.0f", tickprefix="")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _plot_bar_series(series: pd.Series, *, title: str, yaxis_title: str) -> None:
+    if series.empty:
+        st.info("No data available for charting.")
+        return
+    if go is None:
+        st.bar_chart(series)
+        return
+    fig = go.Figure(
+        go.Bar(
+            x=series.index.astype(str),
+            y=series.values,
+            marker_color="#4C78A8",
+            hovertemplate="%{x}<br>%{y:,.0f}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="",
+        yaxis_title=yaxis_title,
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=300,
+    )
+    fig.update_yaxes(tickformat=",.0f")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _plot_histogram(series: pd.Series, *, title: str, xaxis_title: str) -> None:
+    if series.empty:
+        st.info("No data available for charting.")
+        return
+    if go is None:
+        hist = np.histogram(series, bins=20)
+        st.bar_chart(pd.DataFrame({"rNPV": hist[0]}, index=hist[1][:-1]))
+        return
+    fig = go.Figure(
+        data=[
+            go.Histogram(
+                x=series,
+                nbinsx=20,
+                marker_color="#F58518",
+                hovertemplate="%{x:,.0f}<br>Count=%{y}<extra></extra>",
+            )
+        ]
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title=xaxis_title,
+        yaxis_title="Count",
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=300,
+    )
+    fig.update_xaxes(tickformat=",.0f")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _plot_scatter(df: pd.DataFrame, *, title: str, x_col: str, y_col: str) -> None:
+    if df.empty:
+        st.info("No data available for charting.")
+        return
+    if go is None:
+        st.scatter_chart(df)
+        return
+    fig = go.Figure(
+        go.Scatter(
+            x=df[x_col],
+            y=df[y_col],
+            mode="markers",
+            marker=dict(size=6, color="#54A24B", opacity=0.7),
+            hovertemplate=f"{x_col}=%{{x:,.0f}}<br>{y_col}=%{{y:,.0f}}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_col,
+        yaxis_title=y_col,
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=320,
+    )
+    fig.update_xaxes(tickformat=",.0f")
+    fig.update_yaxes(tickformat=",.0f")
+    st.plotly_chart(fig, use_container_width=True)
+
+
 def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
     """Render a reusable schedule editor with manual controls.
 
@@ -2148,7 +2298,11 @@ def main() -> None:
                         }
                     )
                 )
-                st.line_chart(cons_display)
+                _plot_timeseries(
+                    cons_display,
+                    title="Consolidated performance",
+                    yaxis_title=f"Amount ({model_cfg.currency})",
+                )
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
             st.markdown("**Statement of Financial Performance**")
             st.dataframe(
@@ -2177,8 +2331,17 @@ def main() -> None:
             kpi_cols[3].metric("Total FCFF after WC", f"{cons['fcff_after_wc'].sum():,.0f}")
 
             chart_data = cons[["revenue", "ebitda", "fcff_after_wc"]]
-            st.area_chart(chart_data)
-            st.bar_chart(cons["fcff_after_wc"], use_container_width=True)
+            _plot_timeseries(
+                chart_data,
+                title="Portfolio value drivers",
+                yaxis_title=f"Amount ({model_cfg.currency})",
+                chart_type="area",
+            )
+            _plot_bar_series(
+                cons["fcff_after_wc"],
+                title="FCFF after working capital",
+                yaxis_title=f"Amount ({model_cfg.currency})",
+            )
 
     with analytics_tab:
         st.subheader("Advanced financial analytics")
@@ -2246,7 +2409,11 @@ def main() -> None:
             with st.expander("Trend, seasonality & segmentation", expanded=False):
                 decomp_df = _compute_decomposition(cons)
                 if decomp_df is not None:
-                    st.line_chart(decomp_df)
+                    _plot_timeseries(
+                        decomp_df,
+                        title="Revenue decomposition",
+                        yaxis_title=f"Amount ({model_cfg.currency})",
+                    )
                 else:
                     st.info("Need more history to decompose trend/seasonality.")
 
@@ -2259,7 +2426,11 @@ def main() -> None:
                             "FCFF (PV proxy)": "{:.0f}",
                         })
                     )
-                    st.bar_chart(seg_df.set_index("Product")["Revenue share"])
+                    _plot_bar_series(
+                        seg_df.set_index("Product")["Revenue share"] * 100,
+                        title="Revenue share by product",
+                        yaxis_title="Revenue share (%)",
+                    )
                 else:
                     st.info("Add probability-weighted products to see segmentation insights.")
 
@@ -2281,9 +2452,16 @@ def main() -> None:
 
                 sims = st.session_state.get("mc_results")
                 if sims is not None:
-                    st.line_chart(sims.reset_index(drop=True))
-                    hist = np.histogram(sims, bins=20)
-                    st.bar_chart(pd.DataFrame({"rNPV": hist[0]}, index=hist[1][:-1]))
+                    _plot_timeseries(
+                        pd.DataFrame({"rNPV": sims.reset_index(drop=True)}),
+                        title="Monte Carlo rNPV paths",
+                        yaxis_title=f"rNPV ({model_cfg.currency})",
+                    )
+                    _plot_histogram(
+                        sims,
+                        title="Monte Carlo rNPV distribution",
+                        xaxis_title=f"rNPV ({model_cfg.currency})",
+                    )
                     var = MonteCarloEngine.value_at_risk(sims)
                     cvar = MonteCarloEngine.conditional_value_at_risk(sims)
                     st.write(
@@ -2390,14 +2568,27 @@ def main() -> None:
                     try:
                         if method == "ARIMA":
                             forecast = fe.forecast_arima(series, steps=horizon)
-                            st.line_chart(forecast)
+                            _plot_timeseries(
+                                pd.DataFrame({f"{ts_metric} forecast": forecast.values}, index=forecast.index),
+                                title=f"{ts_metric.upper()} forecast (ARIMA)",
+                                yaxis_title=f"Amount ({model_cfg.currency})",
+                            )
                         elif method == "Prophet":
                             hist_df = pd.DataFrame({"ds": series.index, "y": series.values})
                             forecast = fe.forecast_prophet(hist_df, periods=horizon)
-                            st.line_chart(forecast.set_index("ds")["yhat"])
+                            _plot_timeseries(
+                                pd.DataFrame({"Forecast": forecast.set_index("ds")["yhat"]}),
+                                title=f"{ts_metric.upper()} forecast (Prophet)",
+                                yaxis_title=f"Amount ({model_cfg.currency})",
+                            )
                         else:
                             forecast = fe.forecast_lstm(series, steps_ahead=horizon)
-                            st.line_chart(pd.Series(forecast))
+                            forecast_index = pd.RangeIndex(start=1, stop=len(forecast) + 1, step=1)
+                            _plot_timeseries(
+                                pd.DataFrame({"Forecast": forecast}, index=forecast_index),
+                                title=f"{ts_metric.upper()} forecast (LSTM)",
+                                yaxis_title=f"Amount ({model_cfg.currency})",
+                            )
                     except Exception as exc:
                         st.warning(f"Forecast failed: {exc}")
 
@@ -2423,7 +2614,12 @@ def main() -> None:
             with st.expander("Risk, copulas, macro & ESG linkages", expanded=False):
                 copula_df = _copula_simulation(cons)
                 if copula_df is not None:
-                    st.scatter_chart(copula_df)
+                    _plot_scatter(
+                        copula_df,
+                        title="Revenue vs EBITDA copula simulation",
+                        x_col="Revenue",
+                        y_col="EBITDA",
+                    )
 
                 macro_cols = st.columns(4)
                 inflation = macro_cols[0].slider("Inflation", 0.0, 0.15, 0.03)
@@ -2431,7 +2627,11 @@ def main() -> None:
                 fx = macro_cols[2].slider("FX depreciation", -0.1, 0.2, 0.0)
                 sentiment = macro_cols[3].slider("Market sentiment", -0.3, 0.3, 0.0)
                 macro_revenue = cons["revenue"] * (1 + inflation + gdp + sentiment - fx)
-                st.line_chart(pd.DataFrame({"Original": cons["revenue"], "Macro-adjusted": macro_revenue}))
+                _plot_timeseries(
+                    pd.DataFrame({"Original": cons["revenue"], "Macro-adjusted": macro_revenue}),
+                    title="Macro-adjusted revenue view",
+                    yaxis_title=f"Amount ({model_cfg.currency})",
+                )
 
                 esg_cols = st.columns(3)
                 carbon_price = esg_cols[0].slider("Carbon price ($/t)", 0, 200, 75)
@@ -2454,7 +2654,11 @@ def main() -> None:
 
                 ml_mult_df = _machine_learning_multiple(cons)
                 if ml_mult_df is not None:
-                    st.line_chart(ml_mult_df.set_index("Year"))
+                    _plot_timeseries(
+                        ml_mult_df.set_index("Year"),
+                        title="ML-implied EBITDA multiple",
+                        yaxis_title="Multiple (x)",
+                    )
                 else:
                     st.caption("Install scikit-learn to run ML-driven multiple predictions.")
 
