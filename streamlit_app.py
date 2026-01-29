@@ -1748,6 +1748,7 @@ def _render_rag_assistant_page() -> None:
         "and trace each claim back to a supporting document."
     )
 
+    rag_key_prefix = "rag_assistant"
     rag_tabs = st.tabs(
         [
             "Run assistant",
@@ -1766,8 +1767,16 @@ def _render_rag_assistant_page() -> None:
 
     with rag_tabs[0]:
         st.markdown("### Configure & launch")
-        project_id = st.text_input("Project ID", value="example-project")
-        rag_host = st.text_input("RAG service base URL", value="http://localhost:8000")
+        project_id = st.text_input(
+            "Project ID",
+            value="example-project",
+            key=f"{rag_key_prefix}_project_id",
+        )
+        rag_host = st.text_input(
+            "RAG service base URL",
+            value="http://localhost:8000",
+            key=f"{rag_key_prefix}_rag_host",
+        )
 
         model_cfg = st.session_state.get("model_config")
         valuation_result = st.session_state.get("valuation_result")
@@ -1796,7 +1805,7 @@ def _render_rag_assistant_page() -> None:
                     "assumptions": {},
                 }
 
-        if st.button("Refresh snapshot from latest model"):
+        if st.button("Refresh snapshot from latest model", key=f"{rag_key_prefix}_refresh_snapshot"):
             if model_cfg is None or valuation_result is None:
                 st.warning("Run the model workspace to generate a snapshot.")
             else:
@@ -1812,17 +1821,20 @@ def _render_rag_assistant_page() -> None:
             snapshot_state["currency"] = snap_cols[0].text_input(
                 "Currency",
                 value=snapshot_state.get("currency") or "USD",
+                key=f"{rag_key_prefix}_currency",
             )
             snapshot_state["npv"] = snap_cols[1].number_input(
                 "NPV",
                 value=float(snapshot_state["npv"]) if snapshot_state.get("npv") is not None else 0.0,
                 step=1000000.0,
+                key=f"{rag_key_prefix}_npv",
             )
             snapshot_state["irr"] = snap_cols[2].number_input(
                 "IRR",
                 value=float(snapshot_state["irr"]) if snapshot_state.get("irr") is not None else 0.0,
                 step=0.01,
                 format="%.4f",
+                key=f"{rag_key_prefix}_irr",
             )
 
             snap_cols2 = st.columns(3)
@@ -1831,17 +1843,20 @@ def _render_rag_assistant_page() -> None:
                 value=float(snapshot_state.get("dscr_min") or 0.0),
                 step=0.1,
                 format="%.2f",
+                key=f"{rag_key_prefix}_dscr_min",
             )
             snapshot_state["payback_years"] = snap_cols2[1].number_input(
                 "Payback (years)",
                 value=float(snapshot_state.get("payback_years") or 0.0),
                 step=0.1,
                 format="%.2f",
+                key=f"{rag_key_prefix}_payback_years",
             )
             snapshot_state["capex_total"] = snap_cols2[2].number_input(
                 "Total capex",
                 value=float(snapshot_state.get("capex_total") or 0.0),
                 step=1000000.0,
+                key=f"{rag_key_prefix}_capex_total",
             )
 
             snap_cols3 = st.columns(2)
@@ -1849,11 +1864,13 @@ def _render_rag_assistant_page() -> None:
                 "Annual opex",
                 value=float(snapshot_state.get("opex_annual") or 0.0),
                 step=100000.0,
+                key=f"{rag_key_prefix}_opex_annual",
             )
             snapshot_state["revenue_annual"] = snap_cols3[1].number_input(
                 "Annual revenue",
                 value=float(snapshot_state.get("revenue_annual") or 0.0),
                 step=100000.0,
+                key=f"{rag_key_prefix}_revenue_annual",
             )
 
             scenarios_df = pd.DataFrame(snapshot_state.get("scenarios") or [])
@@ -1866,6 +1883,7 @@ def _render_rag_assistant_page() -> None:
                     "npv": st.column_config.NumberColumn("NPV"),
                     "irr": st.column_config.NumberColumn("IRR"),
                 },
+                key=f"{rag_key_prefix}_scenarios_editor",
             )
             snapshot_state["scenarios"] = scenarios_df.to_dict(orient="records")
 
@@ -1873,6 +1891,7 @@ def _render_rag_assistant_page() -> None:
             "Cell map (JSON)",
             value=json.dumps(snapshot_state.get("cell_map", {}), indent=2),
             height=140,
+            key=f"{rag_key_prefix}_cell_map",
         )
         try:
             cell_map = json.loads(cell_map_raw) if cell_map_raw.strip() else {}
@@ -1889,7 +1908,7 @@ def _render_rag_assistant_page() -> None:
         }
         st.code(snapshot_payload, language="json")
 
-        if st.button("Send snapshot to /collect"):
+        if st.button("Send snapshot to /collect", key=f"{rag_key_prefix}_send_snapshot"):
             try:
                 response = requests.post(
                     f"{rag_host.rstrip('/')}/collect",
@@ -1902,8 +1921,12 @@ def _render_rag_assistant_page() -> None:
                 st.error(f"Failed to send snapshot: {exc}")
 
         st.markdown("### Evidence ingestion")
-        uploads = st.file_uploader("Upload evidence packs", accept_multiple_files=True)
-        if st.button("Upload evidence to /ingest"):
+        uploads = st.file_uploader(
+            "Upload evidence packs",
+            accept_multiple_files=True,
+            key=f"{rag_key_prefix}_uploads",
+        )
+        if st.button("Upload evidence to /ingest", key=f"{rag_key_prefix}_ingest"):
             if not uploads:
                 st.warning("Add at least one file to ingest.")
             else:
@@ -1925,8 +1948,9 @@ def _render_rag_assistant_page() -> None:
             "Section outline (one per line)",
             value="\n".join(_rag_section_outline()),
             height=160,
+            key=f"{rag_key_prefix}_outline",
         )
-        if st.button("Generate report via /generate"):
+        if st.button("Generate report via /generate", key=f"{rag_key_prefix}_generate"):
             outline = [line.strip() for line in outline_input.splitlines() if line.strip()]
             try:
                 response = requests.post(
