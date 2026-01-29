@@ -1717,16 +1717,8 @@ def _render_rag_assistant_page() -> None:
 
     rag_key_prefix = "rag_assistant"
     st.markdown("## Upload reference documents")
-    project_id = st.text_input(
-        "Project ID",
-        value="example-project",
-        key=f"{rag_key_prefix}_project_id",
-    )
-    rag_host = st.text_input(
-        "RAG service base URL",
-        value="http://localhost:8000",
-        key=f"{rag_key_prefix}_rag_host",
-    )
+    project_id = st.session_state.get(f"{rag_key_prefix}_project_id", "default-project")
+    rag_host = st.session_state.get(f"{rag_key_prefix}_rag_host", "http://localhost:8000")
 
     uploads = st.file_uploader(
         "Upload reference documents",
