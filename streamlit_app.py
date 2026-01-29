@@ -1892,31 +1892,40 @@ def _render_rag_assistant_page() -> None:
         "workbook_hash": snapshot_state.get("workbook_hash"),
     }
 
+    has_uploads = bool(uploads)
+    has_indexed = bool(st.session_state.get("rag_last_ingest"))
     insight_cols = st.columns(3)
-    if insight_cols[0].button("Index documents", key=f"{rag_key_prefix}_index_docs"):
-        if not uploads:
-            st.warning("Add at least one file to index.")
-        else:
-            files = [("files", (u.name, u.getvalue(), u.type or "application/octet-stream")) for u in uploads]
-            try:
-                response = requests.post(
-                    f"{rag_host.rstrip('/')}/ingest",
-                    params={"project_id": project_id},
-                    files=files,
-                    timeout=120,
-                )
-                response.raise_for_status()
-                st.session_state["rag_last_ingest"] = response.json()
-                st.success(response.json())
-            except requests.RequestException as exc:
-                st.error(f"Failed to ingest files: {exc}")
+    if insight_cols[0].button(
+        "Index documents",
+        key=f"{rag_key_prefix}_index_docs",
+        disabled=not has_uploads,
+    ):
+        files = [("files", (u.name, u.getvalue(), u.type or "application/octet-stream")) for u in uploads]
+        try:
+            response = requests.post(
+                f"{rag_host.rstrip('/')}/ingest",
+                params={"project_id": project_id},
+                files=files,
+                timeout=120,
+            )
+            response.raise_for_status()
+            st.session_state["rag_last_ingest"] = response.json()
+            st.success(response.json())
+        except requests.RequestException as exc:
+            st.error(f"Failed to ingest files: {exc}")
+    if not has_uploads:
+        st.caption("Upload reference documents to enable indexing.")
 
     if insight_cols[1].button("Clear indexed documents", key=f"{rag_key_prefix}_clear_index"):
         st.session_state.pop("rag_last_ingest", None)
         st.session_state.pop("rag_last_report", None)
         st.info("Local index metadata cleared. Clear the backend index from the service if needed.")
 
-    if insight_cols[2].button("Run AI insights", key=f"{rag_key_prefix}_run_ai"):
+    if insight_cols[2].button(
+        "Run AI insights",
+        key=f"{rag_key_prefix}_run_ai",
+        disabled=not has_indexed,
+    ):
         outline = _rag_section_outline()
         try:
             response = requests.post(
@@ -1929,6 +1938,8 @@ def _render_rag_assistant_page() -> None:
             st.success(response.json())
         except requests.RequestException as exc:
             st.error(f"Failed to run AI insights: {exc}")
+    if not has_indexed:
+        st.caption("Index documents before running AI insights.")
 
     question = st.text_input(
         "Ask a question",
