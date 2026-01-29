@@ -1721,71 +1721,93 @@ def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
 
 
 def _render_rag_assistant_page() -> None:
-    st.subheader("RAG Assistant")
+    st.subheader("RAG Feasibility Study Generator")
     st.write(
-        "Turn your valuation workbook into an evidence-backed investment memo. "
-        "The RAG Assistant gathers model outputs, ingests external research, and drafts "
-        "a report that highlights risks, catalysts, and valuation proof points."
+        "A production-ready RAG blueprint that ingests up to 1 GB of project materials, "
+        "locks to financial model outputs, and drafts a feasibility study with inline citations."
     )
 
     with st.container(border=True):
         hero_cols = st.columns([2, 1])
         with hero_cols[0]:
-            st.markdown("### What you can do")
+            st.markdown("### What it does")
             st.markdown(
-                "- **Capture a model snapshot** with key KPIs and scenario outputs.\n"
-                "- **Ingest evidence packs** (clinical readouts, market research, diligence).\n"
-                "- **Generate a feasibility report** with citations and risk callouts."
+                "- **Collects model outputs** (NPV, IRR, DSCR, capex/opex, scenarios) from Excel.\n"
+                "- **Ingests evidence** (PDF/DOCX/PPTX/CSV/TXT) and builds a FAISS index.\n"
+                "- **Generates a feasibility report** with citations and an audit appendix."
             )
-            st.markdown("**Best for:** investor memos, internal IC reviews, and diligence briefs.")
+            st.markdown(
+                "**Best for:** investment committees, technical diligence, and lender-ready reports."
+            )
         with hero_cols[1]:
-            st.markdown("### Readiness checklist")
-            st.metric("Model snapshot", "Ready")
-            st.metric("Evidence library", "Awaiting upload")
-            st.metric("Report draft", "Not generated")
+            st.markdown("### RAC pipeline status")
+            st.metric("Financial snapshot", "Ready")
+            st.metric("Evidence index", "Awaiting upload")
+            st.metric("Feasibility report", "Not generated")
 
-    st.markdown("### Launch plan")
+    st.markdown("### Model-integrated flow (RAC)")
     step_cols = st.columns(3)
-    step_cols[0].markdown("**1. Collect**\n\nSend the financial snapshot to the `/collect` endpoint.")
-    step_cols[1].markdown("**2. Ingest**\n\nUpload supporting documents to `/ingest`.")
-    step_cols[2].markdown("**3. Generate**\n\nTrigger `/generate` to build `report.md`.")
+    step_cols[0].markdown("**1. Collect**\n\nWorkbook adapter posts `/collect` snapshot.")
+    step_cols[1].markdown("**2. Ingest**\n\nStream up to 1 GB of files to `/ingest`.")
+    step_cols[2].markdown("**3. Generate**\n\nCreate `report.md` + `report.json` via `/generate`.")
     st.info(
-        "Once the report is generated, the assistant can summarize risks, highlight catalysts, "
-        "and trace each claim back to a supporting document."
+        "All numbers are pulled from the model, while narrative sections are grounded in "
+        "retrieved evidence with inline citations."
     )
 
-    with st.expander("View sample snapshot payload", expanded=False):
-        snapshot_payload = {
-            "project_id": "example-project",
-            "financial_snapshot": {
-                "currency": "USD",
-                "npv": 54000000,
-                "irr": 0.19,
-                "dscr_min": 1.35,
-                "payback_years": 5.6,
-                "capex_total": 120000000,
-                "opex_annual": 8500000,
-                "revenue_annual": 23500000,
-                "scenarios": [
-                    {"name": "Base", "npv": 54000000, "irr": 0.19},
-                    {"name": "Downside", "npv": 30000000, "irr": 0.14},
-                    {"name": "Upside", "npv": 78000000, "irr": 0.24},
-                ],
-            },
-            "cell_map": {
-                "npv": "Assumptions!B12",
-                "irr": "Assumptions!B13",
-                "dscr_min": "Debt!F22",
-            },
-            "workbook_hash": "sha256-hash-here",
+    st.markdown("### Architecture & design choices")
+    st.markdown(
+        "- **Workbook as system of record**: the model drives every output with a workbook hash.\n"
+        "- **Vector + reranker retrieval**: dense embeddings + optional cross-encoder rerank.\n"
+        "- **Section templates**: executive summary, market, technical, financial, risk, and appendices."
+    )
+
+    with st.expander("Financial snapshot schema (excerpt)", expanded=False):
+        snapshot_schema = {
+            "as_of": "2025-11-17T08:00:00Z",
+            "workbook_path": ".../model.xlsx",
+            "workbook_hash": "sha256",
+            "currency": "USD",
+            "assumptions": {"discount_rate": 0.12, "tax_rate": 0.28},
+            "capex_total": 120000000,
+            "opex_annual": 8500000,
+            "revenue_annual": 23500000,
+            "npv": 54000000,
+            "irr": 0.19,
+            "payback_years": 5.6,
+            "dscr_min": 1.35,
+            "sensitivities": [
+                {"variable": "price", "delta": 0.1, "npv": 60000000, "irr": 0.205},
+                {"variable": "price", "delta": -0.1, "npv": 48000000, "irr": 0.175},
+            ],
+            "scenarios": [
+                {"name": "Base", "npv": 54000000, "irr": 0.19},
+                {"name": "Downside", "npv": 30000000, "irr": 0.14},
+                {"name": "Upside", "npv": 78000000, "irr": 0.24},
+            ],
         }
-        st.code(snapshot_payload, language="json")
-        st.download_button(
-            "Download sample JSON",
-            data=json.dumps(snapshot_payload, indent=2),
-            file_name="rag_snapshot_sample.json",
-            mime="application/json",
-            use_container_width=True,
+        st.code(snapshot_schema, language="json")
+
+    st.markdown("### Prompt strategy & section outline")
+    st.markdown(
+        "Sections: Executive Summary → Scope → Market → Technical → Legal/Permitting → "
+        "Implementation → Financial Analysis → Risk/ESG → Conclusion → Appendices."
+    )
+
+    with st.expander("Reference FastAPI implementation (rag_service/app.py)", expanded=False):
+        st.code(
+            "\n".join(
+                [
+                    "python rag_service/app.py",
+                    "POST /ingest   (stream files up to 1 GB)",
+                    "POST /generate (emit report.md + report.json)",
+                ]
+            ),
+            language="bash",
+        )
+        st.markdown(
+            "The implementation uses FastAPI + FAISS + Sentence-Transformers with optional "
+            "reranking and Excel metric extraction."
         )
 
     st.markdown("### Service endpoints")
@@ -1799,6 +1821,21 @@ def _render_rag_assistant_page() -> None:
         ),
         language="bash",
     )
+
+    with st.expander("Quick start commands", expanded=False):
+        st.code(
+            "\n".join(
+                [
+                    "python -m venv .venv && source .venv/bin/activate",
+                    "pip install -r requirements.txt",
+                    "python rag_service/app.py",
+                    "curl -F \"project_id=demo\" -F \"files=@/path/to/notes.pdf\" http://localhost:8000/ingest",
+                    "curl -X POST http://localhost:8000/generate -H \"Content-Type: application/json\" "
+                    "-d '{\"project_id\": \"demo\", \"query_hint\": \"feasibility study\"}'",
+                ]
+            ),
+            language="bash",
+        )
 
 def main() -> None:
     st.set_page_config(
