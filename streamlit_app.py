@@ -1701,15 +1701,19 @@ def _cluster_products(val_result) -> Optional[pd.DataFrame]:
 def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
     if LinearRegression is None or cons.empty:
         return None
-    growth = cons["revenue"].pct_change().fillna(0.0)
+    revenue = cons["revenue"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    ebitda = cons["ebitda"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    growth = revenue.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
     features = pd.DataFrame(
         {
-            "Revenue": cons["revenue"],
-            "EBITDA": cons["ebitda"],
+            "Revenue": revenue,
+            "EBITDA": ebitda,
             "Growth": growth,
         }
-    )
-    multiples = (cons["ebitda"].rolling(3).mean().fillna(method="bfill") + 1) / 1_000_000
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    multiples = (
+        ebitda.rolling(3).mean().bfill().replace([np.inf, -np.inf], np.nan).fillna(0.0) + 1
+    ) / 1_000_000
     model = LinearRegression()
     model.fit(features.values, multiples.values)
     pred = model.predict(features.values)
