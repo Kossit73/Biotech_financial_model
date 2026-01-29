@@ -1507,6 +1507,7 @@ def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
             "Growth": growth,
         }
     )
+    features = features.replace([np.inf, -np.inf], np.nan).fillna(0.0)
     multiples = (cons["ebitda"].rolling(3).mean().fillna(method="bfill") + 1) / 1_000_000
     model = LinearRegression()
     model.fit(features.values, multiples.values)
