@@ -63,6 +63,18 @@ SELECTOR_OPTIONS = [
     "Defensive posture",
 ]
 
+CHART_COLORS = [
+    "#4C78A8",
+    "#F58518",
+    "#54A24B",
+    "#B279A2",
+    "#E45756",
+    "#72B7B2",
+    "#FF9DA6",
+    "#9D755D",
+    "#BAB0AC",
+]
+
 
 def _default_products() -> pd.DataFrame:
     """Seed table with two representative products."""
@@ -930,6 +942,197 @@ def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(default)
 
 
+def _format_currency_axis(value: float) -> str:
+    abs_value = abs(value)
+    if abs_value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f}B"
+    if abs_value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if abs_value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return f"{value:.0f}"
+
+
+def _apply_standard_layout(
+    fig: go.Figure,
+    *,
+    title: str,
+    yaxis_title: str,
+    height: int = 340,
+    yaxis_tickformat: str = ",.0f",
+) -> None:
+    fig.update_layout(
+        title=title,
+        xaxis_title="Year",
+        yaxis_title=yaxis_title,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=height,
+    )
+    fig.update_yaxes(tickformat=yaxis_tickformat)
+
+
+def _plot_timeseries(
+    df: pd.DataFrame,
+    *,
+    title: str,
+    yaxis_title: str,
+    chart_type: str = "line",
+    yaxis_tickformat: str = ",.0f",
+) -> None:
+    if df.empty:
+        st.info("No data available for charting.")
+        return
+    if go is None:
+        if chart_type == "area":
+            st.area_chart(df)
+        else:
+            st.line_chart(df)
+        return
+    fig = go.Figure()
+    for idx, col in enumerate(df.columns):
+        color = CHART_COLORS[idx % len(CHART_COLORS)]
+        if chart_type == "area":
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df[col],
+                    mode="lines",
+                    name=col,
+                    stackgroup="one",
+                    line=dict(width=2, color=color),
+                    hovertemplate="%{x}<br>%{y:,.0f}<extra>%{fullData.name}</extra>",
+                )
+            )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df[col],
+                    mode="lines+markers",
+                    name=col,
+                    line=dict(width=2, color=color),
+                    marker=dict(size=6, color=color),
+                    hovertemplate="%{x}<br>%{y:,.0f}<extra>%{fullData.name}</extra>",
+                )
+            )
+    _apply_standard_layout(
+        fig,
+        title=title,
+        yaxis_title=yaxis_title,
+        height=340,
+        yaxis_tickformat=yaxis_tickformat,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _plot_bar_series(
+    series: pd.Series,
+    *,
+    title: str,
+    yaxis_title: str,
+    yaxis_tickformat: str = ",.0f",
+) -> None:
+    if series.empty:
+        st.info("No data available for charting.")
+        return
+    if go is None:
+        st.bar_chart(series)
+        return
+    fig = go.Figure(
+        go.Bar(
+            x=series.index.astype(str),
+            y=series.values,
+            marker_color="#4C78A8",
+            hovertemplate="%{x}<br>%{y:,.0f}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="",
+        yaxis_title=yaxis_title,
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=300,
+    )
+    fig.update_yaxes(tickformat=yaxis_tickformat)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _plot_histogram(
+    series: pd.Series,
+    *,
+    title: str,
+    xaxis_title: str,
+    xaxis_tickformat: str = ",.0f",
+) -> None:
+    if series.empty:
+        st.info("No data available for charting.")
+        return
+    if go is None:
+        hist = np.histogram(series, bins=20)
+        st.bar_chart(pd.DataFrame({"rNPV": hist[0]}, index=hist[1][:-1]))
+        return
+    fig = go.Figure(
+        data=[
+            go.Histogram(
+                x=series,
+                nbinsx=20,
+                marker_color="#F58518",
+                hovertemplate="%{x:,.0f}<br>Count=%{y}<extra></extra>",
+            )
+        ]
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title=xaxis_title,
+        yaxis_title="Count",
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=300,
+    )
+    fig.update_xaxes(tickformat=xaxis_tickformat)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _plot_scatter(
+    df: pd.DataFrame,
+    *,
+    title: str,
+    x_col: str,
+    y_col: str,
+    tickformat: str = ",.0f",
+) -> None:
+    if df.empty:
+        st.info("No data available for charting.")
+        return
+    if go is None:
+        st.scatter_chart(df)
+        return
+    fig = go.Figure(
+        go.Scatter(
+            x=df[x_col],
+            y=df[y_col],
+            mode="markers",
+            marker=dict(size=6, color="#54A24B", opacity=0.7),
+            hovertemplate=f"{x_col}=%{{x:,.0f}}<br>{y_col}=%{{y:,.0f}}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_col,
+        yaxis_title=y_col,
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=320,
+    )
+    fig.update_xaxes(tickformat=tickformat)
+    fig.update_yaxes(tickformat=tickformat)
+    st.plotly_chart(fig, use_container_width=True)
+
+
 def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
     """Render a reusable schedule editor with manual controls.
 
@@ -1498,15 +1701,19 @@ def _cluster_products(val_result) -> Optional[pd.DataFrame]:
 def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
     if LinearRegression is None or cons.empty:
         return None
-    growth = cons["revenue"].pct_change().fillna(0.0)
+    revenue = cons["revenue"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    ebitda = cons["ebitda"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    growth = revenue.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
     features = pd.DataFrame(
         {
-            "Revenue": cons["revenue"],
-            "EBITDA": cons["ebitda"],
+            "Revenue": revenue,
+            "EBITDA": ebitda,
             "Growth": growth,
         }
-    )
-    multiples = (cons["ebitda"].rolling(3).mean().fillna(method="bfill") + 1) / 1_000_000
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    multiples = (
+        ebitda.rolling(3).mean().bfill().replace([np.inf, -np.inf], np.nan).fillna(0.0) + 1
+    ) / 1_000_000
     model = LinearRegression()
     model.fit(features.values, multiples.values)
     pred = model.predict(features.values)
@@ -1514,71 +1721,93 @@ def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
 
 
 def _render_rag_assistant_page() -> None:
-    st.subheader("RAG Assistant")
+    st.subheader("RAG Feasibility Study Generator")
     st.write(
-        "Turn your valuation workbook into an evidence-backed investment memo. "
-        "The RAG Assistant gathers model outputs, ingests external research, and drafts "
-        "a report that highlights risks, catalysts, and valuation proof points."
+        "A production-ready RAG blueprint that ingests up to 1 GB of project materials, "
+        "locks to financial model outputs, and drafts a feasibility study with inline citations."
     )
 
     with st.container(border=True):
         hero_cols = st.columns([2, 1])
         with hero_cols[0]:
-            st.markdown("### What you can do")
+            st.markdown("### What it does")
             st.markdown(
-                "- **Capture a model snapshot** with key KPIs and scenario outputs.\n"
-                "- **Ingest evidence packs** (clinical readouts, market research, diligence).\n"
-                "- **Generate a feasibility report** with citations and risk callouts."
+                "- **Collects model outputs** (NPV, IRR, DSCR, capex/opex, scenarios) from Excel.\n"
+                "- **Ingests evidence** (PDF/DOCX/PPTX/CSV/TXT) and builds a FAISS index.\n"
+                "- **Generates a feasibility report** with citations and an audit appendix."
             )
-            st.markdown("**Best for:** investor memos, internal IC reviews, and diligence briefs.")
+            st.markdown(
+                "**Best for:** investment committees, technical diligence, and lender-ready reports."
+            )
         with hero_cols[1]:
-            st.markdown("### Readiness checklist")
-            st.metric("Model snapshot", "Ready")
-            st.metric("Evidence library", "Awaiting upload")
-            st.metric("Report draft", "Not generated")
+            st.markdown("### RAC pipeline status")
+            st.metric("Financial snapshot", "Ready")
+            st.metric("Evidence index", "Awaiting upload")
+            st.metric("Feasibility report", "Not generated")
 
-    st.markdown("### Launch plan")
+    st.markdown("### Model-integrated flow (RAC)")
     step_cols = st.columns(3)
-    step_cols[0].markdown("**1. Collect**\n\nSend the financial snapshot to the `/collect` endpoint.")
-    step_cols[1].markdown("**2. Ingest**\n\nUpload supporting documents to `/ingest`.")
-    step_cols[2].markdown("**3. Generate**\n\nTrigger `/generate` to build `report.md`.")
+    step_cols[0].markdown("**1. Collect**\n\nWorkbook adapter posts `/collect` snapshot.")
+    step_cols[1].markdown("**2. Ingest**\n\nStream up to 1 GB of files to `/ingest`.")
+    step_cols[2].markdown("**3. Generate**\n\nCreate `report.md` + `report.json` via `/generate`.")
     st.info(
-        "Once the report is generated, the assistant can summarize risks, highlight catalysts, "
-        "and trace each claim back to a supporting document."
+        "All numbers are pulled from the model, while narrative sections are grounded in "
+        "retrieved evidence with inline citations."
     )
 
-    with st.expander("View sample snapshot payload", expanded=False):
-        snapshot_payload = {
-            "project_id": "example-project",
-            "financial_snapshot": {
-                "currency": "USD",
-                "npv": 54000000,
-                "irr": 0.19,
-                "dscr_min": 1.35,
-                "payback_years": 5.6,
-                "capex_total": 120000000,
-                "opex_annual": 8500000,
-                "revenue_annual": 23500000,
-                "scenarios": [
-                    {"name": "Base", "npv": 54000000, "irr": 0.19},
-                    {"name": "Downside", "npv": 30000000, "irr": 0.14},
-                    {"name": "Upside", "npv": 78000000, "irr": 0.24},
-                ],
-            },
-            "cell_map": {
-                "npv": "Assumptions!B12",
-                "irr": "Assumptions!B13",
-                "dscr_min": "Debt!F22",
-            },
-            "workbook_hash": "sha256-hash-here",
+    st.markdown("### Architecture & design choices")
+    st.markdown(
+        "- **Workbook as system of record**: the model drives every output with a workbook hash.\n"
+        "- **Vector + reranker retrieval**: dense embeddings + optional cross-encoder rerank.\n"
+        "- **Section templates**: executive summary, market, technical, financial, risk, and appendices."
+    )
+
+    with st.expander("Financial snapshot schema (excerpt)", expanded=False):
+        snapshot_schema = {
+            "as_of": "2025-11-17T08:00:00Z",
+            "workbook_path": ".../model.xlsx",
+            "workbook_hash": "sha256",
+            "currency": "USD",
+            "assumptions": {"discount_rate": 0.12, "tax_rate": 0.28},
+            "capex_total": 120000000,
+            "opex_annual": 8500000,
+            "revenue_annual": 23500000,
+            "npv": 54000000,
+            "irr": 0.19,
+            "payback_years": 5.6,
+            "dscr_min": 1.35,
+            "sensitivities": [
+                {"variable": "price", "delta": 0.1, "npv": 60000000, "irr": 0.205},
+                {"variable": "price", "delta": -0.1, "npv": 48000000, "irr": 0.175},
+            ],
+            "scenarios": [
+                {"name": "Base", "npv": 54000000, "irr": 0.19},
+                {"name": "Downside", "npv": 30000000, "irr": 0.14},
+                {"name": "Upside", "npv": 78000000, "irr": 0.24},
+            ],
         }
-        st.code(snapshot_payload, language="json")
-        st.download_button(
-            "Download sample JSON",
-            data=json.dumps(snapshot_payload, indent=2),
-            file_name="rag_snapshot_sample.json",
-            mime="application/json",
-            use_container_width=True,
+        st.code(snapshot_schema, language="json")
+
+    st.markdown("### Prompt strategy & section outline")
+    st.markdown(
+        "Sections: Executive Summary → Scope → Market → Technical → Legal/Permitting → "
+        "Implementation → Financial Analysis → Risk/ESG → Conclusion → Appendices."
+    )
+
+    with st.expander("Reference FastAPI implementation (rag_service/app.py)", expanded=False):
+        st.code(
+            "\n".join(
+                [
+                    "python rag_service/app.py",
+                    "POST /ingest   (stream files up to 1 GB)",
+                    "POST /generate (emit report.md + report.json)",
+                ]
+            ),
+            language="bash",
+        )
+        st.markdown(
+            "The implementation uses FastAPI + FAISS + Sentence-Transformers with optional "
+            "reranking and Excel metric extraction."
         )
 
     st.markdown("### Service endpoints")
@@ -1592,6 +1821,21 @@ def _render_rag_assistant_page() -> None:
         ),
         language="bash",
     )
+
+    with st.expander("Quick start commands", expanded=False):
+        st.code(
+            "\n".join(
+                [
+                    "python -m venv .venv && source .venv/bin/activate",
+                    "pip install -r requirements.txt",
+                    "python rag_service/app.py",
+                    "curl -F \"project_id=demo\" -F \"files=@/path/to/notes.pdf\" http://localhost:8000/ingest",
+                    "curl -X POST http://localhost:8000/generate -H \"Content-Type: application/json\" "
+                    "-d '{\"project_id\": \"demo\", \"query_hint\": \"feasibility study\"}'",
+                ]
+            ),
+            language="bash",
+        )
 
 def main() -> None:
     st.set_page_config(
@@ -1609,19 +1853,6 @@ def main() -> None:
     portfolio: Portfolio | None = None
     valuation_result = None
 
-    page_choice = st.sidebar.radio(
-        "Navigate",
-        ["Model workspace", "RAG Assistant"],
-        index=0,
-    )
-
-    if page_choice == "RAG Assistant":
-        _render_rag_assistant_page()
-        st.caption(
-            "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
-        )
-        return
-
     (
         config_tab,
         financial_tab,
@@ -1629,6 +1860,7 @@ def main() -> None:
         analytics_tab,
         scenario_tab,
         vc_tab,
+        rag_tab,
     ) = st.tabs(
         [
             "Model configuration",
@@ -1637,6 +1869,7 @@ def main() -> None:
             "Advanced analytics",
             "Scenario analysis",
             "VC helper",
+            "RAG Assistant",
         ]
     )
 
@@ -2148,7 +2381,11 @@ def main() -> None:
                         }
                     )
                 )
-                st.line_chart(cons_display)
+                _plot_timeseries(
+                    cons_display,
+                    title="Consolidated performance",
+                    yaxis_title=f"Amount ({model_cfg.currency})",
+                )
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
             st.markdown("**Statement of Financial Performance**")
             st.dataframe(
@@ -2177,8 +2414,17 @@ def main() -> None:
             kpi_cols[3].metric("Total FCFF after WC", f"{cons['fcff_after_wc'].sum():,.0f}")
 
             chart_data = cons[["revenue", "ebitda", "fcff_after_wc"]]
-            st.area_chart(chart_data)
-            st.bar_chart(cons["fcff_after_wc"], use_container_width=True)
+            _plot_timeseries(
+                chart_data,
+                title="Portfolio value drivers",
+                yaxis_title=f"Amount ({model_cfg.currency})",
+                chart_type="area",
+            )
+            _plot_bar_series(
+                cons["fcff_after_wc"],
+                title="FCFF after working capital",
+                yaxis_title=f"Amount ({model_cfg.currency})",
+            )
 
     with analytics_tab:
         st.subheader("Advanced financial analytics")
@@ -2246,7 +2492,11 @@ def main() -> None:
             with st.expander("Trend, seasonality & segmentation", expanded=False):
                 decomp_df = _compute_decomposition(cons)
                 if decomp_df is not None:
-                    st.line_chart(decomp_df)
+                    _plot_timeseries(
+                        decomp_df,
+                        title="Revenue decomposition",
+                        yaxis_title=f"Amount ({model_cfg.currency})",
+                    )
                 else:
                     st.info("Need more history to decompose trend/seasonality.")
 
@@ -2259,7 +2509,12 @@ def main() -> None:
                             "FCFF (PV proxy)": "{:.0f}",
                         })
                     )
-                    st.bar_chart(seg_df.set_index("Product")["Revenue share"])
+                    _plot_bar_series(
+                        seg_df.set_index("Product")["Revenue share"] * 100,
+                        title="Revenue share by product",
+                        yaxis_title="Revenue share (%)",
+                        yaxis_tickformat=".1f",
+                    )
                 else:
                     st.info("Add probability-weighted products to see segmentation insights.")
 
@@ -2281,9 +2536,16 @@ def main() -> None:
 
                 sims = st.session_state.get("mc_results")
                 if sims is not None:
-                    st.line_chart(sims.reset_index(drop=True))
-                    hist = np.histogram(sims, bins=20)
-                    st.bar_chart(pd.DataFrame({"rNPV": hist[0]}, index=hist[1][:-1]))
+                    _plot_timeseries(
+                        pd.DataFrame({"rNPV": sims.reset_index(drop=True)}),
+                        title="Monte Carlo rNPV paths",
+                        yaxis_title=f"rNPV ({model_cfg.currency})",
+                    )
+                    _plot_histogram(
+                        sims,
+                        title="Monte Carlo rNPV distribution",
+                        xaxis_title=f"rNPV ({model_cfg.currency})",
+                    )
                     var = MonteCarloEngine.value_at_risk(sims)
                     cvar = MonteCarloEngine.conditional_value_at_risk(sims)
                     st.write(
@@ -2337,6 +2599,7 @@ def main() -> None:
                                 x=pos["Delta"],
                                 orientation="h",
                                 name="Positive",
+                                marker_color=CHART_COLORS[0],
                             )
                         )
                         tornado_fig.add_trace(
@@ -2345,18 +2608,42 @@ def main() -> None:
                                 x=neg["Delta"],
                                 orientation="h",
                                 name="Negative",
+                                marker_color=CHART_COLORS[4],
                             )
                         )
-                        tornado_fig.update_layout(barmode="relative", title="Tornado impact")
+                        tornado_fig.update_layout(
+                            barmode="relative",
+                            title="Tornado impact",
+                            template="plotly_white",
+                            height=320,
+                            margin=dict(l=10, r=10, t=40, b=10),
+                        )
+                        tornado_fig.update_xaxes(tickformat=",.0f")
                         st.plotly_chart(tornado_fig, use_container_width=True)
 
                         spider_fig = go.Figure()
                         pivot = tornado_df.pivot(index="Driver", columns="Change", values="rNPV").fillna(base_rnpv)
                         spider_fig.add_trace(
-                            go.Scatterpolar(r=pivot.get("+20%", [base_rnpv]), theta=pivot.index, name="Upside")
+                            go.Scatterpolar(
+                                r=pivot.get("+20%", [base_rnpv]),
+                                theta=pivot.index,
+                                name="Upside",
+                                line=dict(color=CHART_COLORS[1]),
+                            )
                         )
                         spider_fig.add_trace(
-                            go.Scatterpolar(r=pivot.get("-20%", [base_rnpv]), theta=pivot.index, name="Downside")
+                            go.Scatterpolar(
+                                r=pivot.get("-20%", [base_rnpv]),
+                                theta=pivot.index,
+                                name="Downside",
+                                line=dict(color=CHART_COLORS[2]),
+                            )
+                        )
+                        spider_fig.update_layout(
+                            title="Spider sensitivity",
+                            template="plotly_white",
+                            height=340,
+                            margin=dict(l=10, r=10, t=40, b=10),
                         )
                         st.plotly_chart(spider_fig, use_container_width=True)
 
@@ -2390,14 +2677,27 @@ def main() -> None:
                     try:
                         if method == "ARIMA":
                             forecast = fe.forecast_arima(series, steps=horizon)
-                            st.line_chart(forecast)
+                            _plot_timeseries(
+                                pd.DataFrame({f"{ts_metric} forecast": forecast.values}, index=forecast.index),
+                                title=f"{ts_metric.upper()} forecast (ARIMA)",
+                                yaxis_title=f"Amount ({model_cfg.currency})",
+                            )
                         elif method == "Prophet":
                             hist_df = pd.DataFrame({"ds": series.index, "y": series.values})
                             forecast = fe.forecast_prophet(hist_df, periods=horizon)
-                            st.line_chart(forecast.set_index("ds")["yhat"])
+                            _plot_timeseries(
+                                pd.DataFrame({"Forecast": forecast.set_index("ds")["yhat"]}),
+                                title=f"{ts_metric.upper()} forecast (Prophet)",
+                                yaxis_title=f"Amount ({model_cfg.currency})",
+                            )
                         else:
                             forecast = fe.forecast_lstm(series, steps_ahead=horizon)
-                            st.line_chart(pd.Series(forecast))
+                            forecast_index = pd.RangeIndex(start=1, stop=len(forecast) + 1, step=1)
+                            _plot_timeseries(
+                                pd.DataFrame({"Forecast": forecast}, index=forecast_index),
+                                title=f"{ts_metric.upper()} forecast (LSTM)",
+                                yaxis_title=f"Amount ({model_cfg.currency})",
+                            )
                     except Exception as exc:
                         st.warning(f"Forecast failed: {exc}")
 
@@ -2423,7 +2723,12 @@ def main() -> None:
             with st.expander("Risk, copulas, macro & ESG linkages", expanded=False):
                 copula_df = _copula_simulation(cons)
                 if copula_df is not None:
-                    st.scatter_chart(copula_df)
+                    _plot_scatter(
+                        copula_df,
+                        title="Revenue vs EBITDA copula simulation",
+                        x_col="Revenue",
+                        y_col="EBITDA",
+                    )
 
                 macro_cols = st.columns(4)
                 inflation = macro_cols[0].slider("Inflation", 0.0, 0.15, 0.03)
@@ -2431,7 +2736,11 @@ def main() -> None:
                 fx = macro_cols[2].slider("FX depreciation", -0.1, 0.2, 0.0)
                 sentiment = macro_cols[3].slider("Market sentiment", -0.3, 0.3, 0.0)
                 macro_revenue = cons["revenue"] * (1 + inflation + gdp + sentiment - fx)
-                st.line_chart(pd.DataFrame({"Original": cons["revenue"], "Macro-adjusted": macro_revenue}))
+                _plot_timeseries(
+                    pd.DataFrame({"Original": cons["revenue"], "Macro-adjusted": macro_revenue}),
+                    title="Macro-adjusted revenue view",
+                    yaxis_title=f"Amount ({model_cfg.currency})",
+                )
 
                 esg_cols = st.columns(3)
                 carbon_price = esg_cols[0].slider("Carbon price ($/t)", 0, 200, 75)
@@ -2454,7 +2763,12 @@ def main() -> None:
 
                 ml_mult_df = _machine_learning_multiple(cons)
                 if ml_mult_df is not None:
-                    st.line_chart(ml_mult_df.set_index("Year"))
+                    _plot_timeseries(
+                        ml_mult_df.set_index("Year"),
+                        title="ML-implied EBITDA multiple",
+                        yaxis_title="Multiple (x)",
+                        yaxis_tickformat=".2f",
+                    )
                 else:
                     st.caption("Install scikit-learn to run ML-driven multiple predictions.")
 
@@ -2513,9 +2827,11 @@ def main() -> None:
             )
             st.table(vc_df)
 
-    st.caption(
-        "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
-    )
+    with rag_tab:
+        _render_rag_assistant_page()
+        st.caption(
+            "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
+        )
 
 
 if __name__ == "__main__":

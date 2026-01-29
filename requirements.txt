@@ -1,4 +1,12 @@
 numpy
 pandas
+fastapi
+uvicorn[standard]
+sentence-transformers
+faiss-cpu
+pypdf
+python-docx
+python-pptx
+openpyxl
 scikit-learn
 statsmodels
