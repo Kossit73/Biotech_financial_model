@@ -63,6 +63,18 @@ SELECTOR_OPTIONS = [
     "Defensive posture",
 ]
 
+CHART_COLORS = [
+    "#4C78A8",
+    "#F58518",
+    "#54A24B",
+    "#B279A2",
+    "#E45756",
+    "#72B7B2",
+    "#FF9DA6",
+    "#9D755D",
+    "#BAB0AC",
+]
+
 
 def _default_products() -> pd.DataFrame:
     """Seed table with two representative products."""
@@ -941,12 +953,34 @@ def _format_currency_axis(value: float) -> str:
     return f"{value:.0f}"
 
 
+def _apply_standard_layout(
+    fig: go.Figure,
+    *,
+    title: str,
+    yaxis_title: str,
+    height: int = 340,
+    yaxis_tickformat: str = ",.0f",
+) -> None:
+    fig.update_layout(
+        title=title,
+        xaxis_title="Year",
+        yaxis_title=yaxis_title,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=height,
+    )
+    fig.update_yaxes(tickformat=yaxis_tickformat)
+
+
 def _plot_timeseries(
     df: pd.DataFrame,
     *,
     title: str,
     yaxis_title: str,
     chart_type: str = "line",
+    yaxis_tickformat: str = ",.0f",
 ) -> None:
     if df.empty:
         st.info("No data available for charting.")
@@ -958,7 +992,8 @@ def _plot_timeseries(
             st.line_chart(df)
         return
     fig = go.Figure()
-    for col in df.columns:
+    for idx, col in enumerate(df.columns):
+        color = CHART_COLORS[idx % len(CHART_COLORS)]
         if chart_type == "area":
             fig.add_trace(
                 go.Scatter(
@@ -967,6 +1002,7 @@ def _plot_timeseries(
                     mode="lines",
                     name=col,
                     stackgroup="one",
+                    line=dict(width=2, color=color),
                     hovertemplate="%{x}<br>%{y:,.0f}<extra>%{fullData.name}</extra>",
                 )
             )
@@ -977,24 +1013,28 @@ def _plot_timeseries(
                     y=df[col],
                     mode="lines+markers",
                     name=col,
+                    line=dict(width=2, color=color),
+                    marker=dict(size=6, color=color),
                     hovertemplate="%{x}<br>%{y:,.0f}<extra>%{fullData.name}</extra>",
                 )
             )
-    fig.update_layout(
+    _apply_standard_layout(
+        fig,
         title=title,
-        xaxis_title="Year",
         yaxis_title=yaxis_title,
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        template="plotly_white",
-        margin=dict(l=10, r=10, t=40, b=10),
         height=340,
+        yaxis_tickformat=yaxis_tickformat,
     )
-    fig.update_yaxes(tickformat=",.0f", tickprefix="")
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _plot_bar_series(series: pd.Series, *, title: str, yaxis_title: str) -> None:
+def _plot_bar_series(
+    series: pd.Series,
+    *,
+    title: str,
+    yaxis_title: str,
+    yaxis_tickformat: str = ",.0f",
+) -> None:
     if series.empty:
         st.info("No data available for charting.")
         return
@@ -1017,11 +1057,17 @@ def _plot_bar_series(series: pd.Series, *, title: str, yaxis_title: str) -> None
         margin=dict(l=10, r=10, t=40, b=10),
         height=300,
     )
-    fig.update_yaxes(tickformat=",.0f")
+    fig.update_yaxes(tickformat=yaxis_tickformat)
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _plot_histogram(series: pd.Series, *, title: str, xaxis_title: str) -> None:
+def _plot_histogram(
+    series: pd.Series,
+    *,
+    title: str,
+    xaxis_title: str,
+    xaxis_tickformat: str = ",.0f",
+) -> None:
     if series.empty:
         st.info("No data available for charting.")
         return
@@ -1047,11 +1093,18 @@ def _plot_histogram(series: pd.Series, *, title: str, xaxis_title: str) -> None:
         margin=dict(l=10, r=10, t=40, b=10),
         height=300,
     )
-    fig.update_xaxes(tickformat=",.0f")
+    fig.update_xaxes(tickformat=xaxis_tickformat)
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _plot_scatter(df: pd.DataFrame, *, title: str, x_col: str, y_col: str) -> None:
+def _plot_scatter(
+    df: pd.DataFrame,
+    *,
+    title: str,
+    x_col: str,
+    y_col: str,
+    tickformat: str = ",.0f",
+) -> None:
     if df.empty:
         st.info("No data available for charting.")
         return
@@ -1075,8 +1128,8 @@ def _plot_scatter(df: pd.DataFrame, *, title: str, x_col: str, y_col: str) -> No
         margin=dict(l=10, r=10, t=40, b=10),
         height=320,
     )
-    fig.update_xaxes(tickformat=",.0f")
-    fig.update_yaxes(tickformat=",.0f")
+    fig.update_xaxes(tickformat=tickformat)
+    fig.update_yaxes(tickformat=tickformat)
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -2430,6 +2483,7 @@ def main() -> None:
                         seg_df.set_index("Product")["Revenue share"] * 100,
                         title="Revenue share by product",
                         yaxis_title="Revenue share (%)",
+                        yaxis_tickformat=".1f",
                     )
                 else:
                     st.info("Add probability-weighted products to see segmentation insights.")
@@ -2515,6 +2569,7 @@ def main() -> None:
                                 x=pos["Delta"],
                                 orientation="h",
                                 name="Positive",
+                                marker_color=CHART_COLORS[0],
                             )
                         )
                         tornado_fig.add_trace(
@@ -2523,18 +2578,42 @@ def main() -> None:
                                 x=neg["Delta"],
                                 orientation="h",
                                 name="Negative",
+                                marker_color=CHART_COLORS[4],
                             )
                         )
-                        tornado_fig.update_layout(barmode="relative", title="Tornado impact")
+                        tornado_fig.update_layout(
+                            barmode="relative",
+                            title="Tornado impact",
+                            template="plotly_white",
+                            height=320,
+                            margin=dict(l=10, r=10, t=40, b=10),
+                        )
+                        tornado_fig.update_xaxes(tickformat=",.0f")
                         st.plotly_chart(tornado_fig, use_container_width=True)
 
                         spider_fig = go.Figure()
                         pivot = tornado_df.pivot(index="Driver", columns="Change", values="rNPV").fillna(base_rnpv)
                         spider_fig.add_trace(
-                            go.Scatterpolar(r=pivot.get("+20%", [base_rnpv]), theta=pivot.index, name="Upside")
+                            go.Scatterpolar(
+                                r=pivot.get("+20%", [base_rnpv]),
+                                theta=pivot.index,
+                                name="Upside",
+                                line=dict(color=CHART_COLORS[1]),
+                            )
                         )
                         spider_fig.add_trace(
-                            go.Scatterpolar(r=pivot.get("-20%", [base_rnpv]), theta=pivot.index, name="Downside")
+                            go.Scatterpolar(
+                                r=pivot.get("-20%", [base_rnpv]),
+                                theta=pivot.index,
+                                name="Downside",
+                                line=dict(color=CHART_COLORS[2]),
+                            )
+                        )
+                        spider_fig.update_layout(
+                            title="Spider sensitivity",
+                            template="plotly_white",
+                            height=340,
+                            margin=dict(l=10, r=10, t=40, b=10),
                         )
                         st.plotly_chart(spider_fig, use_container_width=True)
 
@@ -2658,6 +2737,7 @@ def main() -> None:
                         ml_mult_df.set_index("Year"),
                         title="ML-implied EBITDA multiple",
                         yaxis_title="Multiple (x)",
+                        yaxis_tickformat=".2f",
                     )
                 else:
                     st.caption("Install scikit-learn to run ML-driven multiple predictions.")
