@@ -296,7 +296,7 @@ class ValuationEngine:
 
     def _discounted_cash_flows(self, fcff: pd.Series) -> pd.DataFrame:
         years = fcff.index.values
-        t = np.arange(len(years))
+        t = np.arange(1, len(years) + 1)
         df = pd.DataFrame(index=years)
         df["t"] = t
         df["fcff"] = fcff.values
