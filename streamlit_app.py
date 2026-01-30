@@ -1659,7 +1659,7 @@ def _build_financial_excel(
     cash_flow_df: pd.DataFrame,
 ) -> bytes:
     output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
         cons.to_excel(writer, sheet_name="Consolidated forecast")
         perf_df.to_excel(writer, sheet_name="Financial performance")
         position_df.to_excel(writer, sheet_name="Financial position")
