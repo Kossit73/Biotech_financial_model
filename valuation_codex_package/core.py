@@ -261,7 +261,7 @@ class Portfolio:
             cons_df = cons_df.add(wdf[base_cols], fill_value=0.0)
 
         wc = self.model_config.working_capital_pct_sales * cons_df["revenue"]
-        wc_diff = wc.diff().fillna(wc)
+        wc_diff = wc.diff().fillna(0.0)
         cons_df["delta_wc"] = -wc_diff
         cons_df["fcff_after_wc"] = cons_df["fcff"] + cons_df["delta_wc"]
 
