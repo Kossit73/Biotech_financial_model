@@ -1754,11 +1754,37 @@ def _render_rag_assistant_page() -> None:
 
     st.markdown("## AI & Machine Learning Configuration")
     enable_ai = st.checkbox("Enable AI enhancements", value=True, key=f"{rag_key_prefix}_enable_ai")
+    provider_options_key = f"{rag_key_prefix}_provider_options"
+    if provider_options_key not in st.session_state:
+        st.session_state[provider_options_key] = [
+            "OpenAI",
+            "Azure OpenAI",
+            "Anthropic",
+            "Vertex",
+            "Custom",
+        ]
+    provider_options = st.session_state[provider_options_key]
     provider = st.selectbox(
         "Provider",
-        ["OpenAI", "Azure OpenAI", "Anthropic", "Vertex", "Other"],
+        provider_options,
         key=f"{rag_key_prefix}_provider",
     )
+    custom_provider = ""
+    if provider == "Custom":
+        custom_provider = st.text_input(
+            "Custom provider name",
+            placeholder="Enter a provider name (e.g., Cohere, Mistral)",
+            key=f"{rag_key_prefix}_custom_provider",
+        )
+        add_provider = st.button("Add provider", key=f"{rag_key_prefix}_add_provider")
+        if add_provider and custom_provider:
+            updated_providers = [*provider_options]
+            if custom_provider not in updated_providers:
+                updated_providers.insert(-1, custom_provider)
+                st.session_state[provider_options_key] = updated_providers
+                st.success(f"Added provider: {custom_provider}")
+            else:
+                st.info("That provider is already available.")
     model_name = st.text_input(
         "Model",
         value="gpt-4o-mini",
@@ -1791,7 +1817,7 @@ def _render_rag_assistant_page() -> None:
     if st.button("Save AI configuration", key=f"{rag_key_prefix}_save_config"):
         st.session_state["rag_ai_config"] = {
             "enable_ai": enable_ai,
-            "provider": provider,
+            "provider": custom_provider or provider,
             "model": model_name,
             "forecast_horizon": forecast_horizon,
             "ml_methods": ml_methods,
