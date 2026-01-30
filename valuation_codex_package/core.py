@@ -308,7 +308,8 @@ class ValuationEngine:
         last_year = cons_df.index[-1]
         last_ebitda = cons_df.loc[last_year, "ebitda"]
         multiple = self.model_config.ev_ebitda_multiple
-        terminal_ev = multiple * last_ebitda
+        terminal_ebitda = max(0.0, float(last_ebitda))
+        terminal_ev = multiple * terminal_ebitda
 
         t_last = dcf_df.loc[last_year, "t"]
         dcf_df.loc[last_year, "terminal_value"] = terminal_ev
