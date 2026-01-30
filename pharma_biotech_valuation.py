@@ -392,6 +392,76 @@ def _apply_sales_ramp(target: float, year_since_launch: int, ramp: Tuple[float, 
     return target
 
 
+def _target_revenue(customers: Optional[int], price: Optional[float], adj_pct: float) -> float:
+    if customers is None or price is None:
+        return 0.0
+    return float(customers) * float(price) * float(adj_pct)
+
+
+def _compute_revenues(
+    years: pd.Index,
+    *,
+    market_entry_year: int,
+    end_patent_year: int,
+    target_patent: float,
+    target_post: float,
+    sales_growth_pct: float,
+    sales_ramp: Tuple[float, float, float, float, float],
+) -> List[float]:
+    year_values = years.to_numpy(dtype=int)
+    years_since_launch = year_values - int(market_entry_year) + 1
+    in_patent = year_values <= int(end_patent_year)
+    targets = np.where(in_patent, float(target_patent), float(target_post))
+
+    ramp_factors = np.ones_like(years_since_launch, dtype=float)
+    ramp_map = np.array(sales_ramp, dtype=float)
+    ramp_mask = (years_since_launch >= 1) & (years_since_launch <= 5)
+    ramp_factors[ramp_mask] = ramp_map[years_since_launch[ramp_mask] - 1]
+    ramp_factors[years_since_launch <= 0] = 0.0
+
+    revenues = targets * ramp_factors
+    growth_mask = years_since_launch > 5
+    if np.any(growth_mask):
+        growth_factors = (1.0 + sales_growth_pct) ** (years_since_launch[growth_mask] - 5)
+        revenues[growth_mask] *= growth_factors
+
+    return revenues.tolist()
+
+
+def _apply_straight_line_allocation(
+    df: pd.DataFrame,
+    *,
+    column: str,
+    total: float,
+    start_year: int,
+    years_count: int,
+) -> None:
+    if total <= 0 or years_count <= 0:
+        return
+    annual = total / max(years_count, 1)
+    for offset in range(years_count):
+        year = start_year + offset
+        if year in df.index:
+            df.loc[year, column] = annual
+
+
+def _apply_prelaunch_allocation(
+    df: pd.DataFrame,
+    *,
+    column: str,
+    total: float,
+    market_entry_year: int,
+    allocation_years: int,
+) -> None:
+    if total <= 0 or allocation_years <= 0:
+        return
+    prelaunch_years = [year for year in df.index if year < market_entry_year][:allocation_years]
+    if not prelaunch_years:
+        return
+    annual = total / len(prelaunch_years)
+    df.loc[prelaunch_years, column] = annual
+
+
 def forecast_product_fcff(
     p: ProductInputs,
     g: GlobalAssumptions,
@@ -408,39 +478,28 @@ def forecast_product_fcff(
     df["product_id"] = p.product_id
     df["name"] = p.name
 
-    if p.customers_per_year_patent is None or p.price_per_customer_patent is None:
-        target_pat = 0.0
-    else:
-        target_pat = (
-            float(p.customers_per_year_patent)
-            * float(p.price_per_customer_patent)
-            * float(p.adj_patent_pct)
-        )
-
-    if p.customers_per_year_post is None or p.price_per_customer_post is None:
-        target_post = 0.0
-    else:
-        target_post = (
-            float(p.customers_per_year_post)
-            * float(p.price_per_customer_post)
-            * float(p.adj_post_pct)
-        )
+    target_pat = _target_revenue(
+        p.customers_per_year_patent,
+        p.price_per_customer_patent,
+        p.adj_patent_pct,
+    )
+    target_post = _target_revenue(
+        p.customers_per_year_post,
+        p.price_per_customer_post,
+        p.adj_post_pct,
+    )
 
     end_patent = p.end_patent_year if p.end_patent_year is not None else (p.market_entry_year + 20)
 
-    revenues: List[float] = []
-    for year in years:
-        years_since_launch = int(year) - int(p.market_entry_year) + 1
-        in_patent = int(year) <= int(end_patent)
-        target = target_pat if in_patent else target_post
-        rev = _apply_sales_ramp(target, years_since_launch, g.sales_ramp)
-
-        if years_since_launch > 5 and rev > 0:
-            rev *= (1.0 + p.sales_growth_pct) ** (years_since_launch - 5)
-
-        revenues.append(rev)
-
-    df["revenue"] = revenues
+    df["revenue"] = _compute_revenues(
+        years,
+        market_entry_year=p.market_entry_year,
+        end_patent_year=end_patent,
+        target_patent=target_pat,
+        target_post=target_post,
+        sales_growth_pct=p.sales_growth_pct,
+        sales_ramp=g.sales_ramp,
+    )
 
     df["cogs"] = np.where(
         df.index.values <= end_patent,
@@ -468,20 +527,24 @@ def forecast_product_fcff(
     )
 
     df["amortization"] = 0.0
-    if p.remaining_rnd_usd > 0 and p.market_entry_year in df.index:
-        annual_amort = p.remaining_rnd_usd / max(g.rd_amort_years, 1)
-        for i in range(g.rd_amort_years):
-            year = p.market_entry_year + i
-            if year in df.index:
-                df.loc[year, "amortization"] = annual_amort
+    if p.market_entry_year in df.index:
+        _apply_straight_line_allocation(
+            df,
+            column="amortization",
+            total=p.remaining_rnd_usd,
+            start_year=p.market_entry_year,
+            years_count=g.rd_amort_years,
+        )
 
     df["depreciation"] = 0.0
-    if p.remaining_capex_usd > 0 and p.market_entry_year in df.index:
-        annual_depr = p.remaining_capex_usd / max(g.fixed_asset_depr_years, 1)
-        for i in range(g.fixed_asset_depr_years):
-            year = p.market_entry_year + i
-            if year in df.index:
-                df.loc[year, "depreciation"] = annual_depr
+    if p.market_entry_year in df.index:
+        _apply_straight_line_allocation(
+            df,
+            column="depreciation",
+            total=p.remaining_capex_usd,
+            start_year=p.market_entry_year,
+            years_count=g.fixed_asset_depr_years,
+        )
 
     df["ebit"] = df["ebitda"] - df["amortization"] - df["depreciation"]
 
@@ -492,18 +555,22 @@ def forecast_product_fcff(
     df["change_in_nwc"] = nwc.diff().fillna(0.0)
 
     df["rnd_investments"] = 0.0
-    if p.remaining_rnd_usd > 0:
-        years_pre = [year for year in df.index if year < p.market_entry_year][: p.rnd_allocation_years]
-        if years_pre:
-            annual = p.remaining_rnd_usd / len(years_pre)
-            df.loc[years_pre, "rnd_investments"] = annual
+    _apply_prelaunch_allocation(
+        df,
+        column="rnd_investments",
+        total=p.remaining_rnd_usd,
+        market_entry_year=p.market_entry_year,
+        allocation_years=p.rnd_allocation_years,
+    )
 
     df["capex"] = 0.0
-    if p.remaining_capex_usd > 0:
-        years_pre = [year for year in df.index if year < p.market_entry_year][: p.capex_allocation_years]
-        if years_pre:
-            annual = p.remaining_capex_usd / len(years_pre)
-            df.loc[years_pre, "capex"] = annual
+    _apply_prelaunch_allocation(
+        df,
+        column="capex",
+        total=p.remaining_capex_usd,
+        market_entry_year=p.market_entry_year,
+        allocation_years=p.capex_allocation_years,
+    )
 
     df["fcff"] = fcff_from_operating_lines(
         ebit=df["ebit"],

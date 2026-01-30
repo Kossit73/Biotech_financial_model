@@ -3,3 +3,7 @@ pandas
 scikit-learn
 statsmodels
 requests
+openpyxl
+python-docx
+reportlab
+matplotlib

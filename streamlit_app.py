@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import io
+import importlib
 import os
 from io import BytesIO
 from dataclasses import asdict, fields
@@ -137,13 +139,22 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
     return asdict(cfg)
 
 
-def _default_vaccine_sales_table(first_year: int = 2024) -> pd.DataFrame:
-    years = [first_year + i for i in range(5)]
+def _default_vaccine_sales_table(first_year: int = 2024, horizon_years: int = 5) -> pd.DataFrame:
+    years = [first_year + i for i in range(max(horizon_years, 1))]
+    def _extend(values: List[float], target_len: int) -> List[float]:
+        if len(values) >= target_len:
+            return values[:target_len]
+        if not values:
+            return [0.0] * target_len
+        return values + [values[-1]] * (target_len - len(values))
+
+    doses = _extend([5, 7, 10, 12, 12], len(years))
+    prices = _extend([25, 26, 27, 27, 28], len(years))
     data = {
         "Year": years,
-        "Doses (M)": [5, 7, 10, 12, 12],
-        "Price per dose": [25, 26, 27, 27, 28],
-        "Comments": ["", "", "", "", ""],
+        "Doses (M)": doses,
+        "Price per dose": prices,
+        "Comments": [""] * len(years),
     }
     return pd.DataFrame(data)
 
@@ -692,6 +703,9 @@ def _apply_yearly_increment(
     st.markdown("**Yearly Increment Helper**")
     if df.empty or selected_idx is None:
         st.caption("Select a row to apply increments.")
+        return df
+    if selected_idx not in df.index:
+        st.caption("Selected row is no longer available.")
         return df
 
     numeric_cols = [
@@ -1729,6 +1743,447 @@ def _rag_blueprint_markdown() -> str:
     )
 
 
+def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
+    scenarios = snapshot_summary.get("scenarios") or []
+    sensitivities = snapshot_summary.get("sensitivities") or []
+    last_report = bundle_payload.get("last_report") or {}
+    summary_rows = [
+        {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
+        {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
+        {"Metric": "NPV", "Value": snapshot_summary.get("npv")},
+        {"Metric": "IRR", "Value": snapshot_summary.get("irr")},
+        {"Metric": "Min DSCR", "Value": snapshot_summary.get("dscr_min")},
+        {"Metric": "Payback (years)", "Value": snapshot_summary.get("payback_years")},
+        {"Metric": "Total Capex", "Value": snapshot_summary.get("capex_total")},
+        {"Metric": "Annual Opex", "Value": snapshot_summary.get("opex_annual")},
+        {"Metric": "Annual Revenue", "Value": snapshot_summary.get("revenue_annual")},
+    ]
+    return {
+        "summary_rows": summary_rows,
+        "scenarios": scenarios,
+        "sensitivities": sensitivities,
+        "last_report": last_report,
+        "ai_config": bundle_payload["ai_config"],
+    }
+
+
+def _build_chart_tables(
+    valuation_result: Optional[ValuationResult],
+    model_cfg: Optional[ModelConfig],
+    portfolio: Optional[Portfolio],
+) -> Dict[str, pd.DataFrame]:
+    tables: Dict[str, pd.DataFrame] = {}
+    if valuation_result is None or model_cfg is None:
+        return tables
+
+    cons = valuation_result.consolidated.copy()
+    cons_display = cons[["revenue", "ebitda", "fcff_after_wc"]].copy()
+    cons_display.columns = ["Revenue", "EBITDA", "FCFF after WC"]
+    tables["financial_statements_chart"] = cons_display
+    tables["dashboard_chart"] = cons[["revenue", "ebitda", "fcff_after_wc"]]
+    tables["dashboard_fcff_bar"] = cons[["fcff_after_wc"]]
+
+    decomp_df = _compute_decomposition(cons)
+    if decomp_df is not None:
+        tables["analytics_decomposition"] = decomp_df
+
+    seg_df = _build_segmentation_table(valuation_result)
+    if not seg_df.empty:
+        tables["analytics_segmentation"] = seg_df
+
+    if portfolio is not None:
+        base_rnpv = valuation_result.rnpv
+        tornado_df = _tornado_dataframe(portfolio, base_rnpv)
+        if not tornado_df.empty:
+            tables["analytics_tornado"] = tornado_df
+
+        scenarios = [
+            Scenario(
+                name="Base case",
+                revenue_multiplier=1.0,
+                cost_multiplier=1.0,
+                discount_rate_shift=0.0,
+                success_prob_multiplier=1.0,
+            ),
+            Scenario(
+                name="Upside",
+                revenue_multiplier=1.2,
+                cost_multiplier=0.9,
+                discount_rate_shift=-0.01,
+                success_prob_multiplier=1.1,
+            ),
+            Scenario(
+                name="Downside",
+                revenue_multiplier=0.8,
+                cost_multiplier=1.1,
+                discount_rate_shift=0.01,
+                success_prob_multiplier=0.9,
+            ),
+        ]
+        scen_results = ScenarioEngine(portfolio).run_scenarios(scenarios)
+        tables["scenario_results"] = scen_results
+
+    return tables
+
+
+def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, BytesIO]:
+    images: Dict[str, BytesIO] = {}
+    if importlib.util.find_spec("matplotlib") is None:
+        return images
+
+    import matplotlib.pyplot as plt
+
+    def _save_fig(fig, key: str) -> None:
+        buffer = BytesIO()
+        fig.savefig(buffer, format="png", bbox_inches="tight")
+        buffer.seek(0)
+        images[key] = buffer
+        plt.close(fig)
+
+    if "financial_statements_chart" in chart_tables:
+        fig, ax = plt.subplots()
+        chart_tables["financial_statements_chart"].plot(ax=ax)
+        ax.set_title("Financial Statements Overview")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Value")
+        _save_fig(fig, "financial_statements_chart")
+
+    if "dashboard_chart" in chart_tables:
+        fig, ax = plt.subplots()
+        chart_tables["dashboard_chart"].plot(ax=ax)
+        ax.set_title("Dashboard Trends")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Value")
+        _save_fig(fig, "dashboard_chart")
+
+    if "dashboard_fcff_bar" in chart_tables:
+        fig, ax = plt.subplots()
+        chart_tables["dashboard_fcff_bar"].plot(kind="bar", ax=ax)
+        ax.set_title("FCFF After WC")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Value")
+        _save_fig(fig, "dashboard_fcff_bar")
+
+    if "analytics_decomposition" in chart_tables:
+        fig, ax = plt.subplots()
+        chart_tables["analytics_decomposition"].plot(ax=ax)
+        ax.set_title("Trend & Seasonality")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Value")
+        _save_fig(fig, "analytics_decomposition")
+
+    if "analytics_segmentation" in chart_tables:
+        fig, ax = plt.subplots()
+        seg_df = chart_tables["analytics_segmentation"]
+        seg_df.set_index("Product")["Revenue share"].plot(kind="bar", ax=ax)
+        ax.set_title("Revenue Share by Product")
+        ax.set_xlabel("Product")
+        ax.set_ylabel("Revenue Share")
+        _save_fig(fig, "analytics_segmentation")
+
+    if "analytics_tornado" in chart_tables:
+        fig, ax = plt.subplots()
+        tornado_df = chart_tables["analytics_tornado"].sort_values("Delta")
+        ax.barh(tornado_df["Driver"], tornado_df["Delta"])
+        ax.set_title("Tornado Impact")
+        ax.set_xlabel("Delta")
+        _save_fig(fig, "analytics_tornado")
+
+    if "scenario_results" in chart_tables:
+        fig, ax = plt.subplots()
+        scen_df = chart_tables["scenario_results"]
+        ax.bar(scen_df["scenario"], scen_df["rnpv"])
+        ax.set_title("Scenario rNPV Comparison")
+        ax.set_xlabel("Scenario")
+        ax.set_ylabel("rNPV")
+        _save_fig(fig, "scenario_results")
+
+    return images
+
+
+def _sync_vaccine_sales_product(
+    product_df: pd.DataFrame,
+    implied_revenue: pd.Series,
+) -> pd.DataFrame:
+    if implied_revenue.empty:
+        return product_df
+
+    avg_revenue = float(implied_revenue.mean())
+    default_row = _blank_product_row(name="Vaccine Sales (Implied)")
+    default_row.update(
+        {
+            "stage": "Commercial",
+            "success_prob": 1.0,
+            "include_in_consolidation": True,
+            "preexisting_market": True,
+            "time_to_market": 0,
+            "patent_years": 20,
+            "patent_revenue_target": avg_revenue,
+            "post_patent_revenue_target": avg_revenue,
+            "market_growth_patent": 0.0,
+            "market_growth_post": 0.0,
+        }
+    )
+    updated = product_df.copy()
+    if "name" not in updated.columns:
+        return updated
+
+    match = updated["name"] == "Vaccine Sales (Implied)"
+    if match.any():
+        idx = updated.index[match][0]
+        for key, value in default_row.items():
+            if key in updated.columns:
+                updated.at[idx, key] = value
+    else:
+        updated = pd.concat([updated, pd.DataFrame([default_row])], ignore_index=True)
+    return updated
+
+
+def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        pd.DataFrame(payload["summary_rows"]).to_excel(writer, index=False, sheet_name="Summary")
+        if payload["scenarios"]:
+            pd.DataFrame(payload["scenarios"]).to_excel(writer, index=False, sheet_name="Scenarios")
+        if payload["sensitivities"]:
+            pd.DataFrame(payload["sensitivities"]).to_excel(writer, index=False, sheet_name="Sensitivities")
+        if payload["last_report"]:
+            pd.DataFrame(
+                [{"Section": key, "Content": value} for key, value in payload["last_report"].items()]
+            ).to_excel(writer, index=False, sheet_name="Last Report")
+        chart_tables = payload.get("chart_tables", {})
+        for sheet_name, table in chart_tables.items():
+            if not table.empty:
+                safe_name = sheet_name[:31]
+                table.to_excel(writer, index=True, sheet_name=safe_name)
+    excel_buffer.seek(0)
+    return excel_buffer
+
+
+def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
+    Document = importlib.import_module("docx").Document
+    docx_buffer = io.BytesIO()
+    document = Document()
+    document.add_heading("Business Plan Bundle", level=1)
+    document.add_paragraph(
+        "This bundle summarizes the financial snapshot and the AI configuration used for the "
+        "RAG Assistant report generation."
+    )
+    document.add_heading("Financial Snapshot", level=2)
+    for row in payload["summary_rows"]:
+        document.add_paragraph(f"{row['Metric']}: {row['Value']}")
+    if payload["scenarios"]:
+        document.add_heading("Scenarios", level=2)
+        for scenario in payload["scenarios"]:
+            document.add_paragraph(json.dumps(scenario, ensure_ascii=False))
+    if payload["sensitivities"]:
+        document.add_heading("Sensitivities", level=2)
+        for sensitivity in payload["sensitivities"]:
+            document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
+    document.add_heading("AI Configuration", level=2)
+    for key, value in payload["ai_config"].items():
+        document.add_paragraph(f"{key}: {value}")
+    if payload["last_report"]:
+        document.add_heading("Last Report", level=2)
+        for key, value in payload["last_report"].items():
+            document.add_paragraph(f"{key}: {value}")
+    if payload.get("chart_images"):
+        document.add_heading("Financial Statements Charts", level=2)
+        if payload["chart_images"].get("financial_statements_chart"):
+            document.add_picture(payload["chart_images"]["financial_statements_chart"])
+        document.add_heading("Dashboard Charts", level=2)
+        if payload["chart_images"].get("dashboard_chart"):
+            document.add_picture(payload["chart_images"]["dashboard_chart"])
+        if payload["chart_images"].get("dashboard_fcff_bar"):
+            document.add_picture(payload["chart_images"]["dashboard_fcff_bar"])
+        document.add_heading("Advanced Analytics Charts", level=2)
+        if payload["chart_images"].get("analytics_decomposition"):
+            document.add_picture(payload["chart_images"]["analytics_decomposition"])
+        if payload["chart_images"].get("analytics_segmentation"):
+            document.add_picture(payload["chart_images"]["analytics_segmentation"])
+        if payload["chart_images"].get("analytics_tornado"):
+            document.add_picture(payload["chart_images"]["analytics_tornado"])
+        document.add_heading("Scenario Analysis Charts", level=2)
+        if payload["chart_images"].get("scenario_results"):
+            document.add_picture(payload["chart_images"]["scenario_results"])
+    document.save(docx_buffer)
+    docx_buffer.seek(0)
+    return docx_buffer
+
+
+def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
+    canvas = importlib.import_module("reportlab.pdfgen.canvas")
+    image_reader = importlib.import_module("reportlab.lib.utils").ImageReader
+    pdf_buffer = io.BytesIO()
+    pdf_canvas = canvas.Canvas(pdf_buffer)
+    pdf_canvas.setFont("Helvetica-Bold", 14)
+    pdf_canvas.drawString(72, 770, "Business Plan Bundle")
+    pdf_canvas.setFont("Helvetica", 11)
+    y_position = 740
+    pdf_canvas.drawString(72, y_position, "Financial Snapshot")
+    y_position -= 18
+    for row in payload["summary_rows"]:
+        pdf_canvas.drawString(72, y_position, f"{row['Metric']}: {row['Value']}")
+        y_position -= 16
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+    if payload["scenarios"]:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Scenarios")
+        y_position -= 18
+        for scenario in payload["scenarios"]:
+            pdf_canvas.drawString(72, y_position, json.dumps(scenario, ensure_ascii=False))
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    if payload["sensitivities"]:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Sensitivities")
+        y_position -= 18
+        for sensitivity in payload["sensitivities"]:
+            pdf_canvas.drawString(72, y_position, json.dumps(sensitivity, ensure_ascii=False))
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    y_position -= 6
+    if y_position <= 72:
+        pdf_canvas.showPage()
+        pdf_canvas.setFont("Helvetica", 11)
+        y_position = 770
+    pdf_canvas.drawString(72, y_position, "AI Configuration")
+    y_position -= 18
+    for key, value in payload["ai_config"].items():
+        pdf_canvas.drawString(72, y_position, f"{key}: {value}")
+        y_position -= 16
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+    if payload["last_report"]:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Last Report")
+        y_position -= 18
+        for key, value in payload["last_report"].items():
+            pdf_canvas.drawString(72, y_position, f"{key}: {value}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    chart_images = payload.get("chart_images", {})
+    if chart_images:
+        pdf_canvas.showPage()
+        pdf_canvas.setFont("Helvetica-Bold", 14)
+        pdf_canvas.drawString(72, 770, "Charts & Graphs")
+        y_position = 740
+        pdf_canvas.setFont("Helvetica", 11)
+
+        def _draw_image(image_key: str, title: str) -> None:
+            nonlocal y_position
+            image = chart_images.get(image_key)
+            if not image:
+                return
+            if y_position <= 180:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica-Bold", 14)
+                pdf_canvas.drawString(72, 770, "Charts & Graphs (cont.)")
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 740
+            pdf_canvas.drawString(72, y_position, title)
+            y_position -= 14
+            pdf_canvas.drawImage(image_reader(image), 72, y_position - 120, width=450, height=120)
+            y_position -= 140
+
+        _draw_image("financial_statements_chart", "Financial Statements")
+        _draw_image("dashboard_chart", "Dashboard Trends")
+        _draw_image("dashboard_fcff_bar", "Dashboard FCFF")
+        _draw_image("analytics_decomposition", "Analytics Decomposition")
+        _draw_image("analytics_segmentation", "Analytics Segmentation")
+        _draw_image("analytics_tornado", "Analytics Tornado")
+        _draw_image("scenario_results", "Scenario Analysis")
+    pdf_canvas.save()
+    pdf_buffer.seek(0)
+    return pdf_buffer
+
+
+def _build_export_buffers(payload: Dict[str, Any]) -> Tuple[Dict[str, io.BytesIO], List[str]]:
+    buffers: Dict[str, io.BytesIO] = {}
+    warnings: List[str] = []
+    if importlib.util.find_spec("openpyxl") is not None:
+        buffers["excel"] = _build_excel_export(payload)
+    else:
+        warnings.append("Excel export unavailable: install openpyxl.")
+
+    if importlib.util.find_spec("docx") is not None:
+        buffers["docx"] = _build_word_export(payload)
+    else:
+        warnings.append("Word export unavailable: install python-docx.")
+
+    if importlib.util.find_spec("reportlab") is not None:
+        buffers["pdf"] = _build_pdf_export(payload)
+    else:
+        warnings.append("PDF export unavailable: install reportlab.")
+
+    if payload.get("chart_tables") and importlib.util.find_spec("matplotlib") is None:
+        warnings.append("Charts export unavailable: install matplotlib to embed plots.")
+
+    return buffers, warnings
+
+
+def _render_export_downloads(
+    buffers: Dict[str, io.BytesIO],
+    *,
+    project_id: str,
+    rag_key_prefix: str,
+) -> None:
+    if "excel" in buffers:
+        st.download_button(
+            "Download business plan (Excel)",
+            data=buffers["excel"],
+            file_name=f"{project_id}_business_plan.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"{rag_key_prefix}_bundle_download_excel",
+        )
+    if "docx" in buffers:
+        st.download_button(
+            "Download business plan (Word)",
+            data=buffers["docx"],
+            file_name=f"{project_id}_business_plan.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+            key=f"{rag_key_prefix}_bundle_download_docx",
+        )
+    if "pdf" in buffers:
+        st.download_button(
+            "Download business plan (PDF)",
+            data=buffers["pdf"],
+            file_name=f"{project_id}_business_plan.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"{rag_key_prefix}_bundle_download_pdf",
+        )
+
+
 def _render_rag_assistant_page() -> None:
     st.subheader("RAG Assistant")
 
@@ -1754,11 +2209,37 @@ def _render_rag_assistant_page() -> None:
 
     st.markdown("## AI & Machine Learning Configuration")
     enable_ai = st.checkbox("Enable AI enhancements", value=True, key=f"{rag_key_prefix}_enable_ai")
+    provider_options_key = f"{rag_key_prefix}_provider_options"
+    if provider_options_key not in st.session_state:
+        st.session_state[provider_options_key] = [
+            "OpenAI",
+            "Azure OpenAI",
+            "Anthropic",
+            "Vertex",
+            "Custom",
+        ]
+    provider_options = st.session_state[provider_options_key]
     provider = st.selectbox(
         "Provider",
-        ["OpenAI", "Azure OpenAI", "Anthropic", "Vertex", "Other"],
+        provider_options,
         key=f"{rag_key_prefix}_provider",
     )
+    custom_provider = ""
+    if provider == "Custom":
+        custom_provider = st.text_input(
+            "Custom provider name",
+            placeholder="Enter a provider name (e.g., Cohere, Mistral)",
+            key=f"{rag_key_prefix}_custom_provider",
+        )
+        add_provider = st.button("Add provider", key=f"{rag_key_prefix}_add_provider")
+        if add_provider and custom_provider:
+            updated_providers = [*provider_options]
+            if custom_provider not in updated_providers:
+                updated_providers.insert(-1, custom_provider)
+                st.session_state[provider_options_key] = updated_providers
+                st.success(f"Added provider: {custom_provider}")
+            else:
+                st.info("That provider is already available.")
     model_name = st.text_input(
         "Model",
         value="gpt-4o-mini",
@@ -1791,7 +2272,7 @@ def _render_rag_assistant_page() -> None:
     if st.button("Save AI configuration", key=f"{rag_key_prefix}_save_config"):
         st.session_state["rag_ai_config"] = {
             "enable_ai": enable_ai,
-            "provider": provider,
+            "provider": custom_provider or provider,
             "model": model_name,
             "forecast_horizon": forecast_horizon,
             "ml_methods": ml_methods,
@@ -1999,13 +2480,23 @@ def _render_rag_assistant_page() -> None:
             "ai_config": st.session_state.get("rag_ai_config", {}),
             "last_report": st.session_state.get("rag_last_report", {}),
         }
-        st.download_button(
-            "Download business plan bundle (JSON)",
-            data=json.dumps(bundle_payload, indent=2),
-            file_name=f"{project_id}_business_plan_bundle.json",
-            mime="application/json",
-            use_container_width=True,
-            key=f"{rag_key_prefix}_bundle_download",
+        export_payload = _build_export_payload(bundle_payload)
+        chart_tables = _build_chart_tables(
+            st.session_state.get("valuation_result"),
+            st.session_state.get("model_config"),
+            st.session_state.get("portfolio"),
+        )
+        export_payload["chart_tables"] = chart_tables
+        export_payload["chart_images"] = _build_chart_images(chart_tables)
+        export_buffers, export_warnings = _build_export_buffers(export_payload)
+
+        for warning in export_warnings:
+            st.warning(warning)
+
+        _render_export_downloads(
+            export_buffers,
+            project_id=project_id,
+            rag_key_prefix=rag_key_prefix,
         )
 
 def main() -> None:
@@ -2074,7 +2565,7 @@ def main() -> None:
         with st.expander("Vaccine sales"):
             vaccine_df = _render_product_assumption_table(
                 session_key="vaccine_sales_table",
-                default_factory=lambda: _default_vaccine_sales_table(int(first_year)),
+                default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
                 blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
                 id_column=None,
                 name_column="Year",
@@ -2090,7 +2581,12 @@ def main() -> None:
             price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
             vaccine_df["Implied revenue"] = doses * 1e6 * price
             st.session_state["vaccine_sales_table"] = vaccine_df
-            st.metric("Five-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
+            st.metric(f"{int(n_years)}-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
+            base_products = st.session_state.get("product_table", _default_products())
+            st.session_state["product_table"] = _sync_vaccine_sales_product(
+                base_products,
+                vaccine_df["Implied revenue"],
+            )
 
         with st.expander("Uses and sources of funds"):
             uses_col, sources_col = st.columns(2)
@@ -2816,7 +3312,9 @@ def main() -> None:
             with st.expander("Time-series & ML forecasting", expanded=False):
                 ts_metric = st.selectbox("Series to forecast", ["revenue", "ebitda"], key="forecast_metric")
                 method = st.selectbox("Forecast model", ["ARIMA", "Prophet", "LSTM"], key="forecast_method")
-                horizon = st.slider("Forecast steps", 5, 25, 10)
+                horizon_max = max(5, int(model_cfg.n_years))
+                horizon_default = min(10, horizon_max)
+                horizon = st.slider("Forecast steps", 5, horizon_max, horizon_default)
                 if st.button("Run time-series model"):
                     fe = ForecastEngine(model_cfg)
                     period_index = pd.period_range(str(model_cfg.first_year), periods=len(cons), freq="Y")
