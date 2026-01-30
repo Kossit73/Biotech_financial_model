@@ -413,6 +413,13 @@ class ScenarioEngine:
             cfg_dict["post_patent_revenue_target"] *= scenario.revenue_multiplier
             cfg_dict["cogs_patent"] *= scenario.cost_multiplier
             cfg_dict["cogs_post"] *= scenario.cost_multiplier
+            cfg_dict["sales_marketing_pct"] *= scenario.cost_multiplier
+            cfg_dict["gna_pct"] *= scenario.cost_multiplier
+            cfg_dict["royalty_pct"] *= scenario.cost_multiplier
+            cfg_dict["rd_remaining_pre_launch"] *= scenario.cost_multiplier
+            cfg_dict["rd_annual_post_launch"] *= scenario.cost_multiplier
+            cfg_dict["capex_remaining_pre_launch"] *= scenario.cost_multiplier
+            cfg_dict["capex_annual_post_launch"] *= scenario.cost_multiplier
             cfg_dict["success_prob"] = max(
                 0.0, min(1.0, cfg_dict["success_prob"] * scenario.success_prob_multiplier)
             )
