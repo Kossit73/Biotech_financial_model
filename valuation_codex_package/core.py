@@ -212,8 +212,8 @@ class Product:
     def build_probability_weighted_table(self) -> pd.DataFrame:
         df = self.build_cashflow_table().copy()
         p = self.config.success_prob
-        for col in ["revenue", "ebit", "ebitda", "nopat", "fcff"]:
-            df[col] = df[col] * p
+        numeric_cols = df.select_dtypes(include=["number"]).columns
+        df.loc[:, numeric_cols] = df.loc[:, numeric_cols] * p
         return df
 
 
