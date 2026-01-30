@@ -595,10 +595,12 @@ class ForecastEngine:
         if base_value <= 0:
             return 0.0
         horizon = len(forecast_values)
-        avg_forecast = float(np.mean(forecast_values))
-        if avg_forecast <= 0:
+        if horizon <= 0:
             return 0.0
-        return (avg_forecast / base_value) ** (1 / max(horizon, 1)) - 1
+        terminal_value = float(forecast_values[-1])
+        if terminal_value <= 0:
+            return 0.0
+        return (terminal_value / base_value) ** (1 / horizon) - 1
 
     def apply_price_forecast_to_products(
         self,
