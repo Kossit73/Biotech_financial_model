@@ -695,6 +695,9 @@ def _apply_yearly_increment(
     if df.empty or selected_idx is None:
         st.caption("Select a row to apply increments.")
         return df
+    if selected_idx not in df.index:
+        st.caption("Selected row is no longer available.")
+        return df
 
     numeric_cols = [
         col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])
