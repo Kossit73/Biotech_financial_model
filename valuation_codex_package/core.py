@@ -89,6 +89,9 @@ class Product:
 
     @staticmethod
     def _rolling_amortization(additions: pd.Series, life: int) -> pd.Series:
+        if life is None or not np.isfinite(life):
+            return pd.Series(0.0, index=additions.index)
+        life = int(life)
         if life <= 0:
             return pd.Series(0.0, index=additions.index)
         weights = np.ones(life) / life
