@@ -139,13 +139,13 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
     return asdict(cfg)
 
 
-def _default_vaccine_sales_table(first_year: int = 2024) -> pd.DataFrame:
-    years = [first_year + i for i in range(5)]
+def _default_vaccine_sales_table(first_year: int = 2024, horizon_years: int = 5) -> pd.DataFrame:
+    years = [first_year + i for i in range(max(horizon_years, 1))]
     data = {
         "Year": years,
-        "Doses (M)": [5, 7, 10, 12, 12],
-        "Price per dose": [25, 26, 27, 27, 28],
-        "Comments": ["", "", "", "", ""],
+        "Doses (M)": [5, 7, 10, 12, 12][: len(years)],
+        "Price per dose": [25, 26, 27, 27, 28][: len(years)],
+        "Comments": [""] * len(years),
     }
     return pd.DataFrame(data)
 
@@ -2518,7 +2518,7 @@ def main() -> None:
         with st.expander("Vaccine sales"):
             vaccine_df = _render_product_assumption_table(
                 session_key="vaccine_sales_table",
-                default_factory=lambda: _default_vaccine_sales_table(int(first_year)),
+                default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
                 blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
                 id_column=None,
                 name_column="Year",
@@ -2534,7 +2534,7 @@ def main() -> None:
             price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
             vaccine_df["Implied revenue"] = doses * 1e6 * price
             st.session_state["vaccine_sales_table"] = vaccine_df
-            st.metric("Five-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
+            st.metric(f"{int(n_years)}-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
 
         with st.expander("Uses and sources of funds"):
             uses_col, sources_col = st.columns(2)
@@ -3260,7 +3260,9 @@ def main() -> None:
             with st.expander("Time-series & ML forecasting", expanded=False):
                 ts_metric = st.selectbox("Series to forecast", ["revenue", "ebitda"], key="forecast_metric")
                 method = st.selectbox("Forecast model", ["ARIMA", "Prophet", "LSTM"], key="forecast_method")
-                horizon = st.slider("Forecast steps", 5, 25, 10)
+                horizon_max = max(5, int(model_cfg.n_years))
+                horizon_default = min(10, horizon_max)
+                horizon = st.slider("Forecast steps", 5, horizon_max, horizon_default)
                 if st.button("Run time-series model"):
                     fe = ForecastEngine(model_cfg)
                     period_index = pd.period_range(str(model_cfg.first_year), periods=len(cons), freq="Y")
