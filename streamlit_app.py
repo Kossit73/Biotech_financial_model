@@ -1893,6 +1893,44 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
     return images
 
 
+def _sync_vaccine_sales_product(
+    product_df: pd.DataFrame,
+    implied_revenue: pd.Series,
+) -> pd.DataFrame:
+    if implied_revenue.empty:
+        return product_df
+
+    avg_revenue = float(implied_revenue.mean())
+    default_row = _blank_product_row(name="Vaccine Sales (Implied)")
+    default_row.update(
+        {
+            "stage": "Commercial",
+            "success_prob": 1.0,
+            "include_in_consolidation": True,
+            "preexisting_market": True,
+            "time_to_market": 0,
+            "patent_years": 20,
+            "patent_revenue_target": avg_revenue,
+            "post_patent_revenue_target": avg_revenue,
+            "market_growth_patent": 0.0,
+            "market_growth_post": 0.0,
+        }
+    )
+    updated = product_df.copy()
+    if "name" not in updated.columns:
+        return updated
+
+    match = updated["name"] == "Vaccine Sales (Implied)"
+    if match.any():
+        idx = updated.index[match][0]
+        for key, value in default_row.items():
+            if key in updated.columns:
+                updated.at[idx, key] = value
+    else:
+        updated = pd.concat([updated, pd.DataFrame([default_row])], ignore_index=True)
+    return updated
+
+
 def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
@@ -2535,6 +2573,11 @@ def main() -> None:
             vaccine_df["Implied revenue"] = doses * 1e6 * price
             st.session_state["vaccine_sales_table"] = vaccine_df
             st.metric(f"{int(n_years)}-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
+            base_products = st.session_state.get("product_table", _default_products())
+            st.session_state["product_table"] = _sync_vaccine_sales_product(
+                base_products,
+                vaccine_df["Implied revenue"],
+            )
 
         with st.expander("Uses and sources of funds"):
             uses_col, sources_col = st.columns(2)
