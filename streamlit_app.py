@@ -2716,6 +2716,10 @@ def main() -> None:
             with col3:
                 inflation = st.number_input("Inflation assumption", value=0.02, min_value=0.0, max_value=0.25, step=0.005)
                 base_fx = st.text_input("Reporting FX pair", value="USD/EUR")
+            auto_sync_vaccine_sales = st.checkbox(
+                "Rebuild Vaccine Sales table when assumptions change",
+                value=True,
+            )
             st.caption("Set the macro baseline for the consolidated forecast and disclosures.")
 
         with st.expander("Forecast assumptions", expanded=True):
@@ -2729,6 +2733,17 @@ def main() -> None:
             st.caption("Ramp factors feed revenue build-ups across every product.")
 
         with st.expander("Vaccine sales"):
+            assumptions_changed = (
+                st.session_state.get("vaccine_sales_first_year") != int(first_year)
+                or st.session_state.get("vaccine_sales_n_years") != int(n_years)
+            )
+            if auto_sync_vaccine_sales and assumptions_changed:
+                st.session_state["vaccine_sales_table"] = _default_vaccine_sales_table(
+                    int(first_year),
+                    int(n_years),
+                )
+            st.session_state["vaccine_sales_first_year"] = int(first_year)
+            st.session_state["vaccine_sales_n_years"] = int(n_years)
             vaccine_df = _render_product_assumption_table(
                 session_key="vaccine_sales_table",
                 default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
