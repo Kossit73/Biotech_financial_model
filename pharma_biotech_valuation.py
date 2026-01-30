@@ -408,18 +408,24 @@ def _compute_revenues(
     sales_growth_pct: float,
     sales_ramp: Tuple[float, float, float, float, float],
 ) -> List[float]:
-    revenues: List[float] = []
-    for year in years:
-        years_since_launch = int(year) - int(market_entry_year) + 1
-        in_patent = int(year) <= int(end_patent_year)
-        target = target_patent if in_patent else target_post
-        revenue = _apply_sales_ramp(target, years_since_launch, sales_ramp)
+    year_values = years.to_numpy(dtype=int)
+    years_since_launch = year_values - int(market_entry_year) + 1
+    in_patent = year_values <= int(end_patent_year)
+    targets = np.where(in_patent, float(target_patent), float(target_post))
 
-        if years_since_launch > 5 and revenue > 0:
-            revenue *= (1.0 + sales_growth_pct) ** (years_since_launch - 5)
+    ramp_factors = np.ones_like(years_since_launch, dtype=float)
+    ramp_map = np.array(sales_ramp, dtype=float)
+    ramp_mask = (years_since_launch >= 1) & (years_since_launch <= 5)
+    ramp_factors[ramp_mask] = ramp_map[years_since_launch[ramp_mask] - 1]
+    ramp_factors[years_since_launch <= 0] = 0.0
 
-        revenues.append(revenue)
-    return revenues
+    revenues = targets * ramp_factors
+    growth_mask = years_since_launch > 5
+    if np.any(growth_mask):
+        growth_factors = (1.0 + sales_growth_pct) ** (years_since_launch[growth_mask] - 5)
+        revenues[growth_mask] *= growth_factors
+
+    return revenues.tolist()
 
 
 def _apply_straight_line_allocation(
