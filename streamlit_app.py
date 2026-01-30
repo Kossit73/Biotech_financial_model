@@ -2029,6 +2029,9 @@ def _render_rag_assistant_page() -> None:
             "last_report": st.session_state.get("rag_last_report", {}),
         }
         snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
+        scenarios = snapshot_summary.get("scenarios") or []
+        sensitivities = snapshot_summary.get("sensitivities") or []
+        last_report = bundle_payload.get("last_report") or {}
         summary_rows = [
             {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
             {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
@@ -2042,7 +2045,16 @@ def _render_rag_assistant_page() -> None:
         ]
 
         excel_buffer = io.BytesIO()
-        pd.DataFrame(summary_rows).to_excel(excel_buffer, index=False)
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            pd.DataFrame(summary_rows).to_excel(writer, index=False, sheet_name="Summary")
+            if scenarios:
+                pd.DataFrame(scenarios).to_excel(writer, index=False, sheet_name="Scenarios")
+            if sensitivities:
+                pd.DataFrame(sensitivities).to_excel(writer, index=False, sheet_name="Sensitivities")
+            if last_report:
+                pd.DataFrame(
+                    [{"Section": key, "Content": value} for key, value in last_report.items()]
+                ).to_excel(writer, index=False, sheet_name="Last Report")
         excel_buffer.seek(0)
 
         docx_buffer = io.BytesIO()
@@ -2055,9 +2067,21 @@ def _render_rag_assistant_page() -> None:
         document.add_heading("Financial Snapshot", level=2)
         for row in summary_rows:
             document.add_paragraph(f"{row['Metric']}: {row['Value']}")
+        if scenarios:
+            document.add_heading("Scenarios", level=2)
+            for scenario in scenarios:
+                document.add_paragraph(json.dumps(scenario, ensure_ascii=False))
+        if sensitivities:
+            document.add_heading("Sensitivities", level=2)
+            for sensitivity in sensitivities:
+                document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
         document.add_heading("AI Configuration", level=2)
         for key, value in bundle_payload["ai_config"].items():
             document.add_paragraph(f"{key}: {value}")
+        if last_report:
+            document.add_heading("Last Report", level=2)
+            for key, value in last_report.items():
+                document.add_paragraph(f"{key}: {value}")
         document.save(docx_buffer)
         docx_buffer.seek(0)
 
@@ -2076,6 +2100,36 @@ def _render_rag_assistant_page() -> None:
                 pdf_canvas.showPage()
                 pdf_canvas.setFont("Helvetica", 11)
                 y_position = 770
+        if scenarios:
+            y_position -= 6
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+            pdf_canvas.drawString(72, y_position, "Scenarios")
+            y_position -= 18
+            for scenario in scenarios:
+                pdf_canvas.drawString(72, y_position, json.dumps(scenario, ensure_ascii=False))
+                y_position -= 16
+                if y_position <= 72:
+                    pdf_canvas.showPage()
+                    pdf_canvas.setFont("Helvetica", 11)
+                    y_position = 770
+        if sensitivities:
+            y_position -= 6
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+            pdf_canvas.drawString(72, y_position, "Sensitivities")
+            y_position -= 18
+            for sensitivity in sensitivities:
+                pdf_canvas.drawString(72, y_position, json.dumps(sensitivity, ensure_ascii=False))
+                y_position -= 16
+                if y_position <= 72:
+                    pdf_canvas.showPage()
+                    pdf_canvas.setFont("Helvetica", 11)
+                    y_position = 770
         y_position -= 6
         if y_position <= 72:
             pdf_canvas.showPage()
@@ -2090,6 +2144,21 @@ def _render_rag_assistant_page() -> None:
                 pdf_canvas.showPage()
                 pdf_canvas.setFont("Helvetica", 11)
                 y_position = 770
+        if last_report:
+            y_position -= 6
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+            pdf_canvas.drawString(72, y_position, "Last Report")
+            y_position -= 18
+            for key, value in last_report.items():
+                pdf_canvas.drawString(72, y_position, f"{key}: {value}")
+                y_position -= 16
+                if y_position <= 72:
+                    pdf_canvas.showPage()
+                    pdf_canvas.setFont("Helvetica", 11)
+                    y_position = 770
         pdf_canvas.save()
         pdf_buffer.seek(0)
 
