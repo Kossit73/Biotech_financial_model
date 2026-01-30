@@ -1731,6 +1731,216 @@ def _rag_blueprint_markdown() -> str:
     )
 
 
+def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
+    scenarios = snapshot_summary.get("scenarios") or []
+    sensitivities = snapshot_summary.get("sensitivities") or []
+    last_report = bundle_payload.get("last_report") or {}
+    summary_rows = [
+        {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
+        {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
+        {"Metric": "NPV", "Value": snapshot_summary.get("npv")},
+        {"Metric": "IRR", "Value": snapshot_summary.get("irr")},
+        {"Metric": "Min DSCR", "Value": snapshot_summary.get("dscr_min")},
+        {"Metric": "Payback (years)", "Value": snapshot_summary.get("payback_years")},
+        {"Metric": "Total Capex", "Value": snapshot_summary.get("capex_total")},
+        {"Metric": "Annual Opex", "Value": snapshot_summary.get("opex_annual")},
+        {"Metric": "Annual Revenue", "Value": snapshot_summary.get("revenue_annual")},
+    ]
+    return {
+        "summary_rows": summary_rows,
+        "scenarios": scenarios,
+        "sensitivities": sensitivities,
+        "last_report": last_report,
+        "ai_config": bundle_payload["ai_config"],
+    }
+
+
+def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        pd.DataFrame(payload["summary_rows"]).to_excel(writer, index=False, sheet_name="Summary")
+        if payload["scenarios"]:
+            pd.DataFrame(payload["scenarios"]).to_excel(writer, index=False, sheet_name="Scenarios")
+        if payload["sensitivities"]:
+            pd.DataFrame(payload["sensitivities"]).to_excel(writer, index=False, sheet_name="Sensitivities")
+        if payload["last_report"]:
+            pd.DataFrame(
+                [{"Section": key, "Content": value} for key, value in payload["last_report"].items()]
+            ).to_excel(writer, index=False, sheet_name="Last Report")
+    excel_buffer.seek(0)
+    return excel_buffer
+
+
+def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
+    Document = importlib.import_module("docx").Document
+    docx_buffer = io.BytesIO()
+    document = Document()
+    document.add_heading("Business Plan Bundle", level=1)
+    document.add_paragraph(
+        "This bundle summarizes the financial snapshot and the AI configuration used for the "
+        "RAG Assistant report generation."
+    )
+    document.add_heading("Financial Snapshot", level=2)
+    for row in payload["summary_rows"]:
+        document.add_paragraph(f"{row['Metric']}: {row['Value']}")
+    if payload["scenarios"]:
+        document.add_heading("Scenarios", level=2)
+        for scenario in payload["scenarios"]:
+            document.add_paragraph(json.dumps(scenario, ensure_ascii=False))
+    if payload["sensitivities"]:
+        document.add_heading("Sensitivities", level=2)
+        for sensitivity in payload["sensitivities"]:
+            document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
+    document.add_heading("AI Configuration", level=2)
+    for key, value in payload["ai_config"].items():
+        document.add_paragraph(f"{key}: {value}")
+    if payload["last_report"]:
+        document.add_heading("Last Report", level=2)
+        for key, value in payload["last_report"].items():
+            document.add_paragraph(f"{key}: {value}")
+    document.save(docx_buffer)
+    docx_buffer.seek(0)
+    return docx_buffer
+
+
+def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
+    canvas = importlib.import_module("reportlab.pdfgen.canvas")
+    pdf_buffer = io.BytesIO()
+    pdf_canvas = canvas.Canvas(pdf_buffer)
+    pdf_canvas.setFont("Helvetica-Bold", 14)
+    pdf_canvas.drawString(72, 770, "Business Plan Bundle")
+    pdf_canvas.setFont("Helvetica", 11)
+    y_position = 740
+    pdf_canvas.drawString(72, y_position, "Financial Snapshot")
+    y_position -= 18
+    for row in payload["summary_rows"]:
+        pdf_canvas.drawString(72, y_position, f"{row['Metric']}: {row['Value']}")
+        y_position -= 16
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+    if payload["scenarios"]:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Scenarios")
+        y_position -= 18
+        for scenario in payload["scenarios"]:
+            pdf_canvas.drawString(72, y_position, json.dumps(scenario, ensure_ascii=False))
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    if payload["sensitivities"]:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Sensitivities")
+        y_position -= 18
+        for sensitivity in payload["sensitivities"]:
+            pdf_canvas.drawString(72, y_position, json.dumps(sensitivity, ensure_ascii=False))
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    y_position -= 6
+    if y_position <= 72:
+        pdf_canvas.showPage()
+        pdf_canvas.setFont("Helvetica", 11)
+        y_position = 770
+    pdf_canvas.drawString(72, y_position, "AI Configuration")
+    y_position -= 18
+    for key, value in payload["ai_config"].items():
+        pdf_canvas.drawString(72, y_position, f"{key}: {value}")
+        y_position -= 16
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+    if payload["last_report"]:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Last Report")
+        y_position -= 18
+        for key, value in payload["last_report"].items():
+            pdf_canvas.drawString(72, y_position, f"{key}: {value}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    pdf_canvas.save()
+    pdf_buffer.seek(0)
+    return pdf_buffer
+
+
+def _build_export_buffers(payload: Dict[str, Any]) -> Tuple[Dict[str, io.BytesIO], List[str]]:
+    buffers: Dict[str, io.BytesIO] = {}
+    warnings: List[str] = []
+    if importlib.util.find_spec("openpyxl") is not None:
+        buffers["excel"] = _build_excel_export(payload)
+    else:
+        warnings.append("Excel export unavailable: install openpyxl.")
+
+    if importlib.util.find_spec("docx") is not None:
+        buffers["docx"] = _build_word_export(payload)
+    else:
+        warnings.append("Word export unavailable: install python-docx.")
+
+    if importlib.util.find_spec("reportlab") is not None:
+        buffers["pdf"] = _build_pdf_export(payload)
+    else:
+        warnings.append("PDF export unavailable: install reportlab.")
+
+    return buffers, warnings
+
+
+def _render_export_downloads(
+    buffers: Dict[str, io.BytesIO],
+    *,
+    project_id: str,
+    rag_key_prefix: str,
+) -> None:
+    if "excel" in buffers:
+        st.download_button(
+            "Download business plan (Excel)",
+            data=buffers["excel"],
+            file_name=f"{project_id}_business_plan.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"{rag_key_prefix}_bundle_download_excel",
+        )
+    if "docx" in buffers:
+        st.download_button(
+            "Download business plan (Word)",
+            data=buffers["docx"],
+            file_name=f"{project_id}_business_plan.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+            key=f"{rag_key_prefix}_bundle_download_docx",
+        )
+    if "pdf" in buffers:
+        st.download_button(
+            "Download business plan (PDF)",
+            data=buffers["pdf"],
+            file_name=f"{project_id}_business_plan.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"{rag_key_prefix}_bundle_download_pdf",
+        )
+
+
 def _render_rag_assistant_page() -> None:
     st.subheader("RAG Assistant")
 
@@ -2027,184 +2237,17 @@ def _render_rag_assistant_page() -> None:
             "ai_config": st.session_state.get("rag_ai_config", {}),
             "last_report": st.session_state.get("rag_last_report", {}),
         }
-        has_openpyxl = importlib.util.find_spec("openpyxl") is not None
-        has_docx = importlib.util.find_spec("docx") is not None
-        has_reportlab = importlib.util.find_spec("reportlab") is not None
-        snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
-        scenarios = snapshot_summary.get("scenarios") or []
-        sensitivities = snapshot_summary.get("sensitivities") or []
-        last_report = bundle_payload.get("last_report") or {}
-        summary_rows = [
-            {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
-            {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
-            {"Metric": "NPV", "Value": snapshot_summary.get("npv")},
-            {"Metric": "IRR", "Value": snapshot_summary.get("irr")},
-            {"Metric": "Min DSCR", "Value": snapshot_summary.get("dscr_min")},
-            {"Metric": "Payback (years)", "Value": snapshot_summary.get("payback_years")},
-            {"Metric": "Total Capex", "Value": snapshot_summary.get("capex_total")},
-            {"Metric": "Annual Opex", "Value": snapshot_summary.get("opex_annual")},
-            {"Metric": "Annual Revenue", "Value": snapshot_summary.get("revenue_annual")},
-        ]
+        export_payload = _build_export_payload(bundle_payload)
+        export_buffers, export_warnings = _build_export_buffers(export_payload)
 
-        excel_buffer = None
-        if has_openpyxl:
-            excel_buffer = io.BytesIO()
-            with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-                pd.DataFrame(summary_rows).to_excel(writer, index=False, sheet_name="Summary")
-                if scenarios:
-                    pd.DataFrame(scenarios).to_excel(writer, index=False, sheet_name="Scenarios")
-                if sensitivities:
-                    pd.DataFrame(sensitivities).to_excel(writer, index=False, sheet_name="Sensitivities")
-                if last_report:
-                    pd.DataFrame(
-                        [{"Section": key, "Content": value} for key, value in last_report.items()]
-                    ).to_excel(writer, index=False, sheet_name="Last Report")
-            excel_buffer.seek(0)
-        else:
-            st.warning("Excel export unavailable: install openpyxl.")
+        for warning in export_warnings:
+            st.warning(warning)
 
-        docx_buffer = None
-        if has_docx:
-            Document = importlib.import_module("docx").Document
-            docx_buffer = io.BytesIO()
-            document = Document()
-            document.add_heading("Business Plan Bundle", level=1)
-            document.add_paragraph(
-                "This bundle summarizes the financial snapshot and the AI configuration used for the "
-                "RAG Assistant report generation."
-            )
-            document.add_heading("Financial Snapshot", level=2)
-            for row in summary_rows:
-                document.add_paragraph(f"{row['Metric']}: {row['Value']}")
-            if scenarios:
-                document.add_heading("Scenarios", level=2)
-                for scenario in scenarios:
-                    document.add_paragraph(json.dumps(scenario, ensure_ascii=False))
-            if sensitivities:
-                document.add_heading("Sensitivities", level=2)
-                for sensitivity in sensitivities:
-                    document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
-            document.add_heading("AI Configuration", level=2)
-            for key, value in bundle_payload["ai_config"].items():
-                document.add_paragraph(f"{key}: {value}")
-            if last_report:
-                document.add_heading("Last Report", level=2)
-                for key, value in last_report.items():
-                    document.add_paragraph(f"{key}: {value}")
-            document.save(docx_buffer)
-            docx_buffer.seek(0)
-        else:
-            st.warning("Word export unavailable: install python-docx.")
-
-        pdf_buffer = None
-        if has_reportlab:
-            canvas = importlib.import_module("reportlab.pdfgen.canvas")
-            pdf_buffer = io.BytesIO()
-            pdf_canvas = canvas.Canvas(pdf_buffer)
-            pdf_canvas.setFont("Helvetica-Bold", 14)
-            pdf_canvas.drawString(72, 770, "Business Plan Bundle")
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 740
-            pdf_canvas.drawString(72, y_position, "Financial Snapshot")
-            y_position -= 18
-            for row in summary_rows:
-                pdf_canvas.drawString(72, y_position, f"{row['Metric']}: {row['Value']}")
-                y_position -= 16
-                if y_position <= 72:
-                    pdf_canvas.showPage()
-                    pdf_canvas.setFont("Helvetica", 11)
-                    y_position = 770
-            if scenarios:
-                y_position -= 6
-                if y_position <= 72:
-                    pdf_canvas.showPage()
-                    pdf_canvas.setFont("Helvetica", 11)
-                    y_position = 770
-                pdf_canvas.drawString(72, y_position, "Scenarios")
-                y_position -= 18
-                for scenario in scenarios:
-                    pdf_canvas.drawString(72, y_position, json.dumps(scenario, ensure_ascii=False))
-                    y_position -= 16
-                    if y_position <= 72:
-                        pdf_canvas.showPage()
-                        pdf_canvas.setFont("Helvetica", 11)
-                        y_position = 770
-            if sensitivities:
-                y_position -= 6
-                if y_position <= 72:
-                    pdf_canvas.showPage()
-                    pdf_canvas.setFont("Helvetica", 11)
-                    y_position = 770
-                pdf_canvas.drawString(72, y_position, "Sensitivities")
-                y_position -= 18
-                for sensitivity in sensitivities:
-                    pdf_canvas.drawString(72, y_position, json.dumps(sensitivity, ensure_ascii=False))
-                    y_position -= 16
-                    if y_position <= 72:
-                        pdf_canvas.showPage()
-                        pdf_canvas.setFont("Helvetica", 11)
-                        y_position = 770
-            y_position -= 6
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
-            pdf_canvas.drawString(72, y_position, "AI Configuration")
-            y_position -= 18
-            for key, value in bundle_payload["ai_config"].items():
-                pdf_canvas.drawString(72, y_position, f"{key}: {value}")
-                y_position -= 16
-                if y_position <= 72:
-                    pdf_canvas.showPage()
-                    pdf_canvas.setFont("Helvetica", 11)
-                    y_position = 770
-            if last_report:
-                y_position -= 6
-                if y_position <= 72:
-                    pdf_canvas.showPage()
-                    pdf_canvas.setFont("Helvetica", 11)
-                    y_position = 770
-                pdf_canvas.drawString(72, y_position, "Last Report")
-                y_position -= 18
-                for key, value in last_report.items():
-                    pdf_canvas.drawString(72, y_position, f"{key}: {value}")
-                    y_position -= 16
-                    if y_position <= 72:
-                        pdf_canvas.showPage()
-                        pdf_canvas.setFont("Helvetica", 11)
-                        y_position = 770
-            pdf_canvas.save()
-            pdf_buffer.seek(0)
-        else:
-            st.warning("PDF export unavailable: install reportlab.")
-
-        if excel_buffer:
-            st.download_button(
-                "Download business plan (Excel)",
-                data=excel_buffer,
-                file_name=f"{project_id}_business_plan.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key=f"{rag_key_prefix}_bundle_download_excel",
-            )
-        if docx_buffer:
-            st.download_button(
-                "Download business plan (Word)",
-                data=docx_buffer,
-                file_name=f"{project_id}_business_plan.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True,
-                key=f"{rag_key_prefix}_bundle_download_docx",
-            )
-        if pdf_buffer:
-            st.download_button(
-                "Download business plan (PDF)",
-                data=pdf_buffer,
-                file_name=f"{project_id}_business_plan.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-                key=f"{rag_key_prefix}_bundle_download_pdf",
-            )
+        _render_export_downloads(
+            export_buffers,
+            project_id=project_id,
+            rag_key_prefix=rag_key_prefix,
+        )
 
 def main() -> None:
     st.set_page_config(
