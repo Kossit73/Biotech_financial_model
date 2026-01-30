@@ -14,6 +14,9 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 try:
     import plotly.graph_objects as go
@@ -1652,6 +1655,88 @@ def _default_scenario_pack(portfolio: Optional[Portfolio]) -> List[dict]:
     return scenarios
 
 
+def _format_excel_sheet(ws, df: pd.DataFrame, *, freeze_panes: str = "B2") -> None:
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    max_row = df.shape[0] + 1
+    max_col = df.shape[1] + 1
+
+    for col_idx in range(1, max_col + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+
+    ws.freeze_panes = freeze_panes
+    ws.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
+
+    for col_idx, col_name in enumerate(df.columns, start=2):
+        col_letter = get_column_letter(col_idx)
+        if any(token in col_name.lower() for token in ("pct", "margin", "prob", "%")):
+            number_format = "0.0%"
+        else:
+            number_format = "#,##0.00"
+        for row in range(2, max_row + 1):
+            ws.cell(row=row, column=col_idx).number_format = number_format
+
+        values = [str(col_name)]
+        for row in range(2, max_row + 1):
+            values.append(str(ws.cell(row=row, column=col_idx).value or ""))
+        width = min(max(len(v) for v in values) + 2, 40)
+        ws.column_dimensions[col_letter].width = width
+
+    index_letter = get_column_letter(1)
+    index_values = [str(df.index.name or "")] + [str(v) for v in df.index]
+    ws.column_dimensions[index_letter].width = min(max(len(v) for v in index_values) + 2, 26)
+
+
+def _add_line_chart(
+    ws,
+    *,
+    title: str,
+    data_min_col: int,
+    data_max_col: int,
+    data_max_row: int,
+    category_col: int = 1,
+    anchor: str = "H2",
+) -> None:
+    chart = LineChart()
+    chart.title = title
+    chart.y_axis.title = "Value"
+    chart.x_axis.title = "Year"
+    data = Reference(ws, min_col=data_min_col, max_col=data_max_col, min_row=1, max_row=data_max_row)
+    categories = Reference(ws, min_col=category_col, min_row=2, max_row=data_max_row)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+    chart.height = 12
+    chart.width = 22
+    ws.add_chart(chart, anchor)
+
+
+def _add_bar_chart(
+    ws,
+    *,
+    title: str,
+    data_min_col: int,
+    data_max_col: int,
+    data_max_row: int,
+    category_col: int = 1,
+    anchor: str = "H2",
+) -> None:
+    chart = BarChart()
+    chart.title = title
+    chart.y_axis.title = "Value"
+    chart.x_axis.title = "Scenario"
+    data = Reference(ws, min_col=data_min_col, max_col=data_max_col, min_row=1, max_row=data_max_row)
+    categories = Reference(ws, min_col=category_col, min_row=2, max_row=data_max_row)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+    chart.height = 12
+    chart.width = 22
+    ws.add_chart(chart, anchor)
+
+
 def _build_financial_excel(
     cons: pd.DataFrame,
     perf_df: pd.DataFrame,
@@ -1664,6 +1749,87 @@ def _build_financial_excel(
         perf_df.to_excel(writer, sheet_name="Financial performance")
         position_df.to_excel(writer, sheet_name="Financial position")
         cash_flow_df.to_excel(writer, sheet_name="Cash flows")
+        dashboard_cols = [col for col in ["revenue", "ebitda", "fcff_after_wc"] if col in cons.columns]
+        dashboard_df = cons[dashboard_cols].copy()
+        dashboard_df.to_excel(writer, sheet_name="Dashboard")
+
+        margin_df = pd.DataFrame(index=cons.index)
+        if "revenue" in cons.columns:
+            revenue = cons["revenue"].replace(0, np.nan)
+            if "cogs" in cons.columns:
+                margin_df["gross_margin"] = (cons["revenue"] - cons["cogs"]) / revenue
+            if "ebitda" in cons.columns:
+                margin_df["ebitda_margin"] = cons["ebitda"] / revenue
+        if not margin_df.empty:
+            margin_df.to_excel(writer, sheet_name="Advanced analytics")
+
+        scenario_cols = [col for col in ["revenue", "ebitda", "fcff_after_wc"] if col in cons.columns]
+        scenario_df = pd.DataFrame()
+        if scenario_cols:
+            last_year = cons.index[-1]
+            base_values = cons.loc[last_year, scenario_cols]
+            scenario_df = pd.DataFrame(
+                {
+                    "Downside (-10%)": base_values * 0.9,
+                    "Base": base_values,
+                    "Upside (+10%)": base_values * 1.1,
+                }
+            ).T
+            scenario_df.to_excel(writer, sheet_name="Scenario analysis")
+
+        workbook = writer.book
+        for name, df in {
+            "Consolidated forecast": cons,
+            "Financial performance": perf_df,
+            "Financial position": position_df,
+            "Cash flows": cash_flow_df,
+            "Dashboard": dashboard_df,
+        }.items():
+            ws = workbook[name]
+            _format_excel_sheet(ws, df)
+
+        if not margin_df.empty:
+            ws = workbook["Advanced analytics"]
+            _format_excel_sheet(ws, margin_df)
+
+        if not scenario_df.empty:
+            ws = workbook["Scenario analysis"]
+            _format_excel_sheet(ws, scenario_df)
+
+        if not dashboard_df.empty:
+            ws = workbook["Dashboard"]
+            max_row = dashboard_df.shape[0] + 1
+            _add_line_chart(
+                ws,
+                title="Key Metrics",
+                data_min_col=2,
+                data_max_col=1 + dashboard_df.shape[1],
+                data_max_row=max_row,
+            )
+
+        if not margin_df.empty:
+            ws = workbook["Advanced analytics"]
+            max_row = margin_df.shape[0] + 1
+            _add_line_chart(
+                ws,
+                title="Margin Trends",
+                data_min_col=2,
+                data_max_col=1 + margin_df.shape[1],
+                data_max_row=max_row,
+                anchor="H2",
+            )
+
+        if not scenario_df.empty:
+            ws = workbook["Scenario analysis"]
+            max_row = scenario_df.shape[0] + 1
+            _add_bar_chart(
+                ws,
+                title="Scenario Comparison",
+                data_min_col=2,
+                data_max_col=1 + scenario_df.shape[1],
+                data_max_row=max_row,
+                anchor="H2",
+            )
     return output.getvalue()
 
 
