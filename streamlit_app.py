@@ -141,10 +141,19 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
 
 def _default_vaccine_sales_table(first_year: int = 2024, horizon_years: int = 5) -> pd.DataFrame:
     years = [first_year + i for i in range(max(horizon_years, 1))]
+    def _extend(values: List[float], target_len: int) -> List[float]:
+        if len(values) >= target_len:
+            return values[:target_len]
+        if not values:
+            return [0.0] * target_len
+        return values + [values[-1]] * (target_len - len(values))
+
+    doses = _extend([5, 7, 10, 12, 12], len(years))
+    prices = _extend([25, 26, 27, 27, 28], len(years))
     data = {
         "Year": years,
-        "Doses (M)": [5, 7, 10, 12, 12][: len(years)],
-        "Price per dose": [25, 26, 27, 27, 28][: len(years)],
+        "Doses (M)": doses,
+        "Price per dose": prices,
         "Comments": [""] * len(years),
     }
     return pd.DataFrame(data)
