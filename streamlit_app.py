@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 from io import BytesIO
 from dataclasses import asdict, fields
@@ -12,6 +13,8 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from docx import Document
+from reportlab.pdfgen import canvas
 
 try:
     import plotly.graph_objects as go
@@ -2025,13 +2028,94 @@ def _render_rag_assistant_page() -> None:
             "ai_config": st.session_state.get("rag_ai_config", {}),
             "last_report": st.session_state.get("rag_last_report", {}),
         }
+        snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
+        summary_rows = [
+            {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
+            {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
+            {"Metric": "NPV", "Value": snapshot_summary.get("npv")},
+            {"Metric": "IRR", "Value": snapshot_summary.get("irr")},
+            {"Metric": "Min DSCR", "Value": snapshot_summary.get("dscr_min")},
+            {"Metric": "Payback (years)", "Value": snapshot_summary.get("payback_years")},
+            {"Metric": "Total Capex", "Value": snapshot_summary.get("capex_total")},
+            {"Metric": "Annual Opex", "Value": snapshot_summary.get("opex_annual")},
+            {"Metric": "Annual Revenue", "Value": snapshot_summary.get("revenue_annual")},
+        ]
+
+        excel_buffer = io.BytesIO()
+        pd.DataFrame(summary_rows).to_excel(excel_buffer, index=False)
+        excel_buffer.seek(0)
+
+        docx_buffer = io.BytesIO()
+        document = Document()
+        document.add_heading("Business Plan Bundle", level=1)
+        document.add_paragraph(
+            "This bundle summarizes the financial snapshot and the AI configuration used for the "
+            "RAG Assistant report generation."
+        )
+        document.add_heading("Financial Snapshot", level=2)
+        for row in summary_rows:
+            document.add_paragraph(f"{row['Metric']}: {row['Value']}")
+        document.add_heading("AI Configuration", level=2)
+        for key, value in bundle_payload["ai_config"].items():
+            document.add_paragraph(f"{key}: {value}")
+        document.save(docx_buffer)
+        docx_buffer.seek(0)
+
+        pdf_buffer = io.BytesIO()
+        pdf_canvas = canvas.Canvas(pdf_buffer)
+        pdf_canvas.setFont("Helvetica-Bold", 14)
+        pdf_canvas.drawString(72, 770, "Business Plan Bundle")
+        pdf_canvas.setFont("Helvetica", 11)
+        y_position = 740
+        pdf_canvas.drawString(72, y_position, "Financial Snapshot")
+        y_position -= 18
+        for row in summary_rows:
+            pdf_canvas.drawString(72, y_position, f"{row['Metric']}: {row['Value']}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "AI Configuration")
+        y_position -= 18
+        for key, value in bundle_payload["ai_config"].items():
+            pdf_canvas.drawString(72, y_position, f"{key}: {value}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+        pdf_canvas.save()
+        pdf_buffer.seek(0)
+
         st.download_button(
-            "Download business plan bundle (JSON)",
-            data=json.dumps(bundle_payload, indent=2),
-            file_name=f"{project_id}_business_plan_bundle.json",
-            mime="application/json",
+            "Download business plan (Excel)",
+            data=excel_buffer,
+            file_name=f"{project_id}_business_plan.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
-            key=f"{rag_key_prefix}_bundle_download",
+            key=f"{rag_key_prefix}_bundle_download_excel",
+        )
+        st.download_button(
+            "Download business plan (Word)",
+            data=docx_buffer,
+            file_name=f"{project_id}_business_plan.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+            key=f"{rag_key_prefix}_bundle_download_docx",
+        )
+        st.download_button(
+            "Download business plan (PDF)",
+            data=pdf_buffer,
+            file_name=f"{project_id}_business_plan.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"{rag_key_prefix}_bundle_download_pdf",
         )
 
 def main() -> None:
