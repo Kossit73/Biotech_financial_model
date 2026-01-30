@@ -1759,6 +1759,140 @@ def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _build_chart_tables(
+    valuation_result: Optional[ValuationResult],
+    model_cfg: Optional[ModelConfig],
+    portfolio: Optional[Portfolio],
+) -> Dict[str, pd.DataFrame]:
+    tables: Dict[str, pd.DataFrame] = {}
+    if valuation_result is None or model_cfg is None:
+        return tables
+
+    cons = valuation_result.consolidated.copy()
+    cons_display = cons[["revenue", "ebitda", "fcff_after_wc"]].copy()
+    cons_display.columns = ["Revenue", "EBITDA", "FCFF after WC"]
+    tables["financial_statements_chart"] = cons_display
+    tables["dashboard_chart"] = cons[["revenue", "ebitda", "fcff_after_wc"]]
+    tables["dashboard_fcff_bar"] = cons[["fcff_after_wc"]]
+
+    decomp_df = _compute_decomposition(cons)
+    if decomp_df is not None:
+        tables["analytics_decomposition"] = decomp_df
+
+    seg_df = _build_segmentation_table(valuation_result)
+    if not seg_df.empty:
+        tables["analytics_segmentation"] = seg_df
+
+    if portfolio is not None:
+        base_rnpv = valuation_result.rnpv
+        tornado_df = _tornado_dataframe(portfolio, base_rnpv)
+        if not tornado_df.empty:
+            tables["analytics_tornado"] = tornado_df
+
+        scenarios = [
+            Scenario(
+                name="Base case",
+                revenue_multiplier=1.0,
+                cost_multiplier=1.0,
+                discount_rate_shift=0.0,
+                success_prob_multiplier=1.0,
+            ),
+            Scenario(
+                name="Upside",
+                revenue_multiplier=1.2,
+                cost_multiplier=0.9,
+                discount_rate_shift=-0.01,
+                success_prob_multiplier=1.1,
+            ),
+            Scenario(
+                name="Downside",
+                revenue_multiplier=0.8,
+                cost_multiplier=1.1,
+                discount_rate_shift=0.01,
+                success_prob_multiplier=0.9,
+            ),
+        ]
+        scen_results = ScenarioEngine(portfolio).run_scenarios(scenarios)
+        tables["scenario_results"] = scen_results
+
+    return tables
+
+
+def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, BytesIO]:
+    images: Dict[str, BytesIO] = {}
+    if importlib.util.find_spec("matplotlib") is None:
+        return images
+
+    import matplotlib.pyplot as plt
+
+    def _save_fig(fig, key: str) -> None:
+        buffer = BytesIO()
+        fig.savefig(buffer, format="png", bbox_inches="tight")
+        buffer.seek(0)
+        images[key] = buffer
+        plt.close(fig)
+
+    if "financial_statements_chart" in chart_tables:
+        fig, ax = plt.subplots()
+        chart_tables["financial_statements_chart"].plot(ax=ax)
+        ax.set_title("Financial Statements Overview")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Value")
+        _save_fig(fig, "financial_statements_chart")
+
+    if "dashboard_chart" in chart_tables:
+        fig, ax = plt.subplots()
+        chart_tables["dashboard_chart"].plot(ax=ax)
+        ax.set_title("Dashboard Trends")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Value")
+        _save_fig(fig, "dashboard_chart")
+
+    if "dashboard_fcff_bar" in chart_tables:
+        fig, ax = plt.subplots()
+        chart_tables["dashboard_fcff_bar"].plot(kind="bar", ax=ax)
+        ax.set_title("FCFF After WC")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Value")
+        _save_fig(fig, "dashboard_fcff_bar")
+
+    if "analytics_decomposition" in chart_tables:
+        fig, ax = plt.subplots()
+        chart_tables["analytics_decomposition"].plot(ax=ax)
+        ax.set_title("Trend & Seasonality")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Value")
+        _save_fig(fig, "analytics_decomposition")
+
+    if "analytics_segmentation" in chart_tables:
+        fig, ax = plt.subplots()
+        seg_df = chart_tables["analytics_segmentation"]
+        seg_df.set_index("Product")["Revenue share"].plot(kind="bar", ax=ax)
+        ax.set_title("Revenue Share by Product")
+        ax.set_xlabel("Product")
+        ax.set_ylabel("Revenue Share")
+        _save_fig(fig, "analytics_segmentation")
+
+    if "analytics_tornado" in chart_tables:
+        fig, ax = plt.subplots()
+        tornado_df = chart_tables["analytics_tornado"].sort_values("Delta")
+        ax.barh(tornado_df["Driver"], tornado_df["Delta"])
+        ax.set_title("Tornado Impact")
+        ax.set_xlabel("Delta")
+        _save_fig(fig, "analytics_tornado")
+
+    if "scenario_results" in chart_tables:
+        fig, ax = plt.subplots()
+        scen_df = chart_tables["scenario_results"]
+        ax.bar(scen_df["scenario"], scen_df["rnpv"])
+        ax.set_title("Scenario rNPV Comparison")
+        ax.set_xlabel("Scenario")
+        ax.set_ylabel("rNPV")
+        _save_fig(fig, "scenario_results")
+
+    return images
+
+
 def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
@@ -1771,6 +1905,11 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
             pd.DataFrame(
                 [{"Section": key, "Content": value} for key, value in payload["last_report"].items()]
             ).to_excel(writer, index=False, sheet_name="Last Report")
+        chart_tables = payload.get("chart_tables", {})
+        for sheet_name, table in chart_tables.items():
+            if not table.empty:
+                safe_name = sheet_name[:31]
+                table.to_excel(writer, index=True, sheet_name=safe_name)
     excel_buffer.seek(0)
     return excel_buffer
 
@@ -1802,6 +1941,25 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         document.add_heading("Last Report", level=2)
         for key, value in payload["last_report"].items():
             document.add_paragraph(f"{key}: {value}")
+    if payload.get("chart_images"):
+        document.add_heading("Financial Statements Charts", level=2)
+        if payload["chart_images"].get("financial_statements_chart"):
+            document.add_picture(payload["chart_images"]["financial_statements_chart"])
+        document.add_heading("Dashboard Charts", level=2)
+        if payload["chart_images"].get("dashboard_chart"):
+            document.add_picture(payload["chart_images"]["dashboard_chart"])
+        if payload["chart_images"].get("dashboard_fcff_bar"):
+            document.add_picture(payload["chart_images"]["dashboard_fcff_bar"])
+        document.add_heading("Advanced Analytics Charts", level=2)
+        if payload["chart_images"].get("analytics_decomposition"):
+            document.add_picture(payload["chart_images"]["analytics_decomposition"])
+        if payload["chart_images"].get("analytics_segmentation"):
+            document.add_picture(payload["chart_images"]["analytics_segmentation"])
+        if payload["chart_images"].get("analytics_tornado"):
+            document.add_picture(payload["chart_images"]["analytics_tornado"])
+        document.add_heading("Scenario Analysis Charts", level=2)
+        if payload["chart_images"].get("scenario_results"):
+            document.add_picture(payload["chart_images"]["scenario_results"])
     document.save(docx_buffer)
     docx_buffer.seek(0)
     return docx_buffer
@@ -1809,6 +1967,7 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
 
 def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
     canvas = importlib.import_module("reportlab.pdfgen.canvas")
+    image_reader = importlib.import_module("reportlab.lib.utils").ImageReader
     pdf_buffer = io.BytesIO()
     pdf_canvas = canvas.Canvas(pdf_buffer)
     pdf_canvas.setFont("Helvetica-Bold", 14)
@@ -1883,6 +2042,37 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
                 pdf_canvas.showPage()
                 pdf_canvas.setFont("Helvetica", 11)
                 y_position = 770
+    chart_images = payload.get("chart_images", {})
+    if chart_images:
+        pdf_canvas.showPage()
+        pdf_canvas.setFont("Helvetica-Bold", 14)
+        pdf_canvas.drawString(72, 770, "Charts & Graphs")
+        y_position = 740
+        pdf_canvas.setFont("Helvetica", 11)
+
+        def _draw_image(image_key: str, title: str) -> None:
+            nonlocal y_position
+            image = chart_images.get(image_key)
+            if not image:
+                return
+            if y_position <= 180:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica-Bold", 14)
+                pdf_canvas.drawString(72, 770, "Charts & Graphs (cont.)")
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 740
+            pdf_canvas.drawString(72, y_position, title)
+            y_position -= 14
+            pdf_canvas.drawImage(image_reader(image), 72, y_position - 120, width=450, height=120)
+            y_position -= 140
+
+        _draw_image("financial_statements_chart", "Financial Statements")
+        _draw_image("dashboard_chart", "Dashboard Trends")
+        _draw_image("dashboard_fcff_bar", "Dashboard FCFF")
+        _draw_image("analytics_decomposition", "Analytics Decomposition")
+        _draw_image("analytics_segmentation", "Analytics Segmentation")
+        _draw_image("analytics_tornado", "Analytics Tornado")
+        _draw_image("scenario_results", "Scenario Analysis")
     pdf_canvas.save()
     pdf_buffer.seek(0)
     return pdf_buffer
@@ -1905,6 +2095,9 @@ def _build_export_buffers(payload: Dict[str, Any]) -> Tuple[Dict[str, io.BytesIO
         buffers["pdf"] = _build_pdf_export(payload)
     else:
         warnings.append("PDF export unavailable: install reportlab.")
+
+    if payload.get("chart_tables") and importlib.util.find_spec("matplotlib") is None:
+        warnings.append("Charts export unavailable: install matplotlib to embed plots.")
 
     return buffers, warnings
 
@@ -2241,6 +2434,13 @@ def _render_rag_assistant_page() -> None:
             "last_report": st.session_state.get("rag_last_report", {}),
         }
         export_payload = _build_export_payload(bundle_payload)
+        chart_tables = _build_chart_tables(
+            st.session_state.get("valuation_result"),
+            st.session_state.get("model_config"),
+            st.session_state.get("portfolio"),
+        )
+        export_payload["chart_tables"] = chart_tables
+        export_payload["chart_images"] = _build_chart_images(chart_tables)
         export_buffers, export_warnings = _build_export_buffers(export_payload)
 
         for warning in export_warnings:
