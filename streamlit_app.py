@@ -3659,22 +3659,172 @@ def main() -> None:
         if portfolio is None:
             st.info("Configure the model in the first tab to enable scenarios.")
         else:
+            preset_col, name_col = st.columns([3, 2])
+            with preset_col:
+                st.markdown("**Scenario presets**")
+                preset_buttons = st.columns(4)
+
+                def _apply_preset(
+                    *,
+                    rev: float,
+                    cost: float,
+                    dr: float,
+                    prob: float,
+                ) -> None:
+                    st.session_state["scenario_rev_mult"] = rev
+                    st.session_state["scenario_cost_mult"] = cost
+                    st.session_state["scenario_dr_shift"] = dr
+                    st.session_state["scenario_prob_mult"] = prob
+
+                if preset_buttons[0].button("Base", key="scenario_preset_base"):
+                    _apply_preset(rev=1.0, cost=1.0, dr=0.0, prob=1.0)
+                if preset_buttons[1].button("Upside", key="scenario_preset_upside"):
+                    _apply_preset(rev=1.2, cost=0.9, dr=-0.01, prob=1.1)
+                if preset_buttons[2].button("Downside", key="scenario_preset_downside"):
+                    _apply_preset(rev=0.8, cost=1.1, dr=0.01, prob=0.9)
+                if preset_buttons[3].button("Trial failure", key="scenario_preset_failure"):
+                    _apply_preset(rev=0.6, cost=1.3, dr=0.03, prob=0.75)
+
+            with name_col:
+                scenario_name = st.text_input("Scenario name", value="Custom scenario", key="scenario_name")
+
             col1, col2, col3, col4 = st.columns(4)
-            rev_mult = col1.slider("Revenue multiplier", 0.25, 2.5, 1.0)
-            cost_mult = col2.slider("Cost multiplier", 0.5, 2.0, 1.0)
-            dr_shift = col3.slider("Discount rate shift", -0.05, 0.1, 0.0)
-            prob_mult = col4.slider("Success prob multiplier", 0.5, 1.5, 1.0)
+            rev_mult = col1.slider(
+                "Revenue multiplier",
+                0.25,
+                2.5,
+                st.session_state.get("scenario_rev_mult", 1.0),
+                key="scenario_rev_mult",
+            )
+            cost_mult = col2.slider(
+                "Cost multiplier",
+                0.5,
+                2.0,
+                st.session_state.get("scenario_cost_mult", 1.0),
+                key="scenario_cost_mult",
+            )
+            dr_shift = col3.slider(
+                "Discount rate shift",
+                -0.05,
+                0.1,
+                st.session_state.get("scenario_dr_shift", 0.0),
+                key="scenario_dr_shift",
+            )
+            prob_mult = col4.slider(
+                "Success prob multiplier",
+                0.5,
+                1.5,
+                st.session_state.get("scenario_prob_mult", 1.0),
+                key="scenario_prob_mult",
+            )
             scenario = Scenario(
-                name="Custom scenario",
+                name=scenario_name or "Custom scenario",
                 revenue_multiplier=float(rev_mult),
                 cost_multiplier=float(cost_mult),
                 discount_rate_shift=float(dr_shift),
                 success_prob_multiplier=float(prob_mult),
             )
             scen_results = ScenarioEngine(portfolio).run_scenarios([scenario])
-            st.dataframe(
-                scen_results.style.format({"rnpv": "{:.0f}", "ebitda_value": "{:.0f}"})
+
+            scenario_result = _evaluate_portfolio_shock(
+                portfolio,
+                revenue_multiplier=float(rev_mult),
+                cost_multiplier=float(cost_mult),
+                discount_shift=float(dr_shift),
+                success_prob_multiplier=float(prob_mult),
             )
+            if scenario_result is not None and valuation_result is not None:
+                base_cons = valuation_result.consolidated
+                base_rnpv = valuation_result.rnpv
+                base_ebitda = base_cons["ebitda"].sum()
+                scen_cons = scenario_result.consolidated
+                scen_rnpv = scenario_result.rnpv
+                scen_ebitda = scen_cons["ebitda"].sum()
+                delta_cols = st.columns(4)
+                delta_cols[0].metric("Scenario rNPV", f"{scen_rnpv:,.0f}", f"{scen_rnpv - base_rnpv:+,.0f}")
+                delta_cols[1].metric(
+                    "Scenario EBITDA",
+                    f"{scen_ebitda:,.0f}",
+                    f"{scen_ebitda - base_ebitda:+,.0f}",
+                )
+                delta_cols[2].metric(
+                    "Revenue delta",
+                    f"{scen_cons['revenue'].sum():,.0f}",
+                    f"{scen_cons['revenue'].sum() - base_cons['revenue'].sum():+,.0f}",
+                )
+                delta_cols[3].metric(
+                    "FCFF delta",
+                    f"{scen_cons['fcff_after_wc'].sum():,.0f}",
+                    f"{scen_cons['fcff_after_wc'].sum() - base_cons['fcff_after_wc'].sum():+,.0f}",
+                )
+
+                overlay_df = pd.DataFrame(
+                    {
+                        "Base revenue": base_cons["revenue"],
+                        "Scenario revenue": scen_cons["revenue"],
+                        "Base EBITDA": base_cons["ebitda"],
+                        "Scenario EBITDA": scen_cons["ebitda"],
+                        "Base FCFF": base_cons["fcff_after_wc"],
+                        "Scenario FCFF": scen_cons["fcff_after_wc"],
+                    }
+                )
+                st.markdown("**Scenario overlay vs base**")
+                st.line_chart(overlay_df)
+
+            st.markdown("**Scenario result**")
+            st.dataframe(scen_results.style.format({"rnpv": "{:.0f}", "ebitda_value": "{:.0f}"}))
+
+            st.markdown("**Multi-scenario comparison**")
+            if "scenario_basket" not in st.session_state:
+                st.session_state["scenario_basket"] = []
+            basket_col1, basket_col2 = st.columns([1, 1])
+            if basket_col1.button("Add to comparison", key="scenario_add_to_basket"):
+                st.session_state["scenario_basket"].append(
+                    {
+                        "name": scenario.name,
+                        "revenue_multiplier": float(rev_mult),
+                        "cost_multiplier": float(cost_mult),
+                        "discount_rate_shift": float(dr_shift),
+                        "success_prob_multiplier": float(prob_mult),
+                    }
+                )
+            if basket_col2.button("Clear comparison", key="scenario_clear_basket"):
+                st.session_state["scenario_basket"] = []
+
+            basket = st.session_state.get("scenario_basket", [])
+            if basket:
+                scenario_list = [Scenario(**entry) for entry in basket]
+                basket_results = ScenarioEngine(portfolio).run_scenarios(scenario_list)
+                st.dataframe(
+                    basket_results.style.format({"rnpv": "{:.0f}", "ebitda_value": "{:.0f}"})
+                )
+            else:
+                st.caption("Add scenarios to compare multiple cases side-by-side.")
+
+            st.markdown("**Tornado sensitivity (interactive)**")
+            if valuation_result is not None:
+                tornado_df = _tornado_dataframe(portfolio, valuation_result.rnpv)
+                if tornado_df.empty:
+                    st.info("Unable to compute tornado deltas.")
+                else:
+                    st.dataframe(tornado_df.style.format({"rnpv": "{:.0f}", "Delta": "{:+,.0f}"}))
+            else:
+                st.info("Run a valuation to unlock tornado sensitivities.")
+
+            st.markdown("**Goal seek (scenario)**")
+            target_rnpv = st.number_input(
+                "Target rNPV",
+                value=float(valuation_result.rnpv) if valuation_result is not None else 0.0,
+                key="scenario_goal_seek_target",
+            )
+            if st.button("Solve revenue multiplier", key="scenario_goal_seek"):
+                multiplier, achieved = _goal_seek_revenue_multiplier(portfolio, float(target_rnpv))
+                if achieved is not None:
+                    st.success(
+                        f"Revenue multiplier {multiplier:.2f} approximates the goal (achieved rNPV {achieved:,.0f})."
+                    )
+                else:
+                    st.warning("Goal seek failed—try adjusting the target or assumptions.")
 
     with analytics_tab:
         st.subheader("Advanced financial analytics")
