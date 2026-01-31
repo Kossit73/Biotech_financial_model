@@ -1173,6 +1173,126 @@ def _build_ratio_table(cons: pd.DataFrame) -> pd.DataFrame:
     return ratios.fillna(0.0)
 
 
+def _build_vaccine_break_even_table(model_cfg: Optional[ModelConfig]) -> pd.DataFrame:
+    if model_cfg is None:
+        return pd.DataFrame()
+    dev_df = st.session_state.get("vaccine_development_table", pd.DataFrame()).copy()
+    if dev_df.empty or "ID_vaccine" not in dev_df.columns:
+        return pd.DataFrame()
+
+    dev_df["Market entry year"] = dev_df.get("Market entry year")
+    if "Market entry year" not in dev_df.columns or dev_df["Market entry year"].isna().all():
+        dev_df["Market entry year"] = _coerce_numeric(
+            dev_df.get("First year forecast", pd.Series(dtype=float))
+        ) + _coerce_numeric(dev_df.get("Time to market", pd.Series(dtype=float)))
+    if "End patent year" not in dev_df.columns or dev_df["End patent year"].isna().all():
+        dev_df["End patent year"] = _coerce_numeric(dev_df.get("Market entry year", pd.Series(dtype=float))) + (
+            _coerce_numeric(dev_df.get("Patent duration years", pd.Series(dtype=float))) - 1
+        )
+
+    revenue_df = st.session_state.get("vaccine_revenue_table", pd.DataFrame()).copy()
+    if "Patent revenue target (USD)" not in revenue_df.columns:
+        revenue_df["Patent revenue target (USD)"] = _coerce_numeric(
+            revenue_df.get("Patent customers per year", pd.Series(dtype=float))
+        ) * _coerce_numeric(revenue_df.get("Patent price (USD/customer)", pd.Series(dtype=float)))
+    if "Post patent revenue target (USD)" not in revenue_df.columns:
+        revenue_df["Post patent revenue target (USD)"] = _coerce_numeric(
+            revenue_df.get("Post patent customers per year", pd.Series(dtype=float))
+        ) * _coerce_numeric(revenue_df.get("Post patent price (USD/customer)", pd.Series(dtype=float)))
+
+    cost_df = st.session_state.get("vaccine_cost_table", pd.DataFrame()).copy()
+    gna_cols = [
+        "Indirect staff cost (USD)",
+        "Electricity (USD)",
+        "Depreciation (USD)",
+        "Interest & amortization (USD)",
+    ]
+    if "G&A total (USD)" not in cost_df.columns:
+        cost_df["G&A total (USD)"] = cost_df[gna_cols].sum(axis=1)
+    if "Patent operating cost %" not in cost_df.columns:
+        cost_df["Patent operating cost %"] = (
+            _coerce_numeric(cost_df.get("COGS patent % of sales", pd.Series(dtype=float)))
+            + _coerce_numeric(cost_df.get("Marketing annual % of sales", pd.Series(dtype=float)))
+            + _coerce_numeric(cost_df.get("Royalties cost % of sales", pd.Series(dtype=float)))
+        )
+    if "Post operating cost %" not in cost_df.columns:
+        cost_df["Post operating cost %"] = (
+            _coerce_numeric(cost_df.get("COGS post % of sales", pd.Series(dtype=float)))
+            + _coerce_numeric(cost_df.get("Marketing annual % of sales", pd.Series(dtype=float)))
+            + _coerce_numeric(cost_df.get("Royalties cost % of sales", pd.Series(dtype=float)))
+        )
+
+    rd_df = st.session_state.get("vaccine_rd_table", pd.DataFrame()).copy()
+    if "Pre-GTM total (USD)" not in rd_df.columns:
+        rd_df["Pre-GTM total (USD)"] = _coerce_numeric(
+            rd_df.get("Pre-GTM spent to date (USD)", pd.Series(dtype=float))
+        ) + _coerce_numeric(rd_df.get("Pre-GTM remaining (USD)", pd.Series(dtype=float)))
+
+    capex_df = st.session_state.get("vaccine_capex_table", pd.DataFrame()).copy()
+    if "Total Pre-GTM capex (USD)" not in capex_df.columns:
+        capex_df["Total Pre-GTM capex (USD)"] = _coerce_numeric(
+            capex_df.get("Pre-GTM capex spent (USD)", pd.Series(dtype=float))
+        ) + _coerce_numeric(capex_df.get("Pre-GTM capex remaining (USD)", pd.Series(dtype=float)))
+
+    merged = dev_df.merge(revenue_df, on=["ID_vaccine", "Vaccine name"], how="left")
+    merged = merged.merge(cost_df, on=["ID_vaccine", "Vaccine name"], how="left")
+    merged = merged.merge(rd_df, on=["ID_vaccine", "Vaccine name"], how="left")
+    merged = merged.merge(capex_df, on=["ID_vaccine", "Vaccine name"], how="left")
+
+    years = list(range(model_cfg.first_year, model_cfg.first_year + model_cfg.n_years))
+    results = []
+    for _, row in merged.iterrows():
+        entry_year = int(_coerce_numeric(pd.Series([row.get("Market entry year")]), 0.0).iloc[0])
+        patent_end = int(_coerce_numeric(pd.Series([row.get("End patent year")]), entry_year).iloc[0])
+        patent_rev = float(row.get("Patent revenue target (USD)", 0.0) or 0.0)
+        post_rev = float(row.get("Post patent revenue target (USD)", 0.0) or 0.0)
+        patent_cost_pct = float(row.get("Patent operating cost %", 0.0) or 0.0) / 100.0
+        post_cost_pct = float(row.get("Post operating cost %", 0.0) or 0.0) / 100.0
+        gna_total = float(row.get("G&A total (USD)", 0.0) or 0.0)
+        marketing_launch = float(row.get("Marketing launch cost (USD)", 0.0) or 0.0)
+        rd_annual = float(row.get("Post-GTM annual cost (USD/year)", 0.0) or 0.0)
+        capex_annual = float(row.get("Post-GTM yearly capex (USD)", 0.0) or 0.0)
+        pre_gtm_cost = float(row.get("Pre-GTM total (USD)", 0.0) or 0.0) + float(
+            row.get("Total Pre-GTM capex (USD)", 0.0) or 0.0
+        ) + marketing_launch
+
+        cumulative = 0.0
+        break_even_year = None
+        for year in years:
+            if year < entry_year:
+                cashflow = 0.0
+            else:
+                if year <= patent_end:
+                    revenue = patent_rev
+                    operating_cost = revenue * patent_cost_pct
+                else:
+                    revenue = post_rev
+                    operating_cost = revenue * post_cost_pct
+                cashflow = revenue - operating_cost - gna_total - rd_annual - capex_annual
+                if year == entry_year:
+                    cashflow -= pre_gtm_cost
+            cumulative += cashflow
+            if break_even_year is None and cumulative >= 0:
+                break_even_year = year
+
+        years_to_break_even = None
+        if break_even_year is not None and entry_year:
+            years_to_break_even = break_even_year - entry_year
+
+        results.append(
+            {
+                "ID_vaccine": row.get("ID_vaccine"),
+                "Vaccine name": row.get("Vaccine name"),
+                "Market entry year": entry_year,
+                "Break-even year": break_even_year,
+                "Years to break-even": years_to_break_even,
+                "Cumulative cashflow end (USD)": cumulative,
+            }
+        )
+
+    return pd.DataFrame(results)
+
+
 def _evaluate_portfolio_shock(
     portfolio: Portfolio,
     *,
@@ -1691,6 +1811,42 @@ def _format_excel_sheet(ws, df: pd.DataFrame, *, freeze_panes: str = "B2") -> No
     ws.column_dimensions[index_letter].width = min(max(len(v) for v in index_values) + 2, 26)
 
 
+def _format_excel_table(
+    ws,
+    df: pd.DataFrame,
+    *,
+    start_row: int,
+    start_col: int = 1,
+) -> None:
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    max_row = start_row + df.shape[0]
+    max_col = start_col + df.shape[1] - 1
+
+    for col_idx in range(start_col, max_col + 1):
+        cell = ws.cell(row=start_row, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+
+    for offset, col_name in enumerate(df.columns):
+        col_idx = start_col + offset
+        col_letter = get_column_letter(col_idx)
+        if any(token in str(col_name).lower() for token in ("pct", "margin", "prob", "%")):
+            number_format = "0.0%"
+        else:
+            number_format = "#,##0.00"
+        for row in range(start_row + 1, max_row + 1):
+            ws.cell(row=row, column=col_idx).number_format = number_format
+
+        values = [str(col_name)]
+        for row in range(start_row + 1, max_row + 1):
+            values.append(str(ws.cell(row=row, column=col_idx).value or ""))
+        width = min(max(len(v) for v in values) + 2, 40)
+        ws.column_dimensions[col_letter].width = width
+
+
 def _add_line_chart(
     ws,
     *,
@@ -1742,6 +1898,7 @@ def _build_financial_excel(
     perf_df: pd.DataFrame,
     position_df: pd.DataFrame,
     cash_flow_df: pd.DataFrame,
+    model_cfg: Optional[ModelConfig] = None,
 ) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -1756,6 +1913,21 @@ def _build_financial_excel(
         analytics_df = _build_ratio_table(cons)
         if not analytics_df.empty:
             analytics_df.to_excel(writer, sheet_name="Advanced analytics")
+        break_even_df = _build_vaccine_break_even_table(model_cfg)
+        break_even_start_row = None
+        if not break_even_df.empty:
+            if analytics_df.empty:
+                break_even_start_row = 1
+                break_even_df.to_excel(writer, sheet_name="Advanced analytics", index=False)
+            else:
+                start_row = analytics_df.shape[0] + 3
+                break_even_start_row = start_row + 1
+                break_even_df.to_excel(
+                    writer,
+                    sheet_name="Advanced analytics",
+                    startrow=start_row,
+                    index=False,
+                )
 
         scenario_cols = [col for col in ["revenue", "ebitda", "fcff_after_wc"] if col in cons.columns]
         scenario_df = pd.DataFrame()
@@ -1785,6 +1957,13 @@ def _build_financial_excel(
         if not analytics_df.empty:
             ws = workbook["Advanced analytics"]
             _format_excel_sheet(ws, analytics_df)
+        if break_even_start_row is not None:
+            ws = workbook["Advanced analytics"]
+            title_row = break_even_start_row - 1
+            if title_row > 1:
+                ws.cell(row=title_row, column=1).value = "Vaccine break-even analysis"
+                ws.cell(row=title_row, column=1).font = Font(bold=True)
+            _format_excel_table(ws, break_even_df, start_row=break_even_start_row)
 
         if not scenario_df.empty:
             ws = workbook["Scenario analysis"]
@@ -1946,6 +2125,9 @@ def _build_chart_tables(
     ratios = _build_ratio_table(cons)
     if not ratios.empty:
         tables["advanced_analytics_report"] = ratios
+    break_even_df = _build_vaccine_break_even_table(model_cfg)
+    if not break_even_df.empty:
+        tables["vaccine_break_even_report"] = break_even_df
 
     decomp_df = _compute_decomposition(cons)
     if decomp_df is not None:
@@ -2149,6 +2331,15 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         analytics_df = payload["chart_tables"]["advanced_analytics_report"]
         for year, row in analytics_df.round(4).iterrows():
             document.add_paragraph(f"{year}: {row.to_dict()}")
+    if payload.get("chart_tables", {}).get("vaccine_break_even_report") is not None:
+        document.add_heading("Vaccine break-even analysis", level=2)
+        break_even_df = payload["chart_tables"]["vaccine_break_even_report"]
+        for _, row in break_even_df.iterrows():
+            document.add_paragraph(
+                f"{row.get('Vaccine name', '')}: break-even {row.get('Break-even year')}, "
+                f"years to break-even {row.get('Years to break-even')}, "
+                f"cumulative cashflow {row.get('Cumulative cashflow end (USD)')}"
+            )
     document.add_heading("AI Configuration", level=2)
     for key, value in payload["ai_config"].items():
         document.add_paragraph(f"{key}: {value}")
@@ -2239,6 +2430,28 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         y_position -= 18
         for year, row in analytics_df.round(4).iterrows():
             pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    break_even_df = payload.get("chart_tables", {}).get("vaccine_break_even_report")
+    if break_even_df is not None:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Vaccine break-even analysis")
+        y_position -= 18
+        for _, row in break_even_df.iterrows():
+            pdf_canvas.drawString(
+                72,
+                y_position,
+                f"{row.get('Vaccine name', '')}: break-even {row.get('Break-even year')}, "
+                f"years to break-even {row.get('Years to break-even')}, "
+                f"cumulative cashflow {row.get('Cumulative cashflow end (USD)')}",
+            )
             y_position -= 16
             if y_position <= 72:
                 pdf_canvas.showPage()
@@ -3368,6 +3581,7 @@ def main() -> None:
                                 perf_df,
                                 position_df,
                                 cash_flow_df,
+                                model_cfg,
                             )
                         st.session_state["financial_excel_bytes"] = excel_bytes
                 if excel_bytes:
