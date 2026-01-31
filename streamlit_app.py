@@ -2119,11 +2119,61 @@ def _rag_blueprint_markdown() -> str:
     )
 
 
+def _build_ai_commentary(
+    snapshot_summary: Dict[str, Any],
+    perf_df: Optional[pd.DataFrame],
+    position_df: Optional[pd.DataFrame],
+    cash_flow_df: Optional[pd.DataFrame],
+) -> List[str]:
+    comments: List[str] = []
+    if snapshot_summary:
+        npv = snapshot_summary.get("npv")
+        irr = snapshot_summary.get("irr")
+        revenue = snapshot_summary.get("revenue_annual")
+        opex = snapshot_summary.get("opex_annual")
+        if npv is not None:
+            comments.append(f"NPV indicates a {'positive' if npv >= 0 else 'negative'} valuation ({npv}).")
+        if irr is not None:
+            comments.append(f"IRR is {irr}, highlighting projected return potential.")
+        if revenue is not None and opex is not None:
+            comments.append(f"Annual revenue vs opex suggests a gross operating spread of {revenue - opex}.")
+
+    if perf_df is not None and not perf_df.empty:
+        revenue_series = perf_df.get("Revenue")
+        ebitda_series = perf_df.get("EBITDA")
+        if revenue_series is not None:
+            avg_revenue = float(revenue_series.mean())
+            comments.append(f"Average forecast revenue is {avg_revenue:,.0f}.")
+        if revenue_series is not None and ebitda_series is not None:
+            margin = float((ebitda_series.sum() / revenue_series.sum()) if revenue_series.sum() else 0.0)
+            comments.append(f"Average EBITDA margin across the plan is {margin:.1%}.")
+
+    if position_df is not None and not position_df.empty:
+        total_equity = position_df.get("Total equity")
+        if total_equity is not None:
+            end_equity = float(total_equity.iloc[-1])
+            comments.append(f"Ending total equity is {end_equity:,.0f}, reflecting retained value buildup.")
+
+    if cash_flow_df is not None and not cash_flow_df.empty:
+        net_cash = cash_flow_df.get("Net change in cash")
+        if net_cash is not None:
+            cumulative_cash = float(net_cash.sum())
+            comments.append(f"Cumulative net cash change over the plan is {cumulative_cash:,.0f}.")
+
+    if not comments:
+        comments.append("Insufficient data to generate AI commentary.")
+    return comments
+
+
 def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
     snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
     scenarios = snapshot_summary.get("scenarios") or []
     sensitivities = snapshot_summary.get("sensitivities") or []
     last_report = bundle_payload.get("last_report") or {}
+    perf_df = bundle_payload.get("financial_performance")
+    position_df = bundle_payload.get("financial_position")
+    cash_flow_df = bundle_payload.get("cash_flows")
+    ai_commentary = _build_ai_commentary(snapshot_summary, perf_df, position_df, cash_flow_df)
     summary_rows = [
         {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
         {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
@@ -2141,6 +2191,10 @@ def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
         "sensitivities": sensitivities,
         "last_report": last_report,
         "ai_config": bundle_payload["ai_config"],
+        "financial_performance": perf_df,
+        "financial_position": position_df,
+        "cash_flows": cash_flow_df,
+        "ai_commentary": ai_commentary,
     }
 
 
@@ -2326,6 +2380,12 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         pd.DataFrame(payload["summary_rows"]).to_excel(writer, index=False, sheet_name="Summary")
+        if payload.get("ai_commentary"):
+            pd.DataFrame({"AI commentary": payload["ai_commentary"]}).to_excel(
+                writer,
+                index=False,
+                sheet_name="AI Commentary",
+            )
         if payload["scenarios"]:
             pd.DataFrame(payload["scenarios"]).to_excel(writer, index=False, sheet_name="Scenarios")
         if payload["sensitivities"]:
@@ -2334,6 +2394,24 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
             pd.DataFrame(
                 [{"Section": key, "Content": value} for key, value in payload["last_report"].items()]
             ).to_excel(writer, index=False, sheet_name="Last Report")
+        if payload.get("financial_performance") is not None:
+            payload["financial_performance"].to_excel(
+                writer,
+                index=True,
+                sheet_name="Financial Performance",
+            )
+        if payload.get("financial_position") is not None:
+            payload["financial_position"].to_excel(
+                writer,
+                index=True,
+                sheet_name="Financial Position",
+            )
+        if payload.get("cash_flows") is not None:
+            payload["cash_flows"].to_excel(
+                writer,
+                index=True,
+                sheet_name="Cash Flows",
+            )
         chart_tables = payload.get("chart_tables", {})
         for sheet_name, table in chart_tables.items():
             if not table.empty:
@@ -2355,6 +2433,10 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     document.add_heading("Financial Snapshot", level=2)
     for row in payload["summary_rows"]:
         document.add_paragraph(f"{row['Metric']}: {row['Value']}")
+    if payload.get("ai_commentary"):
+        document.add_heading("AI Commentary", level=2)
+        for comment in payload["ai_commentary"]:
+            document.add_paragraph(f"- {comment}")
     if payload["scenarios"]:
         document.add_heading("Scenarios", level=2)
         for scenario in payload["scenarios"]:
@@ -2363,6 +2445,21 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         document.add_heading("Sensitivities", level=2)
         for sensitivity in payload["sensitivities"]:
             document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
+    if payload.get("financial_performance") is not None:
+        document.add_heading("Statement of Financial Performance", level=2)
+        perf_df = payload["financial_performance"]
+        for year, row in perf_df.iterrows():
+            document.add_paragraph(f"{year}: {row.to_dict()}")
+    if payload.get("financial_position") is not None:
+        document.add_heading("Statement of Financial Position", level=2)
+        position_df = payload["financial_position"]
+        for year, row in position_df.iterrows():
+            document.add_paragraph(f"{year}: {row.to_dict()}")
+    if payload.get("cash_flows") is not None:
+        document.add_heading("Statement of Cash Flows", level=2)
+        cash_flow_df = payload["cash_flows"]
+        for year, row in cash_flow_df.iterrows():
+            document.add_paragraph(f"{year}: {row.to_dict()}")
     if payload.get("chart_tables", {}).get("advanced_analytics_report") is not None:
         document.add_heading("Advanced analytics report", level=2)
         analytics_df = payload["chart_tables"]["advanced_analytics_report"]
@@ -2428,6 +2525,21 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             pdf_canvas.showPage()
             pdf_canvas.setFont("Helvetica", 11)
             y_position = 770
+    if payload.get("ai_commentary"):
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "AI Commentary")
+        y_position -= 18
+        for comment in payload["ai_commentary"]:
+            pdf_canvas.drawString(72, y_position, f"- {comment}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
     if payload["scenarios"]:
         y_position -= 6
         if y_position <= 72:
@@ -2453,6 +2565,54 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         y_position -= 18
         for sensitivity in payload["sensitivities"]:
             pdf_canvas.drawString(72, y_position, json.dumps(sensitivity, ensure_ascii=False))
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    perf_df = payload.get("financial_performance")
+    if perf_df is not None:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Statement of Financial Performance")
+        y_position -= 18
+        for year, row in perf_df.iterrows():
+            pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    position_df = payload.get("financial_position")
+    if position_df is not None:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Statement of Financial Position")
+        y_position -= 18
+        for year, row in position_df.iterrows():
+            pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    cash_flow_df = payload.get("cash_flows")
+    if cash_flow_df is not None:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Statement of Cash Flows")
+        y_position -= 18
+        for year, row in cash_flow_df.iterrows():
+            pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
             y_position -= 16
             if y_position <= 72:
                 pdf_canvas.showPage()
@@ -2913,10 +3073,21 @@ def _render_rag_assistant_page() -> None:
         st.success("Bundle ready. Download below.")
 
     if st.session_state.get("rag_bundle_ready"):
+        valuation_result = st.session_state.get("valuation_result")
+        model_cfg = st.session_state.get("model_config")
+        perf_df = None
+        position_df = None
+        cash_flow_df = None
+        if valuation_result is not None and model_cfg is not None:
+            cons = valuation_result.consolidated
+            perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
         bundle_payload = {
             "snapshot": snapshot_payload,
             "ai_config": st.session_state.get("rag_ai_config", {}),
             "last_report": st.session_state.get("rag_last_report", {}),
+            "financial_performance": perf_df,
+            "financial_position": position_df,
+            "cash_flows": cash_flow_df,
         }
         export_payload = _build_export_payload(bundle_payload)
         chart_tables = _build_chart_tables(
