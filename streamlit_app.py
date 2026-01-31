@@ -2772,6 +2772,10 @@ def main() -> None:
         with st.expander("Uses and sources of funds"):
             funding_required = float(st.session_state.get("funding_required", 250_000_000.0))
             planned_new_equity = float(st.session_state.get("planned_new_equity", 200_000_000.0))
+            auto_funding_required = st.checkbox(
+                "Auto-calculate funding required from model outputs",
+                value=True,
+            )
             uses_col, sources_col = st.columns(2)
             with uses_col:
                 st.markdown("**Uses**")
@@ -2808,6 +2812,19 @@ def main() -> None:
                         .fillna(0.0)
                         .sum()
                     )
+                valuation_result = st.session_state.get("valuation_result")
+                burn_total = 0.0
+                wc_total = 0.0
+                if valuation_result is not None:
+                    cons = valuation_result.consolidated
+                    if "fcff_after_wc" in cons.columns:
+                        burn_total = float((-cons["fcff_after_wc"].clip(upper=0)).sum())
+                    if "delta_wc" in cons.columns:
+                        wc_total = float((-cons["delta_wc"].clip(upper=0)).sum())
+                derived_funding_required = uses_total + burn_total + wc_total
+                if auto_funding_required:
+                    funding_required = float(derived_funding_required)
+                    st.session_state["funding_required"] = funding_required
                 planned_new_equity = max(funding_required - sources_other_total, 0.0)
                 st.session_state["planned_new_equity"] = planned_new_equity
                 if {"Item", "Amount"}.issubset(sources_df.columns):
@@ -2829,6 +2846,15 @@ def main() -> None:
             st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
             if abs(funding_gap) > 1.0:
                 st.warning("Funding required does not match total uses.")
+            reconciliation = pd.DataFrame(
+                [
+                    {"Component": "Uses total", "Amount": uses_total},
+                    {"Component": "Cash burn (FCFF < 0)", "Amount": burn_total},
+                    {"Component": "Working capital draw", "Amount": wc_total},
+                    {"Component": "Funding required", "Amount": funding_required},
+                ]
+            )
+            st.dataframe(reconciliation.style.format({"Amount": "{:,.0f}"}))
 
         with st.expander("Risk-adjusted DCF valuation method - assumptions"):
             col_a, col_b, col_c = st.columns(3)
