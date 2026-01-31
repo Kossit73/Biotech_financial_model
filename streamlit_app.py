@@ -1173,22 +1173,12 @@ def _build_ratio_table(cons: pd.DataFrame) -> pd.DataFrame:
     return ratios.fillna(0.0)
 
 
-def _build_vaccine_break_even_table(model_cfg: Optional[ModelConfig]) -> pd.DataFrame:
+def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.DataFrame:
     if model_cfg is None:
         return pd.DataFrame()
     dev_df = st.session_state.get("vaccine_development_table", pd.DataFrame()).copy()
     if dev_df.empty or "ID_vaccine" not in dev_df.columns:
         return pd.DataFrame()
-
-    dev_df["Market entry year"] = dev_df.get("Market entry year")
-    if "Market entry year" not in dev_df.columns or dev_df["Market entry year"].isna().all():
-        dev_df["Market entry year"] = _coerce_numeric(
-            dev_df.get("First year forecast", pd.Series(dtype=float))
-        ) + _coerce_numeric(dev_df.get("Time to market", pd.Series(dtype=float)))
-    if "End patent year" not in dev_df.columns or dev_df["End patent year"].isna().all():
-        dev_df["End patent year"] = _coerce_numeric(dev_df.get("Market entry year", pd.Series(dtype=float))) + (
-            _coerce_numeric(dev_df.get("Patent duration years", pd.Series(dtype=float))) - 1
-        )
 
     revenue_df = st.session_state.get("vaccine_revenue_table", pd.DataFrame()).copy()
     if "Patent revenue target (USD)" not in revenue_df.columns:
@@ -1215,12 +1205,6 @@ def _build_vaccine_break_even_table(model_cfg: Optional[ModelConfig]) -> pd.Data
             + _coerce_numeric(cost_df.get("Marketing annual % of sales", pd.Series(dtype=float)))
             + _coerce_numeric(cost_df.get("Royalties cost % of sales", pd.Series(dtype=float)))
         )
-    if "Post operating cost %" not in cost_df.columns:
-        cost_df["Post operating cost %"] = (
-            _coerce_numeric(cost_df.get("COGS post % of sales", pd.Series(dtype=float)))
-            + _coerce_numeric(cost_df.get("Marketing annual % of sales", pd.Series(dtype=float)))
-            + _coerce_numeric(cost_df.get("Royalties cost % of sales", pd.Series(dtype=float)))
-        )
 
     rd_df = st.session_state.get("vaccine_rd_table", pd.DataFrame()).copy()
     if "Pre-GTM total (USD)" not in rd_df.columns:
@@ -1239,58 +1223,111 @@ def _build_vaccine_break_even_table(model_cfg: Optional[ModelConfig]) -> pd.Data
     merged = merged.merge(rd_df, on=["ID_vaccine", "Vaccine name"], how="left")
     merged = merged.merge(capex_df, on=["ID_vaccine", "Vaccine name"], how="left")
 
-    years = list(range(model_cfg.first_year, model_cfg.first_year + model_cfg.n_years))
-    results = []
+    inputs = []
     for _, row in merged.iterrows():
-        entry_year = int(_coerce_numeric(pd.Series([row.get("Market entry year")]), 0.0).iloc[0])
-        patent_end = int(_coerce_numeric(pd.Series([row.get("End patent year")]), entry_year).iloc[0])
-        patent_rev = float(row.get("Patent revenue target (USD)", 0.0) or 0.0)
-        post_rev = float(row.get("Post patent revenue target (USD)", 0.0) or 0.0)
-        patent_cost_pct = float(row.get("Patent operating cost %", 0.0) or 0.0) / 100.0
-        post_cost_pct = float(row.get("Post operating cost %", 0.0) or 0.0) / 100.0
-        gna_total = float(row.get("G&A total (USD)", 0.0) or 0.0)
-        marketing_launch = float(row.get("Marketing launch cost (USD)", 0.0) or 0.0)
-        rd_annual = float(row.get("Post-GTM annual cost (USD/year)", 0.0) or 0.0)
-        capex_annual = float(row.get("Post-GTM yearly capex (USD)", 0.0) or 0.0)
-        pre_gtm_cost = float(row.get("Pre-GTM total (USD)", 0.0) or 0.0) + float(
-            row.get("Total Pre-GTM capex (USD)", 0.0) or 0.0
-        ) + marketing_launch
+        price_candidates = _coerce_numeric(
+            pd.Series(
+                [
+                    row.get("Patent price (USD/customer)"),
+                    row.get("Post patent price (USD/customer)"),
+                ]
+            ),
+            0.0,
+        )
+        unit_price = next((float(value) for value in price_candidates if float(value) > 0.0), 0.0)
+        units_per_year = _coerce_numeric(pd.Series([row.get("Patent customers per year")]), 0.0).iloc[0]
+        if not unit_price:
+            unit_price = _coerce_numeric(pd.Series([row.get("Patent revenue target (USD)")]), 0.0).iloc[0]
+            unit_price = unit_price / units_per_year if units_per_year else 0.0
+        operating_cost_pct = float(row.get("Patent operating cost %", 0.0) or 0.0) / 100.0
+        unit_variable_cost = unit_price * operating_cost_pct
+        unit_fixed_cost = float(row.get("G&A total (USD)", 0.0) or 0.0) + float(
+            row.get("Post-GTM annual cost (USD/year)", 0.0) or 0.0
+        ) + float(row.get("Post-GTM yearly capex (USD)", 0.0) or 0.0)
 
-        cumulative = 0.0
-        break_even_year = None
-        for year in years:
-            if year < entry_year:
-                cashflow = 0.0
-            else:
-                if year <= patent_end:
-                    revenue = patent_rev
-                    operating_cost = revenue * patent_cost_pct
-                else:
-                    revenue = post_rev
-                    operating_cost = revenue * post_cost_pct
-                cashflow = revenue - operating_cost - gna_total - rd_annual - capex_annual
-                if year == entry_year:
-                    cashflow -= pre_gtm_cost
-            cumulative += cashflow
-            if break_even_year is None and cumulative >= 0:
-                break_even_year = year
-
-        years_to_break_even = None
-        if break_even_year is not None and entry_year:
-            years_to_break_even = break_even_year - entry_year
-
-        results.append(
+        inputs.append(
             {
                 "ID_vaccine": row.get("ID_vaccine"),
                 "Vaccine name": row.get("Vaccine name"),
-                "Market entry year": entry_year,
-                "Break-even year": break_even_year,
-                "Years to break-even": years_to_break_even,
-                "Cumulative cashflow end (USD)": cumulative,
+                "Unit price (USD)": unit_price,
+                "Unit variable cost (USD)": unit_variable_cost,
+                "Unit fixed cost (USD/year)": unit_fixed_cost,
+                "Units per year": units_per_year,
             }
         )
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(inputs)
+
+
+def _build_vaccine_break_even_table(
+    model_cfg: Optional[ModelConfig],
+    *,
+    inputs_df: Optional[pd.DataFrame] = None,
+    ai_assist: Optional[bool] = None,
+    ai_target_years: Optional[int] = None,
+) -> pd.DataFrame:
+    if model_cfg is None:
+        return pd.DataFrame()
+
+    base_inputs = _build_vaccine_break_even_inputs(model_cfg)
+    if base_inputs.empty:
+        return pd.DataFrame()
+
+    if inputs_df is None:
+        stored_inputs = st.session_state.get("vaccine_break_even_inputs")
+        if isinstance(stored_inputs, pd.DataFrame) and not stored_inputs.empty:
+            inputs_df = stored_inputs
+        else:
+            inputs_df = base_inputs
+
+    inputs_df = inputs_df.copy()
+    if "Vaccine name" in base_inputs.columns:
+        inputs_df = inputs_df.merge(
+            base_inputs[["Vaccine name", "ID_vaccine"]],
+            on="Vaccine name",
+            how="left",
+            suffixes=("", "_base"),
+        )
+        if "ID_vaccine_base" in inputs_df.columns:
+            inputs_df["ID_vaccine"] = inputs_df["ID_vaccine"].combine_first(inputs_df["ID_vaccine_base"])
+            inputs_df = inputs_df.drop(columns=["ID_vaccine_base"], errors="ignore")
+
+    unit_price = _coerce_numeric(inputs_df.get("Unit price (USD)", pd.Series(dtype=float)))
+    unit_variable = _coerce_numeric(inputs_df.get("Unit variable cost (USD)", pd.Series(dtype=float)))
+    unit_fixed = _coerce_numeric(inputs_df.get("Unit fixed cost (USD/year)", pd.Series(dtype=float)))
+    units_per_year = _coerce_numeric(inputs_df.get("Units per year", pd.Series(dtype=float)))
+
+    margin = unit_price - unit_variable
+    contribution_pct = np.where(unit_price != 0, margin / unit_price, 0.0)
+    break_even_units = np.where(margin > 0, unit_fixed / margin, np.nan)
+    break_even_revenue = break_even_units * unit_price
+    break_even_unit_cost = np.where(units_per_year > 0, unit_variable + unit_fixed / units_per_year, np.nan)
+
+    results = inputs_df[["ID_vaccine", "Vaccine name"]].copy()
+    results["Unit price (USD)"] = unit_price
+    results["Unit variable cost (USD)"] = unit_variable
+    results["Unit fixed cost (USD/year)"] = unit_fixed
+    results["Units per year"] = units_per_year
+    results["Unit contribution margin (USD)"] = margin
+    results["Contribution margin %"] = contribution_pct
+    results["Break-even units"] = break_even_units
+    results["Break-even revenue (USD)"] = break_even_revenue
+    results["Break-even unit cost (USD)"] = break_even_unit_cost
+
+    if ai_assist is None:
+        ai_assist = bool(st.session_state.get("break_even_ai_assist", True))
+    if ai_target_years is None:
+        ai_target_years = int(st.session_state.get("break_even_ai_target_years", 3))
+
+    if ai_assist:
+        required_price = np.where(
+            units_per_year > 0,
+            unit_variable + unit_fixed / (units_per_year * max(ai_target_years, 1)),
+            np.nan,
+        )
+        results["AI suggested unit price (USD)"] = required_price
+
+    return results
 
 
 def _evaluate_portfolio_shock(
@@ -2336,9 +2373,11 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         break_even_df = payload["chart_tables"]["vaccine_break_even_report"]
         for _, row in break_even_df.iterrows():
             document.add_paragraph(
-                f"{row.get('Vaccine name', '')}: break-even {row.get('Break-even year')}, "
-                f"years to break-even {row.get('Years to break-even')}, "
-                f"cumulative cashflow {row.get('Cumulative cashflow end (USD)')}"
+                f"{row.get('Vaccine name', '')}: unit price {row.get('Unit price (USD)')}, "
+                f"unit variable cost {row.get('Unit variable cost (USD)')}, "
+                f"unit fixed cost {row.get('Unit fixed cost (USD/year)')}, "
+                f"unit margin {row.get('Unit contribution margin (USD)')}, "
+                f"break-even units {row.get('Break-even units')}"
             )
     document.add_heading("AI Configuration", level=2)
     for key, value in payload["ai_config"].items():
@@ -2448,9 +2487,11 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             pdf_canvas.drawString(
                 72,
                 y_position,
-                f"{row.get('Vaccine name', '')}: break-even {row.get('Break-even year')}, "
-                f"years to break-even {row.get('Years to break-even')}, "
-                f"cumulative cashflow {row.get('Cumulative cashflow end (USD)')}",
+                f"{row.get('Vaccine name', '')}: unit price {row.get('Unit price (USD)')}, "
+                f"unit variable cost {row.get('Unit variable cost (USD)')}, "
+                f"unit fixed cost {row.get('Unit fixed cost (USD/year)')}, "
+                f"unit margin {row.get('Unit contribution margin (USD)')}, "
+                f"break-even units {row.get('Break-even units')}",
             )
             y_position -= 16
             if y_position <= 72:
@@ -3625,16 +3666,75 @@ def main() -> None:
             ratios = _build_ratio_table(cons)
             st.markdown("**Margin & intensity analysis**")
             st.dataframe(ratios.style.format("{:.1%}"))
-            break_even_df = _build_vaccine_break_even_table(model_cfg)
-            if not break_even_df.empty:
-                st.markdown("**Vaccine break-even analysis**")
+            st.markdown("**Vaccine break-even analysis (interactive)**")
+            base_inputs = _build_vaccine_break_even_inputs(model_cfg)
+            if base_inputs.empty:
+                st.info("Add vaccine assumptions to unlock break-even analytics.")
+            else:
+                if "vaccine_break_even_inputs" not in st.session_state:
+                    st.session_state["vaccine_break_even_inputs"] = base_inputs
+                else:
+                    current_inputs = st.session_state["vaccine_break_even_inputs"]
+                    if isinstance(current_inputs, pd.DataFrame):
+                        missing = set(base_inputs["Vaccine name"]) - set(current_inputs.get("Vaccine name", []))
+                        if missing:
+                            st.session_state["vaccine_break_even_inputs"] = pd.concat(
+                                [
+                                    current_inputs,
+                                    base_inputs[base_inputs["Vaccine name"].isin(missing)],
+                                ],
+                                ignore_index=True,
+                            )
+                ai_cols = st.columns(2)
+                ai_assist = ai_cols[0].toggle(
+                    "AI/ML assist: suggest unit prices for target break-even",
+                    value=st.session_state.get("break_even_ai_assist", True),
+                    key="break_even_ai_assist",
+                )
+                ai_target_years = ai_cols[1].slider(
+                    "Target break-even horizon (years)",
+                    1,
+                    10,
+                    st.session_state.get("break_even_ai_target_years", 3),
+                    key="break_even_ai_target_years",
+                )
+                st.caption(
+                    "Adjust unit price and cost inputs to see contribution margin, break-even units, "
+                    "and AI-assisted price suggestions based on the target horizon."
+                )
+                edited_inputs = st.data_editor(
+                    st.session_state["vaccine_break_even_inputs"],
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    column_config={
+                        "Unit price (USD)": st.column_config.NumberColumn(format="$%0.2f", step=1.0),
+                        "Unit variable cost (USD)": st.column_config.NumberColumn(format="$%0.2f", step=1.0),
+                        "Unit fixed cost (USD/year)": st.column_config.NumberColumn(format="$%0.0f", step=1000.0),
+                        "Units per year": st.column_config.NumberColumn(format="%0.0f", step=1.0),
+                    },
+                    key="vaccine_break_even_editor",
+                )
+                st.session_state["vaccine_break_even_inputs"] = edited_inputs
+                break_even_df = _build_vaccine_break_even_table(
+                    model_cfg,
+                    inputs_df=edited_inputs,
+                    ai_assist=ai_assist,
+                    ai_target_years=ai_target_years,
+                )
+                st.markdown("**Break-even outputs**")
                 st.dataframe(
                     break_even_df.style.format(
                         {
-                            "Market entry year": "{:.0f}",
-                            "Break-even year": "{:.0f}",
-                            "Years to break-even": "{:.0f}",
-                            "Cumulative cashflow end (USD)": "{:,.0f}",
+                            "Unit price (USD)": "{:,.2f}",
+                            "Unit variable cost (USD)": "{:,.2f}",
+                            "Unit fixed cost (USD/year)": "{:,.0f}",
+                            "Units per year": "{:,.0f}",
+                            "Unit contribution margin (USD)": "{:,.2f}",
+                            "Contribution margin %": "{:.1%}",
+                            "Break-even units": "{:,.0f}",
+                            "Break-even revenue (USD)": "{:,.0f}",
+                            "Break-even unit cost (USD)": "{:,.2f}",
+                            "AI suggested unit price (USD)": "{:,.2f}",
                         }
                     )
                 )
