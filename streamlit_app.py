@@ -2124,41 +2124,68 @@ def _build_ai_commentary(
     perf_df: Optional[pd.DataFrame],
     position_df: Optional[pd.DataFrame],
     cash_flow_df: Optional[pd.DataFrame],
+    cons_df: Optional[pd.DataFrame],
 ) -> List[str]:
     comments: List[str] = []
+
+    def _format_value(value: Any) -> str:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return "n/a"
+        if isinstance(value, (int, float)):
+            return f"{value:,.0f}"
+        return str(value)
+
     if snapshot_summary:
         npv = snapshot_summary.get("npv")
         irr = snapshot_summary.get("irr")
         revenue = snapshot_summary.get("revenue_annual")
         opex = snapshot_summary.get("opex_annual")
+        comments.append(
+            f"Snapshot: NPV {_format_value(npv)}, IRR {_format_value(irr)}, "
+            f"Annual revenue {_format_value(revenue)}, Annual opex {_format_value(opex)}."
+        )
         if npv is not None:
-            comments.append(f"NPV indicates a {'positive' if npv >= 0 else 'negative'} valuation ({npv}).")
-        if irr is not None:
-            comments.append(f"IRR is {irr}, highlighting projected return potential.")
+            comments.append(
+                f"NPV indicates a {'positive' if npv >= 0 else 'negative'} valuation trend."
+            )
         if revenue is not None and opex is not None:
-            comments.append(f"Annual revenue vs opex suggests a gross operating spread of {revenue - opex}.")
+            comments.append(
+                f"Annual revenue vs opex suggests a gross operating spread of {_format_value(revenue - opex)}."
+            )
 
     if perf_df is not None and not perf_df.empty:
         revenue_series = perf_df.get("Revenue")
         ebitda_series = perf_df.get("EBITDA")
         if revenue_series is not None:
             avg_revenue = float(revenue_series.mean())
-            comments.append(f"Average forecast revenue is {avg_revenue:,.0f}.")
+            comments.append(f"Performance: average revenue over the plan is {avg_revenue:,.0f}.")
         if revenue_series is not None and ebitda_series is not None:
             margin = float((ebitda_series.sum() / revenue_series.sum()) if revenue_series.sum() else 0.0)
-            comments.append(f"Average EBITDA margin across the plan is {margin:.1%}.")
+            comments.append(f"Performance: average EBITDA margin is {margin:.1%}.")
 
     if position_df is not None and not position_df.empty:
+        total_assets = position_df.get("Total assets")
         total_equity = position_df.get("Total equity")
+        if total_assets is not None:
+            end_assets = float(total_assets.iloc[-1])
+            comments.append(f"Position: ending total assets are {end_assets:,.0f}.")
         if total_equity is not None:
             end_equity = float(total_equity.iloc[-1])
-            comments.append(f"Ending total equity is {end_equity:,.0f}, reflecting retained value buildup.")
+            comments.append(f"Position: ending total equity is {end_equity:,.0f}.")
 
     if cash_flow_df is not None and not cash_flow_df.empty:
         net_cash = cash_flow_df.get("Net change in cash")
         if net_cash is not None:
             cumulative_cash = float(net_cash.sum())
-            comments.append(f"Cumulative net cash change over the plan is {cumulative_cash:,.0f}.")
+            comments.append(f"Cash flow: cumulative net cash change is {cumulative_cash:,.0f}.")
+
+    if cons_df is not None and not cons_df.empty:
+        peak_revenue = float(cons_df["revenue"].max()) if "revenue" in cons_df.columns else None
+        total_fcff = float(cons_df["fcff_after_wc"].sum()) if "fcff_after_wc" in cons_df.columns else None
+        if peak_revenue is not None:
+            comments.append(f"Financial statements: peak revenue reaches {peak_revenue:,.0f}.")
+        if total_fcff is not None:
+            comments.append(f"Financial statements: total FCFF after WC sums to {total_fcff:,.0f}.")
 
     if not comments:
         comments.append("Insufficient data to generate AI commentary.")
@@ -2173,7 +2200,8 @@ def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
     perf_df = bundle_payload.get("financial_performance")
     position_df = bundle_payload.get("financial_position")
     cash_flow_df = bundle_payload.get("cash_flows")
-    ai_commentary = _build_ai_commentary(snapshot_summary, perf_df, position_df, cash_flow_df)
+    cons_df = bundle_payload.get("financial_statements")
+    ai_commentary = _build_ai_commentary(snapshot_summary, perf_df, position_df, cash_flow_df, cons_df)
     summary_rows = [
         {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
         {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
@@ -2194,6 +2222,7 @@ def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
         "financial_performance": perf_df,
         "financial_position": position_df,
         "cash_flows": cash_flow_df,
+        "financial_statements": cons_df,
         "ai_commentary": ai_commentary,
     }
 
@@ -2394,6 +2423,12 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
             pd.DataFrame(
                 [{"Section": key, "Content": value} for key, value in payload["last_report"].items()]
             ).to_excel(writer, index=False, sheet_name="Last Report")
+        if payload.get("financial_statements") is not None:
+            payload["financial_statements"].to_excel(
+                writer,
+                index=True,
+                sheet_name="Financial Statements",
+            )
         if payload.get("financial_performance") is not None:
             payload["financial_performance"].to_excel(
                 writer,
@@ -2422,6 +2457,22 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
 
 
 def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
+    def _add_docx_table(document, title: str, df: pd.DataFrame) -> None:
+        if df is None or df.empty:
+            return
+        document.add_heading(title, level=2)
+        table_df = df.copy()
+        table_df.insert(0, "Year", table_df.index)
+        table = document.add_table(rows=1, cols=len(table_df.columns))
+        table.style = "Light Grid"
+        hdr_cells = table.rows[0].cells
+        for idx, col_name in enumerate(table_df.columns):
+            hdr_cells[idx].text = str(col_name)
+        for _, row in table_df.iterrows():
+            row_cells = table.add_row().cells
+            for idx, value in enumerate(row):
+                row_cells[idx].text = str(value)
+
     Document = importlib.import_module("docx").Document
     docx_buffer = io.BytesIO()
     document = Document()
@@ -2445,21 +2496,30 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         document.add_heading("Sensitivities", level=2)
         for sensitivity in payload["sensitivities"]:
             document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
+    if payload.get("financial_statements") is not None:
+        _add_docx_table(
+            document,
+            "Financial Statements",
+            payload["financial_statements"],
+        )
     if payload.get("financial_performance") is not None:
-        document.add_heading("Statement of Financial Performance", level=2)
-        perf_df = payload["financial_performance"]
-        for year, row in perf_df.iterrows():
-            document.add_paragraph(f"{year}: {row.to_dict()}")
+        _add_docx_table(
+            document,
+            "Statement of Financial Performance",
+            payload["financial_performance"],
+        )
     if payload.get("financial_position") is not None:
-        document.add_heading("Statement of Financial Position", level=2)
-        position_df = payload["financial_position"]
-        for year, row in position_df.iterrows():
-            document.add_paragraph(f"{year}: {row.to_dict()}")
+        _add_docx_table(
+            document,
+            "Statement of Financial Position",
+            payload["financial_position"],
+        )
     if payload.get("cash_flows") is not None:
-        document.add_heading("Statement of Cash Flows", level=2)
-        cash_flow_df = payload["cash_flows"]
-        for year, row in cash_flow_df.iterrows():
-            document.add_paragraph(f"{year}: {row.to_dict()}")
+        _add_docx_table(
+            document,
+            "Statement of Cash Flows",
+            payload["cash_flows"],
+        )
     if payload.get("chart_tables", {}).get("advanced_analytics_report") is not None:
         document.add_heading("Advanced analytics report", level=2)
         analytics_df = payload["chart_tables"]["advanced_analytics_report"]
@@ -2510,6 +2570,7 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
 def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
     canvas = importlib.import_module("reportlab.pdfgen.canvas")
     image_reader = importlib.import_module("reportlab.lib.utils").ImageReader
+    tables = importlib.import_module("reportlab.platypus.tables")
     pdf_buffer = io.BytesIO()
     pdf_canvas = canvas.Canvas(pdf_buffer)
     pdf_canvas.setFont("Helvetica-Bold", 14)
@@ -2570,54 +2631,55 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
                 pdf_canvas.showPage()
                 pdf_canvas.setFont("Helvetica", 11)
                 y_position = 770
+    def _draw_pdf_table(title: str, df: pd.DataFrame) -> None:
+        nonlocal y_position, pdf_canvas
+        if df is None or df.empty:
+            return
+        y_position -= 6
+        if y_position <= 200:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, title)
+        y_position -= 12
+
+        table_df = df.copy()
+        table_df.insert(0, "Year", table_df.index)
+        data = [list(table_df.columns)] + table_df.reset_index(drop=True).values.tolist()
+        table = tables.Table(data, repeatRows=1)
+        style = tables.TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), "#1F4E78"),
+                ("TEXTCOLOR", (0, 0), (-1, 0), "#FFFFFF"),
+                ("GRID", (0, 0), (-1, -1), 0.25, "#CCCCCC"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ]
+        )
+        table.setStyle(style)
+        width, height = table.wrap(450, y_position - 72)
+        if y_position - height <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+            pdf_canvas.drawString(72, y_position, title)
+            y_position -= 12
+            width, height = table.wrap(450, y_position - 72)
+        table.drawOn(pdf_canvas, 72, y_position - height)
+        y_position -= height + 18
+
     perf_df = payload.get("financial_performance")
     if perf_df is not None:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, "Statement of Financial Performance")
-        y_position -= 18
-        for year, row in perf_df.iterrows():
-            pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+        _draw_pdf_table("Statement of Financial Performance", perf_df)
+    cons_df = payload.get("financial_statements")
+    if cons_df is not None:
+        _draw_pdf_table("Financial Statements", cons_df)
     position_df = payload.get("financial_position")
     if position_df is not None:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, "Statement of Financial Position")
-        y_position -= 18
-        for year, row in position_df.iterrows():
-            pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+        _draw_pdf_table("Statement of Financial Position", position_df)
     cash_flow_df = payload.get("cash_flows")
     if cash_flow_df is not None:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, "Statement of Cash Flows")
-        y_position -= 18
-        for year, row in cash_flow_df.iterrows():
-            pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+        _draw_pdf_table("Statement of Cash Flows", cash_flow_df)
     analytics_df = payload.get("chart_tables", {}).get("advanced_analytics_report")
     if analytics_df is not None:
         y_position -= 6
@@ -3078,8 +3140,10 @@ def _render_rag_assistant_page() -> None:
         perf_df = None
         position_df = None
         cash_flow_df = None
+        cons_df = None
         if valuation_result is not None and model_cfg is not None:
             cons = valuation_result.consolidated
+            cons_df = cons.copy()
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
         bundle_payload = {
             "snapshot": snapshot_payload,
@@ -3088,6 +3152,7 @@ def _render_rag_assistant_page() -> None:
             "financial_performance": perf_df,
             "financial_position": position_df,
             "cash_flows": cash_flow_df,
+            "financial_statements": cons_df,
         }
         export_payload = _build_export_payload(bundle_payload)
         chart_tables = _build_chart_tables(
