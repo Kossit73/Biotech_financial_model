@@ -2839,7 +2839,37 @@ def main() -> None:
                     "Investment": st.column_config.NumberColumn("Investment", step=1_000_000.0),
                 },
             )
-            st.metric("Total ownership reported", f"{shareholders_df['Ownership %'].sum():.0%}")
+            investment = pd.to_numeric(
+                shareholders_df.get("Investment", pd.Series(dtype=float)), errors="coerce"
+            ).fillna(0.0)
+            planned_new_equity = float(st.session_state.get("planned_new_equity", 0.0))
+            pre_money = float(investment.sum())
+            post_money = max(pre_money + planned_new_equity, 1.0)
+            if "Shareholder" in shareholders_df.columns:
+                trimmed = shareholders_df["Shareholder"].astype(str).str.strip().str.lower()
+                new_equity_mask = trimmed == "new equity round"
+                if new_equity_mask.any():
+                    shareholders_df.loc[new_equity_mask, "Investment"] = planned_new_equity
+                elif planned_new_equity > 0:
+                    shareholders_df.loc[len(shareholders_df)] = {
+                        "Shareholder": "New equity round",
+                        "Ownership %": planned_new_equity / post_money,
+                        "Investment": planned_new_equity,
+                    }
+
+            ownership = pd.to_numeric(
+                shareholders_df.get("Investment", pd.Series(dtype=float)), errors="coerce"
+            ).fillna(0.0) / post_money
+            shareholders_df["Ownership %"] = ownership
+            st.session_state["shareholders_table"] = shareholders_df
+            st.metric("Total ownership (post-money)", f"{shareholders_df['Ownership %'].sum():.0%}")
+            if valuation_result is not None:
+                shareholders_df["Equity value (rNPV)"] = shareholders_df["Ownership %"] * valuation_result.rnpv
+                st.dataframe(
+                    shareholders_df.style.format(
+                        {"Ownership %": "{:.1%}", "Investment": "{:,.0f}", "Equity value (rNPV)": "{:,.0f}"}
+                    )
+                )
 
         with st.expander("Relevant market sizes"):
             market_df = _render_product_assumption_table(
