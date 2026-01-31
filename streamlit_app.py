@@ -3701,15 +3701,35 @@ def main() -> None:
             with st.expander("Monte Carlo & probabilistic valuation", expanded=False):
                 mc_cols = st.columns(4)
                 n_sims = mc_cols[0].number_input("Simulations", min_value=100, max_value=5000, value=1000, step=100)
-                rev_sigma = mc_cols[1].number_input("Revenue sigma", min_value=0.01, max_value=0.5, value=0.15, step=0.01)
-                cost_sigma = mc_cols[2].number_input("Cost sigma", min_value=0.01, max_value=0.5, value=0.1, step=0.01)
+                rev_dist = mc_cols[1].selectbox("Revenue distribution", ["Normal", "Lognormal", "Uniform"])
+                cost_dist = mc_cols[2].selectbox("Cost distribution", ["Normal", "Lognormal", "Uniform"])
                 seed = mc_cols[3].number_input("Random seed", min_value=0, value=42)
+
+                sigma_cols = st.columns(2)
+                rev_sigma = sigma_cols[0].number_input(
+                    "Revenue sigma", min_value=0.01, max_value=0.5, value=0.15, step=0.01
+                )
+                cost_sigma = sigma_cols[1].number_input(
+                    "Cost sigma", min_value=0.01, max_value=0.5, value=0.1, step=0.01
+                )
+                rev_bounds = st.columns(2)
+                rev_min = rev_bounds[0].number_input("Revenue min (uniform)", value=0.8, step=0.05)
+                rev_max = rev_bounds[1].number_input("Revenue max (uniform)", value=1.2, step=0.05)
+                cost_bounds = st.columns(2)
+                cost_min = cost_bounds[0].number_input("Cost min (uniform)", value=0.8, step=0.05)
+                cost_max = cost_bounds[1].number_input("Cost max (uniform)", value=1.2, step=0.05)
 
                 if st.button("Run Monte Carlo simulation"):
                     sims = MonteCarloEngine(portfolio).simulate(
                         n_sims=int(n_sims),
                         revenue_sigma=float(rev_sigma),
                         cost_sigma=float(cost_sigma),
+                        revenue_dist=str(rev_dist).lower(),
+                        cost_dist=str(cost_dist).lower(),
+                        revenue_min=float(rev_min),
+                        revenue_max=float(rev_max),
+                        cost_min=float(cost_min),
+                        cost_max=float(cost_max),
                         random_seed=int(seed),
                     )
                     st.session_state["mc_results"] = sims

@@ -482,16 +482,33 @@ class MonteCarloEngine:
         n_sims: int = 1000,
         revenue_sigma: float = 0.1,
         cost_sigma: float = 0.05,
+        revenue_dist: str = "normal",
+        cost_dist: str = "normal",
+        revenue_min: float = 0.8,
+        revenue_max: float = 1.2,
+        cost_min: float = 0.8,
+        cost_max: float = 1.2,
         random_seed: Optional[int] = None,
     ) -> pd.Series:
         rng = np.random.default_rng(random_seed)
         vals = []
 
+        def _sample_scale(dist: str, sigma: float, min_val: float, max_val: float) -> float:
+            dist = dist.lower()
+            if dist == "lognormal":
+                mu = -0.5 * sigma**2
+                return float(rng.lognormal(mean=mu, sigma=sigma))
+            if dist == "uniform":
+                low = min(min_val, max_val)
+                high = max(min_val, max_val)
+                return float(rng.uniform(low, high))
+            return float(rng.normal(1.0, sigma))
+
         for _ in range(n_sims):
             model_cfg = self.base_portfolio.model_config
             new_products: List[Product] = []
-            rev_scale = rng.normal(1.0, revenue_sigma)
-            cogs_scale = rng.normal(1.0, cost_sigma)
+            rev_scale = _sample_scale(revenue_dist, revenue_sigma, revenue_min, revenue_max)
+            cogs_scale = _sample_scale(cost_dist, cost_sigma, cost_min, cost_max)
 
             for prod in self.base_portfolio.products:
                 cfg_dict = asdict(prod.config)
