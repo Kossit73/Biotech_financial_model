@@ -2770,6 +2770,7 @@ def main() -> None:
             )
 
         with st.expander("Uses and sources of funds"):
+            funding_required = float(st.session_state.get("funding_required", 250_000_000.0))
             planned_new_equity = float(st.session_state.get("planned_new_equity", 200_000_000.0))
             uses_col, sources_col = st.columns(2)
             with uses_col:
@@ -2798,15 +2799,36 @@ def main() -> None:
                         "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
                     },
                 )
+                sources_other_total = 0.0
+                if {"Item", "Amount"}.issubset(sources_df.columns):
+                    source_items = sources_df["Item"].astype(str).str.strip().str.lower()
+                    sources_other_total = float(
+                        sources_df.loc[source_items != "new equity", "Amount"]
+                        .apply(pd.to_numeric, errors="coerce")
+                        .fillna(0.0)
+                        .sum()
+                    )
+                planned_new_equity = max(funding_required - sources_other_total, 0.0)
+                st.session_state["planned_new_equity"] = planned_new_equity
                 if {"Item", "Amount"}.issubset(sources_df.columns):
                     mask = sources_df["Item"].astype(str).str.strip().str.lower() == "new equity"
                     if mask.any():
                         sources_df.loc[mask, "Amount"] = planned_new_equity
                         st.session_state["sources_table"] = sources_df
+                    elif planned_new_equity > 0:
+                        sources_df.loc[len(sources_df)] = {
+                            "Item": "New equity",
+                            "Amount": planned_new_equity,
+                        }
+                        st.session_state["sources_table"] = sources_df
                 sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
                 st.metric("Total sources", f"{sources_total:,.0f}")
             delta = sources_total - uses_total
             st.info(f"Funding gap (sources - uses): {delta:,.0f}")
+            funding_gap = funding_required - uses_total
+            st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
+            if abs(funding_gap) > 1.0:
+                st.warning("Funding required does not match total uses.")
 
         with st.expander("Risk-adjusted DCF valuation method - assumptions"):
             col_a, col_b, col_c = st.columns(3)
@@ -2822,7 +2844,11 @@ def main() -> None:
 
         with st.expander("Funding required"):
             funding_required = st.number_input(
-                "Total funding required", value=250_000_000.0, step=5_000_000.0, format="%0.0f"
+                "Total funding required",
+                value=float(st.session_state.get("funding_required", 250_000_000.0)),
+                step=5_000_000.0,
+                format="%0.0f",
+                key="funding_required",
             )
 
         with st.expander("Shareholders / Investors"):
