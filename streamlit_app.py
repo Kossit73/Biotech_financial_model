@@ -2770,6 +2770,7 @@ def main() -> None:
             )
 
         with st.expander("Uses and sources of funds"):
+            planned_new_equity = float(st.session_state.get("planned_new_equity", 200_000_000.0))
             uses_col, sources_col = st.columns(2)
             with uses_col:
                 st.markdown("**Uses**")
@@ -2797,6 +2798,11 @@ def main() -> None:
                         "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
                     },
                 )
+                if {"Item", "Amount"}.issubset(sources_df.columns):
+                    mask = sources_df["Item"].astype(str).str.strip().str.lower() == "new equity"
+                    if mask.any():
+                        sources_df.loc[mask, "Amount"] = planned_new_equity
+                        st.session_state["sources_table"] = sources_df
                 sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
                 st.metric("Total sources", f"{sources_total:,.0f}")
             delta = sources_total - uses_total
@@ -2849,7 +2855,11 @@ def main() -> None:
 
         with st.expander("New equity issued"):
             new_equity = st.number_input(
-                "Planned new equity", value=200_000_000.0, step=5_000_000.0, format="%0.0f"
+                "Planned new equity",
+                value=planned_new_equity,
+                step=5_000_000.0,
+                format="%0.0f",
+                key="planned_new_equity",
             )
 
         with st.expander("Selectors"):
