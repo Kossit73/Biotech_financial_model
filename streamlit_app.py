@@ -1753,15 +1753,9 @@ def _build_financial_excel(
         dashboard_df = cons[dashboard_cols].copy()
         dashboard_df.to_excel(writer, sheet_name="Dashboard")
 
-        margin_df = pd.DataFrame(index=cons.index)
-        if "revenue" in cons.columns:
-            revenue = cons["revenue"].replace(0, np.nan)
-            if "cogs" in cons.columns:
-                margin_df["gross_margin"] = (cons["revenue"] - cons["cogs"]) / revenue
-            if "ebitda" in cons.columns:
-                margin_df["ebitda_margin"] = cons["ebitda"] / revenue
-        if not margin_df.empty:
-            margin_df.to_excel(writer, sheet_name="Advanced analytics")
+        analytics_df = _build_ratio_table(cons)
+        if not analytics_df.empty:
+            analytics_df.to_excel(writer, sheet_name="Advanced analytics")
 
         scenario_cols = [col for col in ["revenue", "ebitda", "fcff_after_wc"] if col in cons.columns]
         scenario_df = pd.DataFrame()
@@ -1788,9 +1782,9 @@ def _build_financial_excel(
             ws = workbook[name]
             _format_excel_sheet(ws, df)
 
-        if not margin_df.empty:
+        if not analytics_df.empty:
             ws = workbook["Advanced analytics"]
-            _format_excel_sheet(ws, margin_df)
+            _format_excel_sheet(ws, analytics_df)
 
         if not scenario_df.empty:
             ws = workbook["Scenario analysis"]
@@ -1807,14 +1801,14 @@ def _build_financial_excel(
                 data_max_row=max_row,
             )
 
-        if not margin_df.empty:
+        if not analytics_df.empty:
             ws = workbook["Advanced analytics"]
-            max_row = margin_df.shape[0] + 1
+            max_row = analytics_df.shape[0] + 1
             _add_line_chart(
                 ws,
                 title="Margin Trends",
                 data_min_col=2,
-                data_max_col=1 + margin_df.shape[1],
+                data_max_col=1 + analytics_df.shape[1],
                 data_max_row=max_row,
                 anchor="H2",
             )
@@ -1949,6 +1943,9 @@ def _build_chart_tables(
     tables["financial_statements_chart"] = cons_display
     tables["dashboard_chart"] = cons[["revenue", "ebitda", "fcff_after_wc"]]
     tables["dashboard_fcff_bar"] = cons[["fcff_after_wc"]]
+    ratios = _build_ratio_table(cons)
+    if not ratios.empty:
+        tables["advanced_analytics_report"] = ratios
 
     decomp_df = _compute_decomposition(cons)
     if decomp_df is not None:
@@ -2147,6 +2144,11 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         document.add_heading("Sensitivities", level=2)
         for sensitivity in payload["sensitivities"]:
             document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
+    if payload.get("chart_tables", {}).get("advanced_analytics_report") is not None:
+        document.add_heading("Advanced analytics report", level=2)
+        analytics_df = payload["chart_tables"]["advanced_analytics_report"]
+        for year, row in analytics_df.round(4).iterrows():
+            document.add_paragraph(f"{year}: {row.to_dict()}")
     document.add_heading("AI Configuration", level=2)
     for key, value in payload["ai_config"].items():
         document.add_paragraph(f"{key}: {value}")
@@ -2221,6 +2223,22 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         y_position -= 18
         for sensitivity in payload["sensitivities"]:
             pdf_canvas.drawString(72, y_position, json.dumps(sensitivity, ensure_ascii=False))
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    analytics_df = payload.get("chart_tables", {}).get("advanced_analytics_report")
+    if analytics_df is not None:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Advanced analytics report")
+        y_position -= 18
+        for year, row in analytics_df.round(4).iterrows():
+            pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
             y_position -= 16
             if y_position <= 72:
                 pdf_canvas.showPage()
