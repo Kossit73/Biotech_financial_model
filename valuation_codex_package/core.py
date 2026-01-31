@@ -110,6 +110,10 @@ class Product:
     def build_revenue_series(self) -> pd.Series:
         years = self.model_config.years
         cfg = self.config
+        try:
+            ramp_factors = list(self.model_config.sales_ramp_factors or [])
+        except TypeError:
+            ramp_factors = []
         revenue = pd.Series(0.0, index=years, name=f"{cfg.name}_revenue")
         if not cfg.include_in_consolidation:
             return revenue
@@ -126,19 +130,17 @@ class Product:
             if in_patent:
                 base_target = cfg.patent_revenue_target
                 growth_rate = cfg.market_growth_patent
-                years_since_growth_start = max(
-                    0, years_since_launch - len(self.model_config.sales_ramp_factors)
-                )
+                years_since_growth_start = max(0, years_since_launch - len(ramp_factors))
             else:
                 base_target = cfg.post_patent_revenue_target
                 growth_rate = cfg.market_growth_post
                 years_since_growth_start = max(0, year - (patent_end + 1))
 
-            ramp = (
-                self.model_config.sales_ramp_factors[years_since_launch]
-                if years_since_launch < len(self.model_config.sales_ramp_factors)
-                else 1.0
-            )
+            if ramp_factors:
+                ramp_index = min(years_since_launch, len(ramp_factors) - 1)
+                ramp = ramp_factors[ramp_index]
+            else:
+                ramp = 1.0
 
             target_with_growth = base_target * ((1 + growth_rate) ** years_since_growth_start)
             revenue.iloc[i] = ramp * target_with_growth
