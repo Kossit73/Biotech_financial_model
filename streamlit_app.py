@@ -2956,18 +2956,16 @@ def main() -> None:
     (
         config_tab,
         financial_tab,
-        dashboard_tab,
         analytics_tab,
-        scenario_tab,
+        dashboard_scenario_tab,
         vc_tab,
         rag_tab,
     ) = st.tabs(
         [
             "Model configuration",
             "Financial statements",
-            "Dashboard",
             "Advanced analytics",
-            "Scenario analysis",
+            "Dashboard & Scenarios",
             "VC helper",
             "RAG Assistant",
         ]
@@ -3639,11 +3637,12 @@ def main() -> None:
                 if not excel_bytes:
                     st.info("Click 'Prepare Excel Model' to generate the workbook for download.")
 
-    with dashboard_tab:
-        st.subheader("Dashboard")
+    with dashboard_scenario_tab:
+        st.subheader("Dashboard & scenarios")
         if valuation_result is None or model_cfg is None:
             st.info("Configure and run the model to see dashboard metrics.")
         else:
+            st.markdown("**Dashboard snapshot**")
             cons = valuation_result.consolidated
             kpi_cols = st.columns(4)
             kpi_cols[0].metric("Portfolio rNPV", f"{valuation_result.rnpv:,.0f} {model_cfg.currency}")
@@ -3655,6 +3654,27 @@ def main() -> None:
             chart_data = cons[["revenue", "ebitda", "fcff_after_wc"]]
             st.area_chart(chart_data)
             st.bar_chart(cons["fcff_after_wc"], use_container_width=True)
+
+        st.markdown("**Scenario analysis**")
+        if portfolio is None:
+            st.info("Configure the model in the first tab to enable scenarios.")
+        else:
+            col1, col2, col3, col4 = st.columns(4)
+            rev_mult = col1.slider("Revenue multiplier", 0.25, 2.5, 1.0)
+            cost_mult = col2.slider("Cost multiplier", 0.5, 2.0, 1.0)
+            dr_shift = col3.slider("Discount rate shift", -0.05, 0.1, 0.0)
+            prob_mult = col4.slider("Success prob multiplier", 0.5, 1.5, 1.0)
+            scenario = Scenario(
+                name="Custom scenario",
+                revenue_multiplier=float(rev_mult),
+                cost_multiplier=float(cost_mult),
+                discount_rate_shift=float(dr_shift),
+                success_prob_multiplier=float(prob_mult),
+            )
+            scen_results = ScenarioEngine(portfolio).run_scenarios([scenario])
+            st.dataframe(
+                scen_results.style.format({"rnpv": "{:.0f}", "ebitda_value": "{:.0f}"})
+            )
 
     with analytics_tab:
         st.subheader("Advanced financial analytics")
@@ -4033,28 +4053,6 @@ def main() -> None:
                     st.line_chart(ml_mult_df.set_index("Year"))
                 else:
                     st.caption("Install scikit-learn to run ML-driven multiple predictions.")
-
-    with scenario_tab:
-        st.subheader("Scenario analysis")
-        if portfolio is None:
-            st.info("Configure the model in the first tab to enable scenarios.")
-        else:
-            col1, col2, col3, col4 = st.columns(4)
-            rev_mult = col1.slider("Revenue multiplier", 0.25, 2.5, 1.0)
-            cost_mult = col2.slider("Cost multiplier", 0.5, 2.0, 1.0)
-            dr_shift = col3.slider("Discount rate shift", -0.05, 0.1, 0.0)
-            prob_mult = col4.slider("Success prob multiplier", 0.5, 1.5, 1.0)
-            scenario = Scenario(
-                name="Custom scenario",
-                revenue_multiplier=float(rev_mult),
-                cost_multiplier=float(cost_mult),
-                discount_rate_shift=float(dr_shift),
-                success_prob_multiplier=float(prob_mult),
-            )
-            scen_results = ScenarioEngine(portfolio).run_scenarios([scenario])
-            st.dataframe(
-                scen_results.style.format({"rnpv": "{:.0f}", "ebitda_value": "{:.0f}"})
-            )
 
     with vc_tab:
         st.subheader("VC method helper")
