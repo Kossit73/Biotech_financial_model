@@ -3625,6 +3625,19 @@ def main() -> None:
             ratios = _build_ratio_table(cons)
             st.markdown("**Margin & intensity analysis**")
             st.dataframe(ratios.style.format("{:.1%}"))
+            break_even_df = _build_vaccine_break_even_table(model_cfg)
+            if not break_even_df.empty:
+                st.markdown("**Vaccine break-even analysis**")
+                st.dataframe(
+                    break_even_df.style.format(
+                        {
+                            "Market entry year": "{:.0f}",
+                            "Break-even year": "{:.0f}",
+                            "Years to break-even": "{:.0f}",
+                            "Cumulative cashflow end (USD)": "{:,.0f}",
+                        }
+                    )
+                )
 
             with st.expander("Sensitivity & stress testing", expanded=True):
                 sens_cols = st.columns(3)
