@@ -3254,18 +3254,45 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
     primary_color = colors.HexColor("#1F4E78")
     accent_color = colors.HexColor("#3A3A3A")
     page_width = portrait_size[0]
-    pdf_canvas.setFont("Helvetica-Bold", 18)
-    pdf_canvas.setFillColor(primary_color)
-    pdf_canvas.drawCentredString(page_width / 2, 770, "Business Plan Bundle")
-    pdf_canvas.setFont("Helvetica", 12)
-    pdf_canvas.setFillColor(accent_color)
-    pdf_canvas.drawCentredString(page_width / 2, 750, "Financial report, analytics, and AI commentary")
-    pdf_canvas.setFillColor(colors.black)
-    pdf_canvas.setFont("Helvetica", 11)
-    y_position = 720
+    top_margin = 72
+    bottom_margin = 72
+
+    def _reset_page(page_size) -> None:
+        nonlocal y_position, page_width
+        pdf_canvas.setPageSize(page_size)
+        page_width = page_size[0]
+        y_position = page_size[1] - top_margin
+        pdf_canvas.setFillColor(colors.black)
+
+    def _draw_cover() -> None:
+        nonlocal y_position
+        pdf_canvas.setFont("Helvetica-Bold", 18)
+        pdf_canvas.setFillColor(primary_color)
+        pdf_canvas.drawCentredString(page_width / 2, y_position, "Business Plan Bundle")
+        pdf_canvas.setFont("Helvetica", 12)
+        pdf_canvas.setFillColor(accent_color)
+        pdf_canvas.drawCentredString(
+            page_width / 2,
+            y_position - 20,
+            "Financial report, analytics, and AI commentary",
+        )
+        pdf_canvas.setFillColor(colors.black)
+        pdf_canvas.setFont("Helvetica", 11)
+        y_position -= 44
+
+    def _ensure_space(required: float, page_size) -> None:
+        nonlocal y_position
+        if y_position - required <= bottom_margin:
+            pdf_canvas.showPage()
+            _reset_page(page_size)
+            _draw_cover()
+
+    _reset_page(portrait_size)
+    _draw_cover()
 
     def _draw_section_title(title: str) -> None:
         nonlocal y_position
+        _ensure_space(24, portrait_size)
         pdf_canvas.setFont("Helvetica-Bold", 12)
         pdf_canvas.setFillColor(primary_color)
         pdf_canvas.drawString(left_margin, y_position, title)
@@ -3278,40 +3305,32 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
 
     _draw_section_title("Financial Snapshot")
     for row in payload["summary_rows"]:
+        _ensure_space(16, portrait_size)
         pdf_canvas.drawString(left_margin, y_position, f"{row['Metric']}: {row['Value']}")
         y_position -= 16
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
     if payload.get("ai_commentary"):
         y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+        _ensure_space(18, portrait_size)
         _draw_section_title("AI Commentary")
         grouped_comments = _group_ai_commentary(payload["ai_commentary"])
         for section, entries in grouped_comments.items():
+            _ensure_space(16, portrait_size)
             pdf_canvas.drawString(left_margin, y_position, section)
             y_position -= 16
             for entry in entries:
-                pdf_canvas.drawString(left_margin, y_position, f"- {entry.get('Commentary', '')}")
-                y_position -= 16
+                lines = textwrap.wrap(f"- {entry.get('Commentary', '')}", width=92)
+                for line in lines:
+                    _ensure_space(16, portrait_size)
+                    pdf_canvas.drawString(left_margin, y_position, line)
+                    y_position -= 16
                 annotation = entry.get("Annotation")
                 if annotation:
-                    pdf_canvas.drawString(left_margin + 18, y_position, f"Annotation: {annotation}")
-                    y_position -= 16
-                if y_position <= 72:
-                    pdf_canvas.showPage()
-                    pdf_canvas.setFont("Helvetica", 11)
-                    y_position = 770
+                    for line in textwrap.wrap(f"Annotation: {annotation}", width=92):
+                        _ensure_space(16, portrait_size)
+                        pdf_canvas.drawString(left_margin + 18, y_position, line)
+                        y_position -= 16
     if payload["scenarios"]:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+        _ensure_space(18, portrait_size)
         _draw_section_title("Scenarios")
         currency = next(
             (row.get("Value") for row in payload.get("summary_rows", []) if row.get("Metric") == "Currency"),
@@ -3319,31 +3338,20 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         )
         for scenario in payload["scenarios"]:
             for line in textwrap.wrap(_format_scenario_prose(scenario, currency), width=92):
+                _ensure_space(16, portrait_size)
                 pdf_canvas.drawString(left_margin, y_position, line)
                 y_position -= 16
-                if y_position <= 72:
-                    pdf_canvas.showPage()
-                    pdf_canvas.setFont("Helvetica", 11)
-                    y_position = 770
+            _ensure_space(6, portrait_size)
             y_position -= 4
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
     if payload["sensitivities"]:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+        _ensure_space(18, portrait_size)
         _draw_section_title("Sensitivities")
         for sensitivity in payload["sensitivities"]:
-            pdf_canvas.drawString(left_margin, y_position, json.dumps(sensitivity, ensure_ascii=False))
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+            lines = textwrap.wrap(json.dumps(sensitivity, ensure_ascii=False), width=92)
+            for line in lines:
+                _ensure_space(16, portrait_size)
+                pdf_canvas.drawString(left_margin, y_position, line)
+                y_position -= 16
     def _round_table(df: pd.DataFrame) -> pd.DataFrame:
         return df.apply(pd.to_numeric, errors="ignore").round(0)
 
@@ -3355,21 +3363,14 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         return str(value)
 
     def _switch_orientation(page_size) -> None:
-        nonlocal y_position, pdf_canvas, page_width
         pdf_canvas.showPage()
-        pdf_canvas.setPageSize(page_size)
-        pdf_canvas.setFont("Helvetica", 11)
-        pdf_canvas.setFillColor(colors.black)
-        page_width = page_size[0]
-        y_position = page_size[1] - 72
+        _reset_page(page_size)
 
     def _draw_pdf_table(title: str, df: pd.DataFrame, page_size) -> None:
         nonlocal y_position, pdf_canvas
         if df is None or df.empty:
             return
-        y_position -= 6
-        if y_position <= 200:
-            _switch_orientation(page_size)
+        _ensure_space(32, page_size)
         pdf_canvas.setFont("Helvetica-Bold", 12)
         pdf_canvas.setFillColor(primary_color)
         pdf_canvas.drawString(left_margin, y_position, title)
@@ -3394,8 +3395,8 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         )
         table.setStyle(style)
         available_width = page_size[0] - (left_margin * 2)
-        width, height = table.wrap(available_width, y_position - 72)
-        if y_position - height <= 72:
+        width, height = table.wrap(available_width, y_position - bottom_margin)
+        if y_position - height <= bottom_margin:
             _switch_orientation(page_size)
             pdf_canvas.setFont("Helvetica-Bold", 12)
             pdf_canvas.setFillColor(primary_color)
@@ -3403,7 +3404,7 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             pdf_canvas.setFillColor(colors.black)
             pdf_canvas.setFont("Helvetica", 11)
             y_position -= 12
-            width, height = table.wrap(available_width, y_position - 72)
+            width, height = table.wrap(available_width, y_position - bottom_margin)
         table.drawOn(pdf_canvas, left_margin, y_position - height)
         y_position -= height + 18
 
@@ -3428,31 +3429,21 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         _switch_orientation(portrait_size)
     analytics_df = payload.get("chart_tables", {}).get("advanced_analytics_report")
     if analytics_df is not None:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+        _ensure_space(18, portrait_size)
         _draw_section_title("Advanced analytics report")
         narrative = payload.get("advanced_analytics_narrative") or _build_advanced_analytics_narrative(
             analytics_df
         )
         for paragraph in narrative:
             for line in textwrap.wrap(paragraph, width=92):
+                _ensure_space(16, portrait_size)
                 pdf_canvas.drawString(left_margin, y_position, line)
                 y_position -= 16
-                if y_position <= 72:
-                    pdf_canvas.showPage()
-                    pdf_canvas.setFont("Helvetica", 11)
-                    y_position = 770
     if payload.get("extended_analytics_sections"):
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+        _ensure_space(18, portrait_size)
         _draw_section_title("Advanced analytics coverage")
         for entry in payload["extended_analytics_sections"]:
+            _ensure_space(16, portrait_size)
             pdf_canvas.drawString(
                 left_margin,
                 y_position,
@@ -3462,62 +3453,39 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             details = entry.get("Details")
             if details:
                 for line in textwrap.wrap(details, width=92):
+                    _ensure_space(16, portrait_size)
                     pdf_canvas.drawString(left_margin + 14, y_position, line)
                     y_position -= 16
-                    if y_position <= 72:
-                        pdf_canvas.showPage()
-                        pdf_canvas.setFont("Helvetica", 11)
-                        y_position = 770
     break_even_df = payload.get("chart_tables", {}).get("vaccine_break_even_report")
     if break_even_df is not None:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+        _ensure_space(18, portrait_size)
         _draw_section_title("Vaccine break-even analysis")
         for _, row in break_even_df.iterrows():
-            pdf_canvas.drawString(
-                left_margin,
-                y_position,
+            line = (
                 f"{row.get('Vaccine name', '')}: unit price {row.get('Unit price (USD)')}, "
                 f"unit variable cost {row.get('Unit variable cost (USD)')}, "
                 f"unit fixed cost {row.get('Unit fixed cost (USD/year)')}, "
                 f"unit margin {row.get('Unit contribution margin (USD)')}, "
-                f"break-even units {row.get('Break-even units')}",
+                f"break-even units {row.get('Break-even units')}"
             )
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
-    y_position -= 6
-    if y_position <= 72:
-        pdf_canvas.showPage()
-        pdf_canvas.setFont("Helvetica", 11)
-        y_position = 770
+            for wrapped in textwrap.wrap(line, width=92):
+                _ensure_space(16, portrait_size)
+                pdf_canvas.drawString(left_margin, y_position, wrapped)
+                y_position -= 16
+    _ensure_space(18, portrait_size)
     _draw_section_title("AI Configuration")
     for key, value in payload["ai_config"].items():
+        _ensure_space(16, portrait_size)
         pdf_canvas.drawString(left_margin, y_position, f"{key}: {value}")
         y_position -= 16
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
     if payload["last_report"]:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+        _ensure_space(18, portrait_size)
         _draw_section_title("Last Report")
         for key, value in payload["last_report"].items():
-            pdf_canvas.drawString(left_margin, y_position, f"{key}: {value}")
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+            for line in textwrap.wrap(f"{key}: {value}", width=92):
+                _ensure_space(16, portrait_size)
+                pdf_canvas.drawString(left_margin, y_position, line)
+                y_position -= 16
     chart_images = payload.get("chart_images", {})
     if chart_images:
         pdf_canvas.showPage()
@@ -3533,13 +3501,16 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
                 return
             if y_position <= 180:
                 pdf_canvas.showPage()
+                _reset_page(portrait_size)
                 pdf_canvas.setFont("Helvetica-Bold", 14)
-                pdf_canvas.drawString(72, 770, "Charts & Graphs (cont.)")
+                pdf_canvas.setFillColor(primary_color)
+                pdf_canvas.drawString(left_margin, y_position, "Charts & Graphs (cont.)")
+                pdf_canvas.setFillColor(colors.black)
                 pdf_canvas.setFont("Helvetica", 11)
-                y_position = 740
-            pdf_canvas.drawString(72, y_position, title)
+                y_position -= 20
+            pdf_canvas.drawString(left_margin, y_position, title)
             y_position -= 14
-            pdf_canvas.drawImage(image_reader(image), 72, y_position - 120, width=450, height=120)
+            pdf_canvas.drawImage(image_reader(image), left_margin, y_position - 120, width=450, height=120)
             y_position -= 140
 
         _draw_image("financial_statements_chart", "Financial Statements")
