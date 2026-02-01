@@ -2508,6 +2508,94 @@ def _build_advanced_analytics_narrative(
     return narrative
 
 
+def _build_extended_analytics_sections(chart_tables: Dict[str, pd.DataFrame]) -> List[Dict[str, str]]:
+    sections: List[Dict[str, str]] = []
+
+    def _add_section(title: str, status: str, details: str) -> None:
+        sections.append({"Section": title, "Status": status, "Details": details})
+
+    def _availability(key: str) -> str:
+        table = chart_tables.get(key)
+        if table is None:
+            return "Not available"
+        if isinstance(table, pd.DataFrame) and table.empty:
+            return "Not available"
+        return "Included"
+
+    _add_section(
+        "Margin & intensity analysis",
+        _availability("advanced_analytics_report"),
+        "Summarizes gross margin, EBITDA margin, NOPAT margin, R&D intensity, and capex intensity trends.",
+    )
+    _add_section(
+        "Vaccine break-even analysis",
+        _availability("vaccine_break_even_report"),
+        "Highlights unit economics and break-even volumes by vaccine program.",
+    )
+    _add_section(
+        "Scenario stress testing",
+        _availability("scenario_results"),
+        "Compares rNPV outcomes under upside, base, and downside stress scenarios.",
+    )
+    _add_section(
+        "Trend, seasonality & segmentation",
+        _availability("analytics_decomposition"),
+        "Decomposition trends and segmentation splits across revenue drivers.",
+    )
+    _add_section(
+        "Monte Carlo & probabilistic valuation",
+        "Not available",
+        "Monte Carlo simulation outputs are not available in the current analytics export.",
+    )
+    _add_section(
+        "What-if analysis & goal seek",
+        "Not available",
+        "Goal seek and what-if sensitivity runs are not available in the current analytics export.",
+    )
+    _add_section(
+        "Tornado & spider diagnostics",
+        _availability("analytics_tornado"),
+        "Sensitivity drivers ranked by valuation impact.",
+    )
+    _add_section(
+        "Regression & classification models",
+        "Not available",
+        "ML model outputs are not available in the current analytics export.",
+    )
+    _add_section(
+        "Time-series & ML forecasting",
+        "Not available",
+        "Forecasting model results are not available in the current analytics export.",
+    )
+    _add_section(
+        "Optimisation, portfolio design & real options",
+        "Not available",
+        "Optimization and real options outputs are not available in the current analytics export.",
+    )
+    _add_section(
+        "Risk, copulas, macro & ESG linkages",
+        "Not available",
+        "Macro/ESG linkage analytics are not available in the current analytics export.",
+    )
+    _add_section(
+        "Comparative & ML-based valuation",
+        "Not available",
+        "Comparable and ML valuation outputs are not available in the current analytics export.",
+    )
+    _add_section(
+        "Scenario analysis",
+        _availability("scenario_results"),
+        "Scenario results compared across key valuation drivers.",
+    )
+    _add_section(
+        "Dashboard snapshot",
+        _availability("dashboard_chart"),
+        "Snapshot of key dashboard metrics and FCFF trends.",
+    )
+
+    return sections
+
+
 def _build_export_payload(
     bundle_payload: Dict[str, Any],
     analytics_df: Optional[pd.DataFrame] = None,
@@ -2766,6 +2854,12 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
                 index=False,
                 sheet_name="Advanced Analytics Narrative",
             )
+        if payload.get("extended_analytics_sections"):
+            pd.DataFrame(payload["extended_analytics_sections"]).to_excel(
+                writer,
+                index=False,
+                sheet_name="Advanced Analytics Coverage",
+            )
         if payload.get("financial_statements") is not None:
             _round_table(payload["financial_statements"]).to_excel(
                 writer,
@@ -2927,6 +3021,16 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         document.add_heading("Advanced analytics narrative", level=2)
         for paragraph in payload["advanced_analytics_narrative"]:
             document.add_paragraph(paragraph)
+    if payload.get("extended_analytics_sections"):
+        document.add_heading("Advanced analytics coverage", level=2)
+        for entry in payload["extended_analytics_sections"]:
+            document.add_paragraph(
+                f"{entry.get('Section')}: {entry.get('Status')}",
+                style="List Bullet",
+            )
+            details = entry.get("Details")
+            if details:
+                document.add_paragraph(details, style="List Bullet")
     if payload.get("chart_tables", {}).get("vaccine_break_even_report") is not None:
         document.add_heading("Vaccine break-even analysis", level=2)
         break_even_df = payload["chart_tables"]["vaccine_break_even_report"]
@@ -3163,6 +3267,29 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
                     pdf_canvas.showPage()
                     pdf_canvas.setFont("Helvetica", 11)
                     y_position = 770
+    if payload.get("extended_analytics_sections"):
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        _draw_section_title("Advanced analytics coverage")
+        for entry in payload["extended_analytics_sections"]:
+            pdf_canvas.drawString(
+                left_margin,
+                y_position,
+                f"{entry.get('Section')}: {entry.get('Status')}",
+            )
+            y_position -= 16
+            details = entry.get("Details")
+            if details:
+                for line in textwrap.wrap(details, width=92):
+                    pdf_canvas.drawString(left_margin + 14, y_position, line)
+                    y_position -= 16
+                    if y_position <= 72:
+                        pdf_canvas.showPage()
+                        pdf_canvas.setFont("Helvetica", 11)
+                        y_position = 770
     break_even_df = payload.get("chart_tables", {}).get("vaccine_break_even_report")
     if break_even_df is not None:
         y_position -= 6
@@ -3631,6 +3758,7 @@ def _render_rag_assistant_page() -> None:
         export_payload["advanced_analytics_narrative"] = _build_advanced_analytics_narrative(
             chart_tables.get("advanced_analytics_report")
         )
+        export_payload["extended_analytics_sections"] = _build_extended_analytics_sections(chart_tables)
         export_payload["chart_images"] = _build_chart_images(chart_tables)
         export_buffers, export_warnings = _build_export_buffers(export_payload)
 
