@@ -2957,6 +2957,10 @@ def _sync_vaccine_sales_product(
 
 
 def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
+    xlsx_image = None
+    if importlib.util.find_spec("openpyxl") is not None:
+        xlsx_image = importlib.import_module("openpyxl.drawing.image").Image
+
     def _round_table(df: pd.DataFrame) -> pd.DataFrame:
         return df.apply(pd.to_numeric, errors="ignore").round(0)
 
@@ -3026,6 +3030,34 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
             if not table.empty:
                 safe_name = sheet_name[:31]
                 table.to_excel(writer, index=True, sheet_name=safe_name)
+        chart_images = payload.get("chart_images", {})
+        if chart_images and xlsx_image is not None:
+            workbook = writer.book
+
+            def _add_chart_sheet(title: str, image_key: str) -> None:
+                image = chart_images.get(image_key)
+                if not image:
+                    return
+                sheet_title = title[:31]
+                if sheet_title in workbook.sheetnames:
+                    sheet = workbook[sheet_title]
+                else:
+                    sheet = workbook.create_sheet(sheet_title)
+                image.seek(0)
+                sheet.add_image(xlsx_image(image), "A1")
+
+            _add_chart_sheet("Financial Statements Charts", "financial_statements_chart")
+            _add_chart_sheet("Financial Statements Charts", "dashboard_chart")
+            _add_chart_sheet("Financial Statements Charts", "dashboard_fcff_bar")
+            _add_chart_sheet("Advanced Analytics Charts", "analytics_decomposition")
+            _add_chart_sheet("Advanced Analytics Charts", "analytics_segmentation")
+            _add_chart_sheet("Advanced Analytics Charts", "analytics_tornado")
+            _add_chart_sheet("Advanced Analytics Charts", "spider_diagnostics")
+            _add_chart_sheet("Advanced Analytics Charts", "margin_intensity_analysis")
+            _add_chart_sheet("Advanced Analytics Charts", "vaccine_break_even_chart")
+            _add_chart_sheet("Advanced Analytics Charts", "monte_carlo_results")
+            _add_chart_sheet("Scenario Analysis Charts", "scenario_results")
+            _add_chart_sheet("Scenario Analysis Charts", "scenario_custom")
     excel_buffer.seek(0)
     return excel_buffer
 
