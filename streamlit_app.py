@@ -3263,19 +3263,23 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         y_position -= height + 18
 
     perf_df = payload.get("financial_performance")
-    if perf_df is not None:
-        _switch_orientation(landscape_size)
-        _draw_pdf_table("Statement of Financial Performance", perf_df, landscape_size)
     cons_df = payload.get("financial_statements")
+    position_df = payload.get("financial_position")
+    cash_flow_df = payload.get("cash_flows")
+    has_financial_tables = any(
+        table is not None for table in [perf_df, cons_df, position_df, cash_flow_df]
+    )
+    if has_financial_tables:
+        _switch_orientation(landscape_size)
+    if perf_df is not None:
+        _draw_pdf_table("Statement of Financial Performance", perf_df, landscape_size)
     if cons_df is not None:
         _draw_pdf_table("Financial Statements", cons_df, landscape_size)
-    position_df = payload.get("financial_position")
     if position_df is not None:
         _draw_pdf_table("Statement of Financial Position", position_df, landscape_size)
-    cash_flow_df = payload.get("cash_flows")
     if cash_flow_df is not None:
         _draw_pdf_table("Statement of Cash Flows", cash_flow_df, landscape_size)
-    if any(table is not None for table in [perf_df, cons_df, position_df, cash_flow_df]):
+    if has_financial_tables:
         _switch_orientation(portrait_size)
     analytics_df = payload.get("chart_tables", {}).get("advanced_analytics_report")
     if analytics_df is not None:
