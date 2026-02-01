@@ -2411,6 +2411,93 @@ def _group_ai_commentary(ai_commentary: List[Any]) -> Dict[str, List[Dict[str, s
     return grouped
 
 
+def _format_pct_value(value: Any) -> str:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "n/a"
+    if isinstance(value, (int, float)):
+        pct_value = value * 100 if abs(value) <= 1.5 else value
+        return f"{pct_value:.1f}%"
+    return str(value)
+
+
+def _build_advanced_analytics_narrative(
+    analytics_df: Optional[pd.DataFrame],
+) -> List[str]:
+    if analytics_df is None or analytics_df.empty:
+        return []
+
+    clean_df = analytics_df.apply(pd.to_numeric, errors="coerce")
+    years = clean_df.index.tolist()
+    narrative: List[str] = []
+
+    def _first_last(series: pd.Series) -> tuple[Optional[float], Optional[float]]:
+        clean = pd.to_numeric(series, errors="coerce").dropna()
+        if clean.empty:
+            return None, None
+        return float(clean.iloc[0]), float(clean.iloc[-1])
+
+    def _trend_sentence(label: str, series: pd.Series) -> Optional[str]:
+        start, end = _first_last(series)
+        if start is None or end is None:
+            return None
+        direction = "improves" if end >= start else "declines"
+        return (
+            f"{label} {direction} from {_format_pct_value(start)} to "
+            f"{_format_pct_value(end)} over the forecast horizon."
+        )
+
+    gross_margin = clean_df.get("Gross margin")
+    ebitda_margin = clean_df.get("EBITDA margin")
+    nopat_margin = clean_df.get("NOPAT margin")
+    rd_intensity = clean_df.get("R&D intensity")
+    capex_intensity = clean_df.get("Capex intensity")
+
+    if years:
+        narrative.append(
+            f"The advanced analytics ratios cover {years[0]} through {years[-1]}, "
+            "highlighting profitability, efficiency, and reinvestment trends."
+        )
+
+    for label, series in [
+        ("Gross margin", gross_margin),
+        ("EBITDA margin", ebitda_margin),
+        ("NOPAT margin", nopat_margin),
+    ]:
+        if series is not None:
+            sentence = _trend_sentence(label, series)
+            if sentence:
+                narrative.append(sentence)
+
+    if rd_intensity is not None:
+        start, end = _first_last(rd_intensity)
+        if start is not None and end is not None:
+            narrative.append(
+                "R&D intensity moderates from "
+                f"{_format_pct_value(start)} to {_format_pct_value(end)}, "
+                "indicating a tapering of development spend as commercialization matures."
+            )
+    if capex_intensity is not None:
+        start, end = _first_last(capex_intensity)
+        if start is not None and end is not None:
+            narrative.append(
+                "Capex intensity steps down from "
+                f"{_format_pct_value(start)} to {_format_pct_value(end)}, "
+                "suggesting upfront build-out gives way to steadier maintenance investment."
+            )
+
+    if gross_margin is not None and ebitda_margin is not None and nopat_margin is not None:
+        peak_year = clean_df[["Gross margin", "EBITDA margin", "NOPAT margin"]].mean(axis=1).idxmax()
+        peak_row = clean_df.loc[peak_year]
+        narrative.append(
+            "Peak profitability occurs around "
+            f"{peak_year}, with gross margin {_format_pct_value(peak_row.get('Gross margin'))}, "
+            f"EBITDA margin {_format_pct_value(peak_row.get('EBITDA margin'))}, "
+            f"and NOPAT margin {_format_pct_value(peak_row.get('NOPAT margin'))}."
+        )
+
+    return narrative
+
+
 def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
     snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
     scenarios = snapshot_summary.get("scenarios") or []
@@ -2650,6 +2737,12 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
             pd.DataFrame(
                 [{"Section": key, "Content": value} for key, value in payload["last_report"].items()]
             ).to_excel(writer, index=False, sheet_name="Last Report")
+        if payload.get("advanced_analytics_narrative"):
+            pd.DataFrame({"Narrative": payload["advanced_analytics_narrative"]}).to_excel(
+                writer,
+                index=False,
+                sheet_name="Advanced Analytics Narrative",
+            )
         if payload.get("financial_statements") is not None:
             payload["financial_statements"].to_excel(
                 writer,
@@ -2758,6 +2851,10 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         analytics_df = payload["chart_tables"]["advanced_analytics_report"]
         for year, row in analytics_df.round(4).iterrows():
             document.add_paragraph(f"{year}: {row.to_dict()}")
+    if payload.get("advanced_analytics_narrative"):
+        document.add_heading("Advanced analytics narrative", level=2)
+        for paragraph in payload["advanced_analytics_narrative"]:
+            document.add_paragraph(paragraph)
     if payload.get("chart_tables", {}).get("vaccine_break_even_report") is not None:
         document.add_heading("Vaccine break-even analysis", level=2)
         break_even_df = payload["chart_tables"]["vaccine_break_even_report"]
@@ -2804,6 +2901,7 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
     canvas = importlib.import_module("reportlab.pdfgen.canvas")
     image_reader = importlib.import_module("reportlab.lib.utils").ImageReader
     tables = importlib.import_module("reportlab.platypus.tables")
+    import textwrap
     pdf_buffer = io.BytesIO()
     pdf_canvas = canvas.Canvas(pdf_buffer)
     pdf_canvas.setFont("Helvetica-Bold", 14)
@@ -2937,6 +3035,22 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
                 pdf_canvas.showPage()
                 pdf_canvas.setFont("Helvetica", 11)
                 y_position = 770
+    if payload.get("advanced_analytics_narrative"):
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Advanced analytics narrative")
+        y_position -= 18
+        for paragraph in payload["advanced_analytics_narrative"]:
+            for line in textwrap.wrap(paragraph, width=92):
+                pdf_canvas.drawString(72, y_position, line)
+                y_position -= 16
+                if y_position <= 72:
+                    pdf_canvas.showPage()
+                    pdf_canvas.setFont("Helvetica", 11)
+                    y_position = 770
     break_even_df = payload.get("chart_tables", {}).get("vaccine_break_even_report")
     if break_even_df is not None:
         y_position -= 6
@@ -3402,6 +3516,9 @@ def _render_rag_assistant_page() -> None:
             st.session_state.get("portfolio"),
         )
         export_payload["chart_tables"] = chart_tables
+        export_payload["advanced_analytics_narrative"] = _build_advanced_analytics_narrative(
+            chart_tables.get("advanced_analytics_report")
+        )
         export_payload["chart_images"] = _build_chart_images(chart_tables)
         export_buffers, export_warnings = _build_export_buffers(export_payload)
 
