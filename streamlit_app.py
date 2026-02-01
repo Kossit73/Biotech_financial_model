@@ -1157,11 +1157,18 @@ def _compute_financial_statements(
     starting_cash = pd.Series(0.0, index=years)
     ending_cash = starting_cash + net_cash.cumsum()
 
+    receivables_change = -wc_diff * 0.5
+    inventory_change = -wc_diff * 0.3
+    payables_change = -wc_diff * 0.2
+
     cash_flow_df = pd.DataFrame(
         {
             "EBIT": cons["ebit"],
             "Cash taxes paid": cons["tax"],
             "Depreciation & amortization": da_positive,
+            "Receivables change": receivables_change,
+            "Inventory change": inventory_change,
+            "Payables change": payables_change,
             "Working capital change": -wc_diff,
             "Net cash from operations": cash_from_ops,
             "Capital expenditure": capex_cash,
@@ -2662,6 +2669,44 @@ def _build_export_payload(
     }
 
 
+def _apply_cash_flow_assumptions(
+    cash_flow_df: Optional[pd.DataFrame],
+    snapshot_summary: Dict[str, Any],
+) -> Optional[pd.DataFrame]:
+    if cash_flow_df is None or cash_flow_df.empty:
+        return cash_flow_df
+
+    updated = cash_flow_df.copy()
+    years = updated.index
+
+    beginning_cash = float(snapshot_summary.get("beginning_cash") or 0.0)
+    equity_issuance = float(snapshot_summary.get("equity_issuance") or 0.0)
+    debt_draw = float(snapshot_summary.get("debt_draw") or 0.0)
+    debt_repay = float(snapshot_summary.get("debt_repay") or 0.0)
+    interest_paid = float(snapshot_summary.get("interest_paid") or 0.0)
+
+    updated["Equity issuance"] = pd.Series(equity_issuance, index=years)
+    updated["Debt drawdowns"] = pd.Series(debt_draw, index=years)
+    updated["Debt repayments"] = pd.Series(debt_repay, index=years)
+    updated["Interest paid"] = pd.Series(interest_paid, index=years)
+
+    updated["Net cash from financing"] = (
+        updated["Equity issuance"]
+        + updated["Debt drawdowns"]
+        - updated["Debt repayments"]
+        - updated["Interest paid"]
+    )
+    updated["Net change in cash"] = (
+        updated["Net cash from operations"]
+        + updated["Net cash from investing"]
+        + updated["Net cash from financing"]
+    )
+    updated["Beginning cash balance"] = pd.Series(beginning_cash, index=years)
+    updated["Ending cash balance"] = beginning_cash + updated["Net change in cash"].cumsum()
+
+    return updated
+
+
 def _build_chart_tables(
     valuation_result: Optional[ValuationResult],
     model_cfg: Optional[ModelConfig],
@@ -3728,6 +3773,40 @@ def _render_rag_assistant_page() -> None:
             key=f"{rag_key_prefix}_revenue_annual",
         )
 
+        st.markdown("**Financing assumptions**")
+        finance_cols = st.columns(3)
+        snapshot_state["beginning_cash"] = finance_cols[0].number_input(
+            "Beginning cash balance",
+            value=float(snapshot_state.get("beginning_cash") or 0.0),
+            step=1_000_000.0,
+            key=f"{rag_key_prefix}_beginning_cash",
+        )
+        snapshot_state["equity_issuance"] = finance_cols[1].number_input(
+            "Annual equity issuance",
+            value=float(snapshot_state.get("equity_issuance") or 0.0),
+            step=1_000_000.0,
+            key=f"{rag_key_prefix}_equity_issuance",
+        )
+        snapshot_state["debt_draw"] = finance_cols[2].number_input(
+            "Annual debt drawdowns",
+            value=float(snapshot_state.get("debt_draw") or 0.0),
+            step=1_000_000.0,
+            key=f"{rag_key_prefix}_debt_draw",
+        )
+        finance_cols2 = st.columns(2)
+        snapshot_state["debt_repay"] = finance_cols2[0].number_input(
+            "Annual debt repayments",
+            value=float(snapshot_state.get("debt_repay") or 0.0),
+            step=1_000_000.0,
+            key=f"{rag_key_prefix}_debt_repay",
+        )
+        snapshot_state["interest_paid"] = finance_cols2[1].number_input(
+            "Annual interest paid",
+            value=float(snapshot_state.get("interest_paid") or 0.0),
+            step=100_000.0,
+            key=f"{rag_key_prefix}_interest_paid",
+        )
+
         scenarios_df = pd.DataFrame(snapshot_state.get("scenarios") or [])
         scenarios_df = st.data_editor(
             scenarios_df,
@@ -3836,6 +3915,7 @@ def _render_rag_assistant_page() -> None:
             cons = valuation_result.consolidated
             cons_df = cons.copy()
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
+        cash_flow_df = _apply_cash_flow_assumptions(cash_flow_df, snapshot_state)
         bundle_payload = {
             "snapshot": snapshot_payload,
             "ai_config": st.session_state.get("rag_ai_config", {}),
