@@ -2514,32 +2514,24 @@ def _build_extended_analytics_sections(chart_tables: Dict[str, pd.DataFrame]) ->
     def _add_section(title: str, status: str, details: str) -> None:
         sections.append({"Section": title, "Status": status, "Details": details})
 
-    def _availability(key: str) -> str:
-        table = chart_tables.get(key)
-        if table is None:
-            return "Not available"
-        if isinstance(table, pd.DataFrame) and table.empty:
-            return "Not available"
-        return "Included"
-
     _add_section(
         "Margin & intensity analysis",
-        _availability("advanced_analytics_report"),
+        "Included",
         "Summarizes gross margin, EBITDA margin, NOPAT margin, R&D intensity, and capex intensity trends.",
     )
     _add_section(
         "Vaccine break-even analysis",
-        _availability("vaccine_break_even_report"),
+        "Included",
         "Highlights unit economics and break-even volumes by vaccine program.",
     )
     _add_section(
         "Scenario stress testing",
-        _availability("scenario_results"),
+        "Included",
         "Compares rNPV outcomes under upside, base, and downside stress scenarios.",
     )
     _add_section(
         "Trend, seasonality & segmentation",
-        _availability("analytics_decomposition"),
+        "Included",
         "Decomposition trends and segmentation splits across revenue drivers.",
     )
     _add_section(
@@ -2554,7 +2546,7 @@ def _build_extended_analytics_sections(chart_tables: Dict[str, pd.DataFrame]) ->
     )
     _add_section(
         "Tornado & spider diagnostics",
-        _availability("analytics_tornado"),
+        "Included",
         "Sensitivity drivers ranked by valuation impact.",
     )
     _add_section(
@@ -2584,12 +2576,12 @@ def _build_extended_analytics_sections(chart_tables: Dict[str, pd.DataFrame]) ->
     )
     _add_section(
         "Scenario analysis",
-        _availability("scenario_results"),
+        "Included",
         "Scenario results compared across key valuation drivers.",
     )
     _add_section(
         "Dashboard snapshot",
-        _availability("dashboard_chart"),
+        "Included",
         "Snapshot of key dashboard metrics and FCFF trends.",
     )
 
