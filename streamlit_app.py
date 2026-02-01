@@ -2928,6 +2928,13 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     def _round_table(df: pd.DataFrame) -> pd.DataFrame:
         return df.apply(pd.to_numeric, errors="ignore").round(0)
 
+    def _format_value(value: Any) -> str:
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            if np.isnan(value):
+                return ""
+            return f"{value:,.0f}"
+        return str(value)
+
     def _set_section_orientation(document, orientation) -> None:
         section = document.sections[-1]
         section.orientation = orientation
@@ -2947,7 +2954,12 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         for _, row in table_df.iterrows():
             row_cells = table.add_row().cells
             for idx, value in enumerate(row):
-                row_cells[idx].text = str(value)
+                row_cells[idx].text = _format_value(value)
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.size = shared.Pt(7)
 
     docx_module = importlib.import_module("docx")
     shared = importlib.import_module("docx.shared")
@@ -3211,6 +3223,13 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
     def _round_table(df: pd.DataFrame) -> pd.DataFrame:
         return df.apply(pd.to_numeric, errors="ignore").round(0)
 
+    def _format_value(value: Any) -> str:
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            if np.isnan(value):
+                return ""
+            return f"{value:,.0f}"
+        return str(value)
+
     def _switch_orientation(page_size) -> None:
         nonlocal y_position, pdf_canvas, page_width
         pdf_canvas.showPage()
@@ -3237,6 +3256,7 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         table_df = _round_table(df.copy())
         table_df.insert(0, "Year", table_df.index)
         data = [list(table_df.columns)] + table_df.reset_index(drop=True).values.tolist()
+        data = [[_format_value(value) for value in row] for row in data]
         table = tables.Table(data, repeatRows=1)
         style = tables.TableStyle(
             [
@@ -3244,6 +3264,7 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
                 ("TEXTCOLOR", (0, 0), (-1, 0), "#FFFFFF"),
                 ("GRID", (0, 0), (-1, -1), 0.25, "#CCCCCC"),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
                 ("ALIGN", (0, 0), (-1, -1), "LEFT"),
             ]
         )
