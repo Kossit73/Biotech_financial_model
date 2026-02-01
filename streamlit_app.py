@@ -2927,9 +2927,12 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
     canvas = importlib.import_module("reportlab.pdfgen.canvas")
     image_reader = importlib.import_module("reportlab.lib.utils").ImageReader
     tables = importlib.import_module("reportlab.platypus.tables")
+    pagesizes = importlib.import_module("reportlab.lib.pagesizes")
     import textwrap
     pdf_buffer = io.BytesIO()
     pdf_canvas = canvas.Canvas(pdf_buffer)
+    portrait_size = pagesizes.letter
+    landscape_size = pagesizes.landscape(portrait_size)
     pdf_canvas.setFont("Helvetica-Bold", 14)
     pdf_canvas.drawString(72, 770, "Business Plan Bundle")
     pdf_canvas.setFont("Helvetica", 11)
@@ -2999,15 +3002,20 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
     def _round_table(df: pd.DataFrame) -> pd.DataFrame:
         return df.apply(pd.to_numeric, errors="ignore").round(0)
 
-    def _draw_pdf_table(title: str, df: pd.DataFrame) -> None:
+    def _switch_orientation(page_size) -> None:
+        nonlocal y_position, pdf_canvas
+        pdf_canvas.showPage()
+        pdf_canvas.setPageSize(page_size)
+        pdf_canvas.setFont("Helvetica", 11)
+        y_position = page_size[1] - 72
+
+    def _draw_pdf_table(title: str, df: pd.DataFrame, page_size) -> None:
         nonlocal y_position, pdf_canvas
         if df is None or df.empty:
             return
         y_position -= 6
         if y_position <= 200:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+            _switch_orientation(page_size)
         pdf_canvas.drawString(72, y_position, title)
         y_position -= 12
 
@@ -3025,29 +3033,31 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             ]
         )
         table.setStyle(style)
-        width, height = table.wrap(450, y_position - 72)
+        available_width = page_size[0] - 144
+        width, height = table.wrap(available_width, y_position - 72)
         if y_position - height <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+            _switch_orientation(page_size)
             pdf_canvas.drawString(72, y_position, title)
             y_position -= 12
-            width, height = table.wrap(450, y_position - 72)
+            width, height = table.wrap(available_width, y_position - 72)
         table.drawOn(pdf_canvas, 72, y_position - height)
         y_position -= height + 18
 
     perf_df = payload.get("financial_performance")
     if perf_df is not None:
-        _draw_pdf_table("Statement of Financial Performance", perf_df)
+        _switch_orientation(landscape_size)
+        _draw_pdf_table("Statement of Financial Performance", perf_df, landscape_size)
     cons_df = payload.get("financial_statements")
     if cons_df is not None:
-        _draw_pdf_table("Financial Statements", cons_df)
+        _draw_pdf_table("Financial Statements", cons_df, landscape_size)
     position_df = payload.get("financial_position")
     if position_df is not None:
-        _draw_pdf_table("Statement of Financial Position", position_df)
+        _draw_pdf_table("Statement of Financial Position", position_df, landscape_size)
     cash_flow_df = payload.get("cash_flows")
     if cash_flow_df is not None:
-        _draw_pdf_table("Statement of Cash Flows", cash_flow_df)
+        _draw_pdf_table("Statement of Cash Flows", cash_flow_df, landscape_size)
+    if any(table is not None for table in [perf_df, cons_df, position_df, cash_flow_df]):
+        _switch_orientation(portrait_size)
     analytics_df = payload.get("chart_tables", {}).get("advanced_analytics_report")
     if analytics_df is not None:
         y_position -= 6
