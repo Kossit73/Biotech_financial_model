@@ -2441,6 +2441,15 @@ def _group_ai_commentary(ai_commentary: List[Any]) -> Dict[str, List[Dict[str, s
     return grouped
 
 
+def _format_scenario_prose(scenario: Dict[str, Any], currency: str) -> str:
+    name = scenario.get("name") or scenario.get("scenario") or "Scenario"
+    npv = scenario.get("npv")
+    irr = scenario.get("irr")
+    npv_text = f"{npv:,.0f} {currency}" if isinstance(npv, (int, float)) else "n/a"
+    irr_text = f"{irr:.1%}" if isinstance(irr, (int, float)) else "n/a"
+    return f"{name}: NPV {npv_text}, IRR {irr_text}."
+
+
 def _format_pct_value(value: Any) -> str:
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return "n/a"
@@ -3034,8 +3043,12 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
                     document.add_paragraph(f"Annotation: {annotation}", style="List Bullet")
     if payload["scenarios"]:
         document.add_heading("Scenarios", level=2)
+        currency = next(
+            (row.get("Value") for row in payload.get("summary_rows", []) if row.get("Metric") == "Currency"),
+            "USD",
+        )
         for scenario in payload["scenarios"]:
-            document.add_paragraph(json.dumps(scenario, ensure_ascii=False))
+            document.add_paragraph(_format_scenario_prose(scenario, currency))
     if payload["sensitivities"]:
         document.add_heading("Sensitivities", level=2)
         for sensitivity in payload["sensitivities"]:
@@ -3219,9 +3232,19 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             pdf_canvas.setFont("Helvetica", 11)
             y_position = 770
         _draw_section_title("Scenarios")
+        currency = next(
+            (row.get("Value") for row in payload.get("summary_rows", []) if row.get("Metric") == "Currency"),
+            "USD",
+        )
         for scenario in payload["scenarios"]:
-            pdf_canvas.drawString(left_margin, y_position, json.dumps(scenario, ensure_ascii=False))
-            y_position -= 16
+            for line in textwrap.wrap(_format_scenario_prose(scenario, currency), width=92):
+                pdf_canvas.drawString(left_margin, y_position, line)
+                y_position -= 16
+                if y_position <= 72:
+                    pdf_canvas.showPage()
+                    pdf_canvas.setFont("Helvetica", 11)
+                    y_position = 770
+            y_position -= 4
             if y_position <= 72:
                 pdf_canvas.showPage()
                 pdf_canvas.setFont("Helvetica", 11)
