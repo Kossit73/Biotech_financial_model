@@ -2732,6 +2732,9 @@ def _sync_vaccine_sales_product(
 
 
 def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
+    def _round_table(df: pd.DataFrame) -> pd.DataFrame:
+        return df.apply(pd.to_numeric, errors="ignore").round(0)
+
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         pd.DataFrame(payload["summary_rows"]).to_excel(writer, index=False, sheet_name="Summary")
@@ -2764,25 +2767,25 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
                 sheet_name="Advanced Analytics Narrative",
             )
         if payload.get("financial_statements") is not None:
-            payload["financial_statements"].to_excel(
+            _round_table(payload["financial_statements"]).to_excel(
                 writer,
                 index=True,
                 sheet_name="Financial Statements",
             )
         if payload.get("financial_performance") is not None:
-            payload["financial_performance"].to_excel(
+            _round_table(payload["financial_performance"]).to_excel(
                 writer,
                 index=True,
                 sheet_name="Financial Performance",
             )
         if payload.get("financial_position") is not None:
-            payload["financial_position"].to_excel(
+            _round_table(payload["financial_position"]).to_excel(
                 writer,
                 index=True,
                 sheet_name="Financial Position",
             )
         if payload.get("cash_flows") is not None:
-            payload["cash_flows"].to_excel(
+            _round_table(payload["cash_flows"]).to_excel(
                 writer,
                 index=True,
                 sheet_name="Cash Flows",
@@ -2797,11 +2800,14 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
 
 
 def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
+    def _round_table(df: pd.DataFrame) -> pd.DataFrame:
+        return df.apply(pd.to_numeric, errors="ignore").round(0)
+
     def _add_docx_table(document, title: str, df: pd.DataFrame) -> None:
         if df is None or df.empty:
             return
         document.add_heading(title, level=2)
-        table_df = df.copy()
+        table_df = _round_table(df.copy())
         table_df.insert(0, "Year", table_df.index)
         table = document.add_table(rows=1, cols=len(table_df.columns))
         table.style = "Light Grid"
@@ -2990,6 +2996,9 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
                 pdf_canvas.showPage()
                 pdf_canvas.setFont("Helvetica", 11)
                 y_position = 770
+    def _round_table(df: pd.DataFrame) -> pd.DataFrame:
+        return df.apply(pd.to_numeric, errors="ignore").round(0)
+
     def _draw_pdf_table(title: str, df: pd.DataFrame) -> None:
         nonlocal y_position, pdf_canvas
         if df is None or df.empty:
@@ -3002,7 +3011,7 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         pdf_canvas.drawString(72, y_position, title)
         y_position -= 12
 
-        table_df = df.copy()
+        table_df = _round_table(df.copy())
         table_df.insert(0, "Year", table_df.index)
         data = [list(table_df.columns)] + table_df.reset_index(drop=True).values.tolist()
         table = tables.Table(data, repeatRows=1)
