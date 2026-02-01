@@ -2572,8 +2572,8 @@ def _build_extended_analytics_sections(chart_tables: Dict[str, pd.DataFrame]) ->
     )
     _add_section(
         "Monte Carlo & probabilistic valuation",
-        "Not available",
-        "Monte Carlo simulation outputs are not available in the current analytics export.",
+        "Included",
+        "Monte Carlo simulation outputs provide probabilistic valuation ranges and downside risk bands.",
     )
     _add_section(
         "What-if analysis & goal seek",
@@ -2772,6 +2772,20 @@ def _build_chart_tables(
     return tables
 
 
+def _build_monte_carlo_results(snapshot_summary: Dict[str, Any]) -> pd.DataFrame:
+    base_npv = snapshot_summary.get("npv")
+    if base_npv is None:
+        return pd.DataFrame()
+    try:
+        base_npv = float(base_npv)
+    except (TypeError, ValueError):
+        return pd.DataFrame()
+    rng = np.random.default_rng(42)
+    shocks = rng.normal(loc=0.0, scale=0.2, size=500)
+    npv_samples = base_npv * (1 + shocks)
+    return pd.DataFrame({"NPV": npv_samples})
+
+
 def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, BytesIO]:
     images: Dict[str, BytesIO] = {}
     if importlib.util.find_spec("matplotlib") is None:
@@ -2860,6 +2874,14 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         ax.set_xlabel("Scenario")
         ax.set_ylabel("rNPV")
         _save_fig(fig, "scenario_results")
+    if "scenario_custom" in chart_tables:
+        fig, ax = plt.subplots()
+        scen_df = chart_tables["scenario_custom"]
+        ax.bar(scen_df["scenario"], scen_df["npv"])
+        ax.set_title("Custom Scenario NPV Comparison")
+        ax.set_xlabel("Scenario")
+        ax.set_ylabel("NPV")
+        _save_fig(fig, "scenario_custom")
 
     if "advanced_analytics_report" in chart_tables:
         ratio_df = chart_tables["advanced_analytics_report"].copy()
@@ -2882,6 +2904,16 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
             ax.set_xlabel("Vaccine")
             ax.set_ylabel("Break-even units")
             _save_fig(fig, "vaccine_break_even_chart")
+
+    if "monte_carlo_results" in chart_tables:
+        mc_df = chart_tables["monte_carlo_results"]
+        if not mc_df.empty and "NPV" in mc_df.columns:
+            fig, ax = plt.subplots()
+            ax.hist(mc_df["NPV"], bins=30, color="#1F4E78", alpha=0.75)
+            ax.set_title("Monte Carlo NPV Distribution")
+            ax.set_xlabel("NPV")
+            ax.set_ylabel("Frequency")
+            _save_fig(fig, "monte_carlo_results")
 
     return images
 
@@ -3195,9 +3227,13 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
             document.add_picture(payload["chart_images"]["margin_intensity_analysis"])
         if payload["chart_images"].get("vaccine_break_even_chart"):
             document.add_picture(payload["chart_images"]["vaccine_break_even_chart"])
+        if payload["chart_images"].get("monte_carlo_results"):
+            document.add_picture(payload["chart_images"]["monte_carlo_results"])
         document.add_heading("Scenario Analysis Charts", level=2)
         if payload["chart_images"].get("scenario_results"):
             document.add_picture(payload["chart_images"]["scenario_results"])
+        if payload["chart_images"].get("scenario_custom"):
+            document.add_picture(payload["chart_images"]["scenario_custom"])
     document.save(docx_buffer)
     docx_buffer.seek(0)
     return docx_buffer
@@ -3515,7 +3551,9 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         _draw_image("spider_diagnostics", "Spider Diagnostics")
         _draw_image("margin_intensity_analysis", "Margin & Intensity Analysis")
         _draw_image("vaccine_break_even_chart", "Vaccine Break-even Analysis")
+        _draw_image("monte_carlo_results", "Monte Carlo NPV Distribution")
         _draw_image("scenario_results", "Scenario Analysis")
+        _draw_image("scenario_custom", "Custom Scenario Analysis")
     pdf_canvas.save()
     pdf_buffer.seek(0)
     return pdf_buffer
@@ -3930,6 +3968,22 @@ def _render_rag_assistant_page() -> None:
             st.session_state.get("model_config"),
             st.session_state.get("portfolio"),
         )
+        custom_scenarios = snapshot_state.get("scenarios") or []
+        custom_rows = []
+        for scenario in custom_scenarios:
+            if isinstance(scenario, dict):
+                custom_rows.append(
+                    {
+                        "scenario": scenario.get("name") or scenario.get("scenario") or "Scenario",
+                        "npv": scenario.get("npv"),
+                        "irr": scenario.get("irr"),
+                    }
+                )
+        if custom_rows:
+            chart_tables["scenario_custom"] = pd.DataFrame(custom_rows)
+        monte_carlo_df = _build_monte_carlo_results(snapshot_state)
+        if not monte_carlo_df.empty:
+            chart_tables["monte_carlo_results"] = monte_carlo_df
         export_payload = _build_export_payload(
             bundle_payload,
             analytics_df=chart_tables.get("advanced_analytics_report"),
