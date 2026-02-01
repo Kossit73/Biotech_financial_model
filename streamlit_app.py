@@ -1145,16 +1145,36 @@ def _compute_financial_statements(
     )
 
     cash_from_ops = cons["nopat"] + da_positive - wc_diff
-    cash_from_investing = cons["capex_cash"] + cons["rd_cap_add"]
-    cash_from_financing = pd.Series(0.0, index=years)
+    capex_cash = cons["capex_cash"]
+    rd_cap_add = cons["rd_cap_add"]
+    cash_from_investing = capex_cash + rd_cap_add
+    equity_issuance = pd.Series(0.0, index=years)
+    debt_draw = pd.Series(0.0, index=years)
+    debt_repay = pd.Series(0.0, index=years)
+    interest_paid = pd.Series(0.0, index=years)
+    cash_from_financing = equity_issuance + debt_draw - debt_repay - interest_paid
     net_cash = cash_from_ops + cash_from_investing + cash_from_financing
+    starting_cash = pd.Series(0.0, index=years)
+    ending_cash = starting_cash + net_cash.cumsum()
 
     cash_flow_df = pd.DataFrame(
         {
-            "Cash from operations": cash_from_ops,
-            "Cash from investing": cash_from_investing,
-            "Cash from financing": cash_from_financing,
+            "EBIT": cons["ebit"],
+            "Cash taxes paid": cons["tax"],
+            "Depreciation & amortization": da_positive,
+            "Working capital change": -wc_diff,
+            "Net cash from operations": cash_from_ops,
+            "Capital expenditure": capex_cash,
+            "R&D capitalization": rd_cap_add,
+            "Net cash from investing": cash_from_investing,
+            "Equity issuance": equity_issuance,
+            "Debt drawdowns": debt_draw,
+            "Debt repayments": debt_repay,
+            "Interest paid": interest_paid,
+            "Net cash from financing": cash_from_financing,
             "Net change in cash": net_cash,
+            "Beginning cash balance": starting_cash,
+            "Ending cash balance": ending_cash,
         }
     )
 
