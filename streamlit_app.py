@@ -2803,6 +2803,11 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     def _round_table(df: pd.DataFrame) -> pd.DataFrame:
         return df.apply(pd.to_numeric, errors="ignore").round(0)
 
+    def _set_section_orientation(document, orientation) -> None:
+        section = document.sections[-1]
+        section.orientation = orientation
+        section.page_width, section.page_height = section.page_height, section.page_width
+
     def _add_docx_table(document, title: str, df: pd.DataFrame) -> None:
         if df is None or df.empty:
             return
@@ -2819,7 +2824,9 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
             for idx, value in enumerate(row):
                 row_cells[idx].text = str(value)
 
-    Document = importlib.import_module("docx").Document
+    docx_module = importlib.import_module("docx")
+    Document = docx_module.Document
+    WD_ORIENT = importlib.import_module("docx.enum.section").WD_ORIENT
     docx_buffer = io.BytesIO()
     document = Document()
     document.add_heading("Business Plan Bundle", level=1)
@@ -2848,6 +2855,17 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         document.add_heading("Sensitivities", level=2)
         for sensitivity in payload["sensitivities"]:
             document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
+    has_financial_tables = any(
+        payload.get(key) is not None
+        for key in [
+            "financial_statements",
+            "financial_performance",
+            "financial_position",
+            "cash_flows",
+        ]
+    )
+    if has_financial_tables:
+        _set_section_orientation(document, WD_ORIENT.LANDSCAPE)
     if payload.get("financial_statements") is not None:
         _add_docx_table(
             document,
@@ -2872,6 +2890,8 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
             "Statement of Cash Flows",
             payload["cash_flows"],
         )
+    if has_financial_tables:
+        _set_section_orientation(document, WD_ORIENT.PORTRAIT)
     if payload.get("chart_tables", {}).get("advanced_analytics_report") is not None:
         document.add_heading("Advanced analytics report", level=2)
         analytics_df = payload["chart_tables"]["advanced_analytics_report"]
