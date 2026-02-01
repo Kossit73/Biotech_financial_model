@@ -2125,8 +2125,17 @@ def _build_ai_commentary(
     position_df: Optional[pd.DataFrame],
     cash_flow_df: Optional[pd.DataFrame],
     cons_df: Optional[pd.DataFrame],
-) -> List[str]:
-    comments: List[str] = []
+) -> List[Dict[str, str]]:
+    comments: List[Dict[str, str]] = []
+
+    def _add_comment(section: str, commentary: str, annotation: str = "") -> None:
+        comments.append(
+            {
+                "Section": section,
+                "Commentary": commentary,
+                "Annotation": annotation,
+            }
+        )
 
     def _format_value(value: Any) -> str:
         if value is None or (isinstance(value, float) and np.isnan(value)):
@@ -2135,61 +2144,240 @@ def _build_ai_commentary(
             return f"{value:,.0f}"
         return str(value)
 
+    def _format_pct(value: Any) -> str:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return "n/a"
+        if isinstance(value, (int, float)):
+            pct_value = value * 100 if abs(value) <= 1.5 else value
+            return f"{pct_value:.1f}%"
+        return str(value)
+
+    def _safe_divide(numerator: float, denominator: float) -> float:
+        return float(numerator / denominator) if denominator else 0.0
+
+    currency = snapshot_summary.get("currency", "USD") if snapshot_summary else "USD"
+
     if snapshot_summary:
         npv = snapshot_summary.get("npv")
         irr = snapshot_summary.get("irr")
+        dscr_min = snapshot_summary.get("dscr_min")
+        payback_years = snapshot_summary.get("payback_years")
         revenue = snapshot_summary.get("revenue_annual")
         opex = snapshot_summary.get("opex_annual")
-        comments.append(
-            f"Snapshot: NPV {_format_value(npv)}, IRR {_format_value(irr)}, "
-            f"Annual revenue {_format_value(revenue)}, Annual opex {_format_value(opex)}."
+        capex_total = snapshot_summary.get("capex_total")
+        _add_comment(
+            "Financial Snapshot",
+            (
+                f"NPV {_format_value(npv)} {currency}, IRR {_format_pct(irr)}, "
+                f"minimum DSCR {_format_value(dscr_min)}, payback {_format_value(payback_years)} years."
+            ),
+            "Snapshot metrics come from the RAG Assistant inputs.",
         )
-        if npv is not None:
-            comments.append(
-                f"NPV indicates a {'positive' if npv >= 0 else 'negative'} valuation trend."
-            )
+        _add_comment(
+            "Financial Snapshot",
+            (
+                f"Annual revenue {_format_value(revenue)} {currency}, annual opex {_format_value(opex)} "
+                f"{currency}, total capex {_format_value(capex_total)} {currency}."
+            ),
+            "Operating spread = annual revenue minus annual opex.",
+        )
         if revenue is not None and opex is not None:
-            comments.append(
-                f"Annual revenue vs opex suggests a gross operating spread of {_format_value(revenue - opex)}."
+            _add_comment(
+                "Financial Snapshot",
+                f"Estimated operating spread: {_format_value(revenue - opex)} {currency}.",
+                "Positive spread indicates operating headroom before financing effects.",
+            )
+        if npv is not None:
+            _add_comment(
+                "Financial Snapshot",
+                f"NPV implies a {'positive' if npv >= 0 else 'negative'} valuation trend.",
+                "NPV sign provides directional value signal.",
             )
 
     if perf_df is not None and not perf_df.empty:
         revenue_series = perf_df.get("Revenue")
         ebitda_series = perf_df.get("EBITDA")
+        cogs_series = perf_df.get("COGS")
+        rd_series = perf_df.get("R&D expense")
         if revenue_series is not None:
             avg_revenue = float(revenue_series.mean())
-            comments.append(f"Performance: average revenue over the plan is {avg_revenue:,.0f}.")
+            _add_comment(
+                "Statement of Financial Performance",
+                f"Average revenue across the plan is {avg_revenue:,.0f} {currency}.",
+                "Average computed across modeled forecast years.",
+            )
         if revenue_series is not None and ebitda_series is not None:
-            margin = float((ebitda_series.sum() / revenue_series.sum()) if revenue_series.sum() else 0.0)
-            comments.append(f"Performance: average EBITDA margin is {margin:.1%}.")
+            total_revenue = float(revenue_series.sum())
+            total_ebitda = float(ebitda_series.sum())
+            margin = _safe_divide(total_ebitda, total_revenue)
+            positive_years = int((ebitda_series > 0).sum())
+            _add_comment(
+                "Statement of Financial Performance",
+                f"Average EBITDA margin is {_format_pct(margin)} with EBITDA positive in {positive_years} year(s).",
+                "EBITDA margin = total EBITDA / total revenue.",
+            )
+        if revenue_series is not None and cogs_series is not None:
+            gross_margin = _safe_divide(
+                float((revenue_series - cogs_series).sum()),
+                float(revenue_series.sum()),
+            )
+            _add_comment(
+                "Statement of Financial Performance",
+                f"Average gross margin is {_format_pct(gross_margin)}.",
+                "Gross margin = (Revenue - COGS) / Revenue.",
+            )
+        if revenue_series is not None and rd_series is not None:
+            rd_intensity = _safe_divide(float(rd_series.sum()), float(revenue_series.sum()))
+            _add_comment(
+                "Statement of Financial Performance",
+                f"R&D intensity averages {_format_pct(rd_intensity)} of revenue.",
+                "R&D intensity = total R&D expense / total revenue.",
+            )
 
     if position_df is not None and not position_df.empty:
         total_assets = position_df.get("Total assets")
         total_equity = position_df.get("Total equity")
+        working_capital = position_df.get("Working capital")
         if total_assets is not None:
             end_assets = float(total_assets.iloc[-1])
-            comments.append(f"Position: ending total assets are {end_assets:,.0f}.")
-        if total_equity is not None:
+            _add_comment(
+                "Statement of Financial Position",
+                f"Ending total assets are {end_assets:,.0f} {currency}.",
+                "Ending balances reflect the final forecast year.",
+            )
+        if total_equity is not None and total_assets is not None:
             end_equity = float(total_equity.iloc[-1])
-            comments.append(f"Position: ending total equity is {end_equity:,.0f}.")
+            equity_ratio = _safe_divide(end_equity, float(total_assets.iloc[-1]))
+            _add_comment(
+                "Statement of Financial Position",
+                f"Ending total equity is {end_equity:,.0f} {currency} (equity ratio {_format_pct(equity_ratio)}).",
+                "Equity ratio = total equity / total assets.",
+            )
+        if working_capital is not None:
+            end_wc = float(working_capital.iloc[-1])
+            _add_comment(
+                "Statement of Financial Position",
+                f"Working capital ends at {end_wc:,.0f} {currency}.",
+                "Working capital derived from model working capital % assumption.",
+            )
 
     if cash_flow_df is not None and not cash_flow_df.empty:
         net_cash = cash_flow_df.get("Net change in cash")
+        cash_ops = cash_flow_df.get("Cash from operations")
+        cash_investing = cash_flow_df.get("Cash from investing")
         if net_cash is not None:
             cumulative_cash = float(net_cash.sum())
-            comments.append(f"Cash flow: cumulative net cash change is {cumulative_cash:,.0f}.")
+            positive_years = int((net_cash > 0).sum())
+            _add_comment(
+                "Statement of Cash Flows",
+                f"Cumulative net cash change is {cumulative_cash:,.0f} {currency} with {positive_years} positive year(s).",
+                "Net change in cash aggregates operating, investing, and financing flows.",
+            )
+        if cash_ops is not None:
+            avg_ops = float(cash_ops.mean())
+            _add_comment(
+                "Statement of Cash Flows",
+                f"Average operating cash flow is {avg_ops:,.0f} {currency}.",
+                "Operating cash flow = NOPAT + depreciation/amortization - working capital change.",
+            )
+        if cash_investing is not None:
+            total_investing = float(cash_investing.sum())
+            _add_comment(
+                "Statement of Cash Flows",
+                f"Total investing cash flow is {total_investing:,.0f} {currency}.",
+                "Investing cash flow reflects capex and R&D capitalization.",
+            )
 
     if cons_df is not None and not cons_df.empty:
         peak_revenue = float(cons_df["revenue"].max()) if "revenue" in cons_df.columns else None
         total_fcff = float(cons_df["fcff_after_wc"].sum()) if "fcff_after_wc" in cons_df.columns else None
         if peak_revenue is not None:
-            comments.append(f"Financial statements: peak revenue reaches {peak_revenue:,.0f}.")
+            _add_comment(
+                "Financial Statements Highlights",
+                f"Peak revenue reaches {peak_revenue:,.0f} {currency}.",
+                "Peak derived from consolidated revenue series.",
+            )
         if total_fcff is not None:
-            comments.append(f"Financial statements: total FCFF after WC sums to {total_fcff:,.0f}.")
+            positive_fcff_years = int((cons_df["fcff_after_wc"] > 0).sum())
+            _add_comment(
+                "Financial Statements Highlights",
+                (
+                    f"Total FCFF after working capital sums to {total_fcff:,.0f} {currency} "
+                    f"with {positive_fcff_years} positive year(s)."
+                ),
+                "FCFF after WC = free cash flow after working capital change.",
+            )
+
+    scenarios = snapshot_summary.get("scenarios") if snapshot_summary else []
+    if scenarios:
+        scenario_name = lambda s: s.get("name") or s.get("scenario") or "Scenario"
+        scenario_metric = lambda s, key: s.get(key) if isinstance(s, dict) else None
+        valid_npvs = [(scenario_name(s), scenario_metric(s, "npv")) for s in scenarios]
+        valid_npvs = [(name, value) for name, value in valid_npvs if value is not None]
+        if valid_npvs:
+            best = max(valid_npvs, key=lambda item: item[1])
+            worst = min(valid_npvs, key=lambda item: item[1])
+            _add_comment(
+                "Scenario Review",
+                f"Scenario count {len(scenarios)}; best NPV is {best[0]} at {_format_value(best[1])} {currency}.",
+                "Scenario ranking based on reported NPV values.",
+            )
+            _add_comment(
+                "Scenario Review",
+                f"Lowest NPV scenario is {worst[0]} at {_format_value(worst[1])} {currency}.",
+                "Use scenario deltas to quantify downside exposure.",
+            )
+
+    sensitivities = snapshot_summary.get("sensitivities") if snapshot_summary else []
+    if sensitivities:
+        drivers = []
+        for sensitivity in sensitivities:
+            if isinstance(sensitivity, dict):
+                drivers.append(sensitivity.get("name") or sensitivity.get("driver"))
+        drivers = [driver for driver in drivers if driver]
+        if drivers:
+            _add_comment(
+                "Sensitivity Review",
+                f"Key sensitivity drivers captured: {', '.join(drivers)}.",
+                "Sensitivity drivers sourced from the snapshot table.",
+            )
+
+    coverage_notes = []
+    if perf_df is not None and not perf_df.empty:
+        coverage_notes.append("financial performance")
+    if position_df is not None and not position_df.empty:
+        coverage_notes.append("financial position")
+    if cash_flow_df is not None and not cash_flow_df.empty:
+        coverage_notes.append("cash flows")
+    if cons_df is not None and not cons_df.empty:
+        coverage_notes.append("consolidated statements")
+    if coverage_notes:
+        _add_comment(
+            "Data Coverage",
+            f"Report includes {', '.join(coverage_notes)} aligned with the current forecast horizon.",
+            "Coverage ensures the business plan narrative reflects model outputs.",
+        )
 
     if not comments:
-        comments.append("Insufficient data to generate AI commentary.")
+        _add_comment(
+            "Data Coverage",
+            "Insufficient data to generate AI commentary. Populate snapshot and financial statements first.",
+            "Provide model results to enable narrative generation.",
+        )
     return comments
+
+
+def _group_ai_commentary(ai_commentary: List[Any]) -> Dict[str, List[Dict[str, str]]]:
+    grouped: Dict[str, List[Dict[str, str]]] = {}
+    for entry in ai_commentary or []:
+        if isinstance(entry, dict):
+            section = entry.get("Section", "General")
+            grouped.setdefault(section, []).append(entry)
+        else:
+            grouped.setdefault("General", []).append(
+                {"Section": "General", "Commentary": str(entry), "Annotation": ""}
+            )
+    return grouped
 
 
 def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -2410,11 +2598,19 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         pd.DataFrame(payload["summary_rows"]).to_excel(writer, index=False, sheet_name="Summary")
         if payload.get("ai_commentary"):
-            pd.DataFrame({"AI commentary": payload["ai_commentary"]}).to_excel(
-                writer,
-                index=False,
-                sheet_name="AI Commentary",
-            )
+            ai_commentary = payload["ai_commentary"]
+            if isinstance(ai_commentary, list) and ai_commentary and isinstance(ai_commentary[0], dict):
+                pd.DataFrame(ai_commentary).to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="AI Commentary",
+                )
+            else:
+                pd.DataFrame({"AI commentary": ai_commentary}).to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="AI Commentary",
+                )
         if payload["scenarios"]:
             pd.DataFrame(payload["scenarios"]).to_excel(writer, index=False, sheet_name="Scenarios")
         if payload["sensitivities"]:
@@ -2486,8 +2682,14 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         document.add_paragraph(f"{row['Metric']}: {row['Value']}")
     if payload.get("ai_commentary"):
         document.add_heading("AI Commentary", level=2)
-        for comment in payload["ai_commentary"]:
-            document.add_paragraph(f"- {comment}")
+        grouped_comments = _group_ai_commentary(payload["ai_commentary"])
+        for section, entries in grouped_comments.items():
+            document.add_heading(section, level=3)
+            for entry in entries:
+                document.add_paragraph(entry.get("Commentary", ""), style="List Bullet")
+                annotation = entry.get("Annotation")
+                if annotation:
+                    document.add_paragraph(f"Annotation: {annotation}", style="List Bullet")
     if payload["scenarios"]:
         document.add_heading("Scenarios", level=2)
         for scenario in payload["scenarios"]:
@@ -2594,13 +2796,21 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             y_position = 770
         pdf_canvas.drawString(72, y_position, "AI Commentary")
         y_position -= 18
-        for comment in payload["ai_commentary"]:
-            pdf_canvas.drawString(72, y_position, f"- {comment}")
+        grouped_comments = _group_ai_commentary(payload["ai_commentary"])
+        for section, entries in grouped_comments.items():
+            pdf_canvas.drawString(72, y_position, section)
             y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+            for entry in entries:
+                pdf_canvas.drawString(72, y_position, f"- {entry.get('Commentary', '')}")
+                y_position -= 16
+                annotation = entry.get("Annotation")
+                if annotation:
+                    pdf_canvas.drawString(90, y_position, f"Annotation: {annotation}")
+                    y_position -= 16
+                if y_position <= 72:
+                    pdf_canvas.showPage()
+                    pdf_canvas.setFont("Helvetica", 11)
+                    y_position = 770
     if payload["scenarios"]:
         y_position -= 6
         if y_position <= 72:
