@@ -2125,6 +2125,7 @@ def _build_ai_commentary(
     position_df: Optional[pd.DataFrame],
     cash_flow_df: Optional[pd.DataFrame],
     cons_df: Optional[pd.DataFrame],
+    analytics_df: Optional[pd.DataFrame] = None,
 ) -> List[Dict[str, str]]:
     comments: List[Dict[str, str]] = []
 
@@ -2339,6 +2340,15 @@ def _build_ai_commentary(
                 "FCFF after WC = free cash flow after working capital change.",
             )
 
+    if analytics_df is not None and not analytics_df.empty:
+        narrative = _build_advanced_analytics_narrative(analytics_df)
+        for paragraph in narrative:
+            _add_comment(
+                "Advanced Analytics Narrative",
+                paragraph,
+                "Derived from the advanced analytics ratio table.",
+            )
+
     scenarios = snapshot_summary.get("scenarios") if snapshot_summary else []
     if scenarios:
         scenario_name = lambda s: s.get("name") or s.get("scenario") or "Scenario"
@@ -2498,7 +2508,10 @@ def _build_advanced_analytics_narrative(
     return narrative
 
 
-def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
+def _build_export_payload(
+    bundle_payload: Dict[str, Any],
+    analytics_df: Optional[pd.DataFrame] = None,
+) -> Dict[str, Any]:
     snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
     scenarios = snapshot_summary.get("scenarios") or []
     sensitivities = snapshot_summary.get("sensitivities") or []
@@ -2507,7 +2520,14 @@ def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
     position_df = bundle_payload.get("financial_position")
     cash_flow_df = bundle_payload.get("cash_flows")
     cons_df = bundle_payload.get("financial_statements")
-    ai_commentary = _build_ai_commentary(snapshot_summary, perf_df, position_df, cash_flow_df, cons_df)
+    ai_commentary = _build_ai_commentary(
+        snapshot_summary,
+        perf_df,
+        position_df,
+        cash_flow_df,
+        cons_df,
+        analytics_df=analytics_df,
+    )
     summary_rows = [
         {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
         {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
@@ -3509,11 +3529,14 @@ def _render_rag_assistant_page() -> None:
             "cash_flows": cash_flow_df,
             "financial_statements": cons_df,
         }
-        export_payload = _build_export_payload(bundle_payload)
         chart_tables = _build_chart_tables(
             st.session_state.get("valuation_result"),
             st.session_state.get("model_config"),
             st.session_state.get("portfolio"),
+        )
+        export_payload = _build_export_payload(
+            bundle_payload,
+            analytics_df=chart_tables.get("advanced_analytics_report"),
         )
         export_payload["chart_tables"] = chart_tables
         export_payload["advanced_analytics_narrative"] = _build_advanced_analytics_narrative(
