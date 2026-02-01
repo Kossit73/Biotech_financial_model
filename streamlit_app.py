@@ -5163,9 +5163,9 @@ def main() -> None:
                     horizon_years = int(model_cfg.n_years)
                 except (TypeError, ValueError):
                     horizon_years = 5
-                horizon_max = max(5, horizon_years)
-                horizon_default = min(10, horizon_max)
-                horizon_default = max(5, int(horizon_default))
+                horizon_max = int(max(5, horizon_years))
+                horizon_default = int(min(10, horizon_max))
+                horizon_default = min(max(5, horizon_default), horizon_max)
                 horizon = st.slider("Forecast steps", 5, horizon_max, horizon_default)
                 if st.button("Run time-series model"):
                     fe = ForecastEngine(model_cfg)
