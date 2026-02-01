@@ -2952,7 +2952,9 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     docx_module = importlib.import_module("docx")
     shared = importlib.import_module("docx.shared")
     Document = docx_module.Document
-    WD_ORIENT = importlib.import_module("docx.enum.section").WD_ORIENT
+    docx_section = importlib.import_module("docx.enum.section")
+    WD_ORIENT = docx_section.WD_ORIENT
+    WD_SECTION = docx_section.WD_SECTION
     docx_buffer = io.BytesIO()
     document = Document()
     styles = document.styles
@@ -3016,6 +3018,7 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         ]
     )
     if has_financial_tables:
+        document.add_section(WD_SECTION.NEW_PAGE)
         _set_section_orientation(document, WD_ORIENT.LANDSCAPE)
     if payload.get("financial_statements") is not None:
         _add_docx_table(
@@ -3042,6 +3045,7 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
             payload["cash_flows"],
         )
     if has_financial_tables:
+        document.add_section(WD_SECTION.NEW_PAGE)
         _set_section_orientation(document, WD_ORIENT.PORTRAIT)
     if payload.get("chart_tables", {}).get("advanced_analytics_report") is not None:
         document.add_heading("Advanced analytics report", level=2)
