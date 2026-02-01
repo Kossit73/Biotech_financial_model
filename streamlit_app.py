@@ -3015,11 +3015,10 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     if payload.get("chart_tables", {}).get("advanced_analytics_report") is not None:
         document.add_heading("Advanced analytics report", level=2)
         analytics_df = payload["chart_tables"]["advanced_analytics_report"]
-        for year, row in analytics_df.round(4).iterrows():
-            document.add_paragraph(f"{year}: {row.to_dict()}")
-    if payload.get("advanced_analytics_narrative"):
-        document.add_heading("Advanced analytics narrative", level=2)
-        for paragraph in payload["advanced_analytics_narrative"]:
+        narrative = payload.get("advanced_analytics_narrative") or _build_advanced_analytics_narrative(
+            analytics_df
+        )
+        for paragraph in narrative:
             document.add_paragraph(paragraph)
     if payload.get("extended_analytics_sections"):
         document.add_heading("Advanced analytics coverage", level=2)
@@ -3245,21 +3244,10 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             pdf_canvas.setFont("Helvetica", 11)
             y_position = 770
         _draw_section_title("Advanced analytics report")
-        for year, row in analytics_df.round(4).iterrows():
-            pdf_canvas.drawString(left_margin, y_position, f"{year}: {row.to_dict()}")
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
-    if payload.get("advanced_analytics_narrative"):
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        _draw_section_title("Advanced analytics narrative")
-        for paragraph in payload["advanced_analytics_narrative"]:
+        narrative = payload.get("advanced_analytics_narrative") or _build_advanced_analytics_narrative(
+            analytics_df
+        )
+        for paragraph in narrative:
             for line in textwrap.wrap(paragraph, width=92):
                 pdf_canvas.drawString(left_margin, y_position, line)
                 y_position -= 16
