@@ -2704,6 +2704,7 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         return images
 
     import matplotlib.pyplot as plt
+    import numpy as np
 
     def _save_fig(fig, key: str) -> None:
         buffer = BytesIO()
@@ -2711,6 +2712,13 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         buffer.seek(0)
         images[key] = buffer
         plt.close(fig)
+
+    def _placeholder_chart(title: str, subtitle: str, key: str) -> None:
+        fig, ax = plt.subplots(figsize=(6, 3))
+        ax.axis("off")
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.text(0.5, 0.5, subtitle, ha="center", va="center", fontsize=10)
+        _save_fig(fig, key)
 
     if "financial_statements_chart" in chart_tables:
         fig, ax = plt.subplots()
@@ -2727,6 +2735,7 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         ax.set_xlabel("Year")
         ax.set_ylabel("Value")
         _save_fig(fig, "dashboard_chart")
+        _save_fig(fig, "dashboard_snapshot")
 
     if "dashboard_fcff_bar" in chart_tables:
         fig, ax = plt.subplots()
@@ -2743,6 +2752,7 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         ax.set_xlabel("Year")
         ax.set_ylabel("Value")
         _save_fig(fig, "analytics_decomposition")
+        _save_fig(fig, "trend_seasonality_analysis")
 
     if "analytics_segmentation" in chart_tables:
         fig, ax = plt.subplots()
@@ -2752,6 +2762,7 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         ax.set_xlabel("Product")
         ax.set_ylabel("Revenue Share")
         _save_fig(fig, "analytics_segmentation")
+        _save_fig(fig, "segmentation_overview")
 
     if "analytics_tornado" in chart_tables:
         fig, ax = plt.subplots()
@@ -2760,6 +2771,22 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         ax.set_title("Tornado Impact")
         ax.set_xlabel("Delta")
         _save_fig(fig, "analytics_tornado")
+        spider_df = chart_tables["analytics_tornado"].copy()
+        if not spider_df.empty:
+            labels = spider_df["Driver"].astype(str).tolist()
+            values = spider_df["Delta"].abs().to_numpy()
+            if values.sum() > 0:
+                values = values / values.max()
+            angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+            values = np.concatenate([values, values[:1]])
+            angles += angles[:1]
+            fig, ax = plt.subplots(subplot_kw={"polar": True})
+            ax.plot(angles, values, linewidth=2)
+            ax.fill(angles, values, alpha=0.25)
+            ax.set_xticks(angles[:-1])
+            ax.set_xticklabels(labels)
+            ax.set_title("Spider Diagnostics (Normalized Impact)")
+            _save_fig(fig, "spider_diagnostics")
 
     if "scenario_results" in chart_tables:
         fig, ax = plt.subplots()
@@ -2769,6 +2796,41 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         ax.set_xlabel("Scenario")
         ax.set_ylabel("rNPV")
         _save_fig(fig, "scenario_results")
+        _save_fig(fig, "scenario_stress_testing")
+
+    if "advanced_analytics_report" in chart_tables:
+        ratio_df = chart_tables["advanced_analytics_report"].copy()
+        fig, ax = plt.subplots()
+        ratio_df.plot(ax=ax)
+        ax.set_title("Margin & Intensity Analysis")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Ratio")
+        _save_fig(fig, "margin_intensity_analysis")
+
+    if "vaccine_break_even_report" in chart_tables:
+        break_even_df = chart_tables["vaccine_break_even_report"]
+        if not break_even_df.empty and "Vaccine name" in break_even_df.columns:
+            fig, ax = plt.subplots()
+            ax.bar(
+                break_even_df["Vaccine name"],
+                break_even_df["Break-even units"],
+            )
+            ax.set_title("Vaccine Break-even Units")
+            ax.set_xlabel("Vaccine")
+            ax.set_ylabel("Break-even units")
+            _save_fig(fig, "vaccine_break_even_chart")
+
+    for key, title in [
+        ("monte_carlo", "Monte Carlo & Probabilistic Valuation"),
+        ("what_if_goal_seek", "What-if Analysis & Goal Seek"),
+        ("regression_classification", "Regression & Classification Models"),
+        ("time_series_forecasting", "Time-series & ML Forecasting"),
+        ("optimisation_real_options", "Optimisation, Portfolio Design & Real Options"),
+        ("risk_esg_linkages", "Risk, Copulas, Macro & ESG Linkages"),
+        ("comparative_ml_valuation", "Comparative & ML-based Valuation"),
+    ]:
+        if key not in images:
+            _placeholder_chart(title, "Not available in current export", key)
 
     return images
 
@@ -3049,16 +3111,44 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
             document.add_picture(payload["chart_images"]["dashboard_chart"])
         if payload["chart_images"].get("dashboard_fcff_bar"):
             document.add_picture(payload["chart_images"]["dashboard_fcff_bar"])
+        if payload["chart_images"].get("dashboard_snapshot"):
+            document.add_picture(payload["chart_images"]["dashboard_snapshot"])
         document.add_heading("Advanced Analytics Charts", level=2)
         if payload["chart_images"].get("analytics_decomposition"):
             document.add_picture(payload["chart_images"]["analytics_decomposition"])
+        if payload["chart_images"].get("trend_seasonality_analysis"):
+            document.add_picture(payload["chart_images"]["trend_seasonality_analysis"])
         if payload["chart_images"].get("analytics_segmentation"):
             document.add_picture(payload["chart_images"]["analytics_segmentation"])
+        if payload["chart_images"].get("segmentation_overview"):
+            document.add_picture(payload["chart_images"]["segmentation_overview"])
         if payload["chart_images"].get("analytics_tornado"):
             document.add_picture(payload["chart_images"]["analytics_tornado"])
+        if payload["chart_images"].get("spider_diagnostics"):
+            document.add_picture(payload["chart_images"]["spider_diagnostics"])
+        if payload["chart_images"].get("margin_intensity_analysis"):
+            document.add_picture(payload["chart_images"]["margin_intensity_analysis"])
+        if payload["chart_images"].get("vaccine_break_even_chart"):
+            document.add_picture(payload["chart_images"]["vaccine_break_even_chart"])
+        if payload["chart_images"].get("monte_carlo"):
+            document.add_picture(payload["chart_images"]["monte_carlo"])
+        if payload["chart_images"].get("what_if_goal_seek"):
+            document.add_picture(payload["chart_images"]["what_if_goal_seek"])
+        if payload["chart_images"].get("regression_classification"):
+            document.add_picture(payload["chart_images"]["regression_classification"])
+        if payload["chart_images"].get("time_series_forecasting"):
+            document.add_picture(payload["chart_images"]["time_series_forecasting"])
+        if payload["chart_images"].get("optimisation_real_options"):
+            document.add_picture(payload["chart_images"]["optimisation_real_options"])
+        if payload["chart_images"].get("risk_esg_linkages"):
+            document.add_picture(payload["chart_images"]["risk_esg_linkages"])
+        if payload["chart_images"].get("comparative_ml_valuation"):
+            document.add_picture(payload["chart_images"]["comparative_ml_valuation"])
         document.add_heading("Scenario Analysis Charts", level=2)
         if payload["chart_images"].get("scenario_results"):
             document.add_picture(payload["chart_images"]["scenario_results"])
+        if payload["chart_images"].get("scenario_stress_testing"):
+            document.add_picture(payload["chart_images"]["scenario_stress_testing"])
     document.save(docx_buffer)
     docx_buffer.seek(0)
     return docx_buffer
@@ -3347,10 +3437,24 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         _draw_image("financial_statements_chart", "Financial Statements")
         _draw_image("dashboard_chart", "Dashboard Trends")
         _draw_image("dashboard_fcff_bar", "Dashboard FCFF")
+        _draw_image("dashboard_snapshot", "Dashboard Snapshot")
         _draw_image("analytics_decomposition", "Analytics Decomposition")
+        _draw_image("trend_seasonality_analysis", "Trend & Seasonality Analysis")
         _draw_image("analytics_segmentation", "Analytics Segmentation")
+        _draw_image("segmentation_overview", "Segmentation Overview")
         _draw_image("analytics_tornado", "Analytics Tornado")
+        _draw_image("spider_diagnostics", "Spider Diagnostics")
+        _draw_image("margin_intensity_analysis", "Margin & Intensity Analysis")
+        _draw_image("vaccine_break_even_chart", "Vaccine Break-even Analysis")
+        _draw_image("monte_carlo", "Monte Carlo & Probabilistic Valuation")
+        _draw_image("what_if_goal_seek", "What-if Analysis & Goal Seek")
+        _draw_image("regression_classification", "Regression & Classification Models")
+        _draw_image("time_series_forecasting", "Time-series & ML Forecasting")
+        _draw_image("optimisation_real_options", "Optimisation, Portfolio Design & Real Options")
+        _draw_image("risk_esg_linkages", "Risk, Copulas, Macro & ESG Linkages")
+        _draw_image("comparative_ml_valuation", "Comparative & ML-based Valuation")
         _draw_image("scenario_results", "Scenario Analysis")
+        _draw_image("scenario_stress_testing", "Scenario Stress Testing")
     pdf_canvas.save()
     pdf_buffer.seek(0)
     return pdf_buffer
