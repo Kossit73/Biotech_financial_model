@@ -2155,6 +2155,14 @@ def _build_ai_commentary(
     def _safe_divide(numerator: float, denominator: float) -> float:
         return float(numerator / denominator) if denominator else 0.0
 
+    def _first_last(series: pd.Series) -> tuple[Optional[float], Optional[float]]:
+        if series is None or series.empty:
+            return None, None
+        clean = pd.to_numeric(series, errors="coerce").dropna()
+        if clean.empty:
+            return None, None
+        return float(clean.iloc[0]), float(clean.iloc[-1])
+
     currency = snapshot_summary.get("currency", "USD") if snapshot_summary else "USD"
 
     if snapshot_summary:
@@ -2206,6 +2214,15 @@ def _build_ai_commentary(
                 f"Average revenue across the plan is {avg_revenue:,.0f} {currency}.",
                 "Average computed across modeled forecast years.",
             )
+            rev_start, rev_end = _first_last(revenue_series)
+            if rev_start is not None and rev_end is not None and rev_start > 0:
+                years = max(1, len(revenue_series) - 1)
+                cagr = (rev_end / rev_start) ** (1 / years) - 1
+                _add_comment(
+                    "Statement of Financial Performance",
+                    f"Revenue grows from {rev_start:,.0f} to {rev_end:,.0f} {currency} (CAGR {_format_pct(cagr)}).",
+                    "CAGR uses first and last modeled revenue values.",
+                )
         if revenue_series is not None and ebitda_series is not None:
             total_revenue = float(revenue_series.sum())
             total_ebitda = float(ebitda_series.sum())
@@ -2215,6 +2232,13 @@ def _build_ai_commentary(
                 "Statement of Financial Performance",
                 f"Average EBITDA margin is {_format_pct(margin)} with EBITDA positive in {positive_years} year(s).",
                 "EBITDA margin = total EBITDA / total revenue.",
+            )
+            start_margin = _safe_divide(float(ebitda_series.iloc[0]), float(revenue_series.iloc[0]))
+            end_margin = _safe_divide(float(ebitda_series.iloc[-1]), float(revenue_series.iloc[-1]))
+            _add_comment(
+                "Statement of Financial Performance",
+                f"EBITDA margin shifts from {_format_pct(start_margin)} to {_format_pct(end_margin)}.",
+                "Margin trend compares first and last modeled years.",
             )
         if revenue_series is not None and cogs_series is not None:
             gross_margin = _safe_divide(
@@ -2286,6 +2310,13 @@ def _build_ai_commentary(
                 "Statement of Cash Flows",
                 f"Total investing cash flow is {total_investing:,.0f} {currency}.",
                 "Investing cash flow reflects capex and R&D capitalization.",
+            )
+        if cash_ops is not None and cash_investing is not None:
+            coverage = _safe_divide(float(cash_ops.sum()), abs(float(cash_investing.sum())))
+            _add_comment(
+                "Statement of Cash Flows",
+                f"Operating cash flow covers investing outflows at {_format_pct(coverage)}.",
+                "Coverage ratio = total operating cash flow / absolute investing cash flow.",
             )
 
     if cons_df is not None and not cons_df.empty:
