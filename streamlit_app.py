@@ -946,6 +946,18 @@ def _default_ramp_schedule() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _default_debt_schedule(first_year: int, n_years: int) -> pd.DataFrame:
+    years = list(range(int(first_year), int(first_year) + int(n_years)))
+    return pd.DataFrame(
+        {
+            "Year": years,
+            "Debt drawdowns": [0.0] * len(years),
+            "Debt repayments": [0.0] * len(years),
+            "Interest paid": [0.0] * len(years),
+        }
+    )
+
+
 def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(default)
 
@@ -2707,6 +2719,46 @@ def _apply_cash_flow_assumptions(
     return updated
 
 
+def _apply_debt_schedule(
+    cash_flow_df: Optional[pd.DataFrame],
+    debt_schedule: Optional[pd.DataFrame],
+) -> Optional[pd.DataFrame]:
+    if cash_flow_df is None or cash_flow_df.empty:
+        return cash_flow_df
+    if debt_schedule is None or debt_schedule.empty:
+        return cash_flow_df
+
+    updated = cash_flow_df.copy()
+    schedule = debt_schedule.copy()
+    if "Year" not in schedule.columns:
+        return cash_flow_df
+
+    schedule["Year"] = pd.to_numeric(schedule["Year"], errors="coerce").astype("Int64")
+    schedule = schedule.dropna(subset=["Year"]).set_index("Year")
+    schedule = schedule.reindex(updated.index).fillna(0.0)
+
+    for column in ["Debt drawdowns", "Debt repayments", "Interest paid"]:
+        if column in schedule.columns:
+            updated[column] = pd.to_numeric(schedule[column], errors="coerce").fillna(0.0)
+
+    updated["Net cash from financing"] = (
+        updated.get("Equity issuance", 0.0)
+        + updated.get("Debt drawdowns", 0.0)
+        - updated.get("Debt repayments", 0.0)
+        - updated.get("Interest paid", 0.0)
+    )
+    updated["Net change in cash"] = (
+        updated.get("Net cash from operations", 0.0)
+        + updated.get("Net cash from investing", 0.0)
+        + updated.get("Net cash from financing", 0.0)
+    )
+    if "Beginning cash balance" in updated.columns:
+        beginning_cash = updated["Beginning cash balance"].fillna(0.0)
+        updated["Ending cash balance"] = beginning_cash + updated["Net change in cash"].cumsum()
+
+    return updated
+
+
 def _build_chart_tables(
     valuation_result: Optional[ValuationResult],
     model_cfg: Optional[ModelConfig],
@@ -3956,6 +4008,10 @@ def _render_rag_assistant_page() -> None:
             cons = valuation_result.consolidated
             cons_df = cons.copy()
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
+        cash_flow_df = _apply_debt_schedule(
+            cash_flow_df,
+            st.session_state.get("debt_schedule_table"),
+        )
         cash_flow_df = _apply_cash_flow_assumptions(cash_flow_df, snapshot_state)
         bundle_payload = {
             "snapshot": snapshot_payload,
@@ -4183,6 +4239,39 @@ def main() -> None:
                 st.metric("Total sources", f"{sources_total:,.0f}")
             delta = sources_total - uses_total
             st.info(f"Funding gap (sources - uses): {delta:,.0f}")
+
+        with st.expander("Debt schedule inputs", expanded=False):
+            debt_table_changed = (
+                st.session_state.get("debt_schedule_first_year") != int(first_year)
+                or st.session_state.get("debt_schedule_n_years") != int(n_years)
+            )
+            if debt_table_changed or "debt_schedule_table" not in st.session_state:
+                st.session_state["debt_schedule_table"] = _default_debt_schedule(
+                    int(first_year),
+                    int(n_years),
+                )
+            st.session_state["debt_schedule_first_year"] = int(first_year)
+            st.session_state["debt_schedule_n_years"] = int(n_years)
+            debt_schedule_df = st.data_editor(
+                st.session_state["debt_schedule_table"],
+                hide_index=True,
+                num_rows="dynamic",
+                column_config={
+                    "Year": st.column_config.NumberColumn("Year", step=1),
+                    "Debt drawdowns": st.column_config.NumberColumn(
+                        "Debt drawdowns", step=1_000_000.0
+                    ),
+                    "Debt repayments": st.column_config.NumberColumn(
+                        "Debt repayments", step=1_000_000.0
+                    ),
+                    "Interest paid": st.column_config.NumberColumn(
+                        "Interest paid", step=100_000.0
+                    ),
+                },
+                key="debt_schedule_editor",
+            )
+            st.session_state["debt_schedule_table"] = debt_schedule_df
+            st.caption("Edit debt activity by year to feed the cash flow statement and debt schedule.")
             funding_gap = funding_required - uses_total
             st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
             if abs(funding_gap) > 1.0:
@@ -4667,6 +4756,10 @@ def main() -> None:
                 )
                 st.line_chart(cons_display)
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
+            cash_flow_df = _apply_debt_schedule(
+                cash_flow_df,
+                st.session_state.get("debt_schedule_table"),
+            )
             st.markdown("**Statement of Financial Performance**")
             st.dataframe(
                 perf_df.style.format({col: "{:.0f}" for col in perf_df.columns})
