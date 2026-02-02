@@ -958,6 +958,19 @@ def _default_debt_schedule(first_year: int, n_years: int) -> pd.DataFrame:
     )
 
 
+def _blank_debt_schedule_row(df: pd.DataFrame, first_year: int, n_years: int) -> Dict:
+    if df.empty or "Year" not in df.columns:
+        year = int(first_year)
+    else:
+        year = int(pd.to_numeric(df["Year"], errors="coerce").max() or first_year) + 1
+    return {
+        "Year": year,
+        "Debt drawdowns": 0.0,
+        "Debt repayments": 0.0,
+        "Interest paid": 0.0,
+    }
+
+
 def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(default)
 
@@ -4252,10 +4265,16 @@ def main() -> None:
                 )
             st.session_state["debt_schedule_first_year"] = int(first_year)
             st.session_state["debt_schedule_n_years"] = int(n_years)
-            debt_schedule_df = st.data_editor(
-                st.session_state["debt_schedule_table"],
-                hide_index=True,
-                num_rows="dynamic",
+            debt_schedule_df = _render_product_assumption_table(
+                session_key="debt_schedule_table",
+                default_factory=lambda: _default_debt_schedule(int(first_year), int(n_years)),
+                blank_row_factory=lambda df: _blank_debt_schedule_row(
+                    df,
+                    int(first_year),
+                    int(n_years),
+                ),
+                id_column=None,
+                name_column="Year",
                 column_config={
                     "Year": st.column_config.NumberColumn("Year", step=1),
                     "Debt drawdowns": st.column_config.NumberColumn(
@@ -4268,7 +4287,6 @@ def main() -> None:
                         "Interest paid", step=100_000.0
                     ),
                 },
-                key="debt_schedule_editor",
             )
             st.session_state["debt_schedule_table"] = debt_schedule_df
             st.caption("Edit debt activity by year to feed the cash flow statement and debt schedule.")
