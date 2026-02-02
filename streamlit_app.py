@@ -202,6 +202,7 @@ def _blank_use_row(df: pd.DataFrame) -> Dict:
 def _default_sources_table() -> pd.DataFrame:
     data = [
         {"Item": "Existing cash", "Amount": 40_000_000},
+        {"Item": "Debt financing", "Amount": 0.0},
         {"Item": "New equity", "Amount": 200_000_000},
     ]
     return pd.DataFrame(data)
@@ -1075,10 +1076,63 @@ def _build_portfolio(product_df: pd.DataFrame, model_cfg: ModelConfig) -> Portfo
     return Portfolio(products, model_cfg)
 
 
+def _build_debt_schedule(model_cfg: ModelConfig, years: np.ndarray) -> pd.DataFrame:
+    schedule = pd.DataFrame(
+        {
+            "Opening balance": np.zeros(len(years)),
+            "Draw": np.zeros(len(years)),
+            "Repayment": np.zeros(len(years)),
+            "Interest accrual": np.zeros(len(years)),
+            "Closing balance": np.zeros(len(years)),
+        },
+        index=years,
+    )
+    if (
+        not model_cfg.debt_enabled
+        or model_cfg.debt_principal <= 0
+        or model_cfg.debt_term_years <= 0
+        or len(years) == 0
+    ):
+        return schedule
+
+    draw_year = int(model_cfg.debt_draw_year)
+    draw_year = min(max(draw_year, int(years[0])), int(years[-1]))
+    term_years = max(int(model_cfg.debt_term_years), 1)
+    interest_only_years = max(int(model_cfg.debt_interest_only_years), 0)
+    amort_years = max(term_years - interest_only_years, 1)
+    amort_start_year = draw_year + interest_only_years
+    term_end_year = draw_year + term_years - 1
+    annual_amort = model_cfg.debt_principal / amort_years
+
+    closing_balance = 0.0
+    for year in years:
+        opening_balance = closing_balance
+        draw = model_cfg.debt_principal if year == draw_year else 0.0
+        balance_before_repay = opening_balance + draw
+        interest = balance_before_repay * float(model_cfg.debt_interest_rate)
+        if year < amort_start_year or year > term_end_year:
+            repayment = 0.0
+        else:
+            repayment = min(balance_before_repay, annual_amort)
+        closing_balance = balance_before_repay - repayment
+        if closing_balance < 0:
+            closing_balance = 0.0
+
+        schedule.loc[year, "Opening balance"] = opening_balance
+        schedule.loc[year, "Draw"] = draw
+        schedule.loc[year, "Repayment"] = repayment
+        schedule.loc[year, "Interest accrual"] = interest
+        schedule.loc[year, "Closing balance"] = closing_balance
+
+    return schedule
+
+
 def _compute_financial_statements(
     cons: pd.DataFrame, model_cfg: ModelConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     years = cons.index
+    debt_schedule = _build_debt_schedule(model_cfg, years)
+    debt_outstanding = debt_schedule["Closing balance"]
     da_positive = -cons["da"]
 
     perf_df = pd.DataFrame(
@@ -1123,7 +1177,8 @@ def _compute_financial_statements(
         retained_val += nopat
 
         total_assets = intangible_val + ppe_val + wc_val
-        paid_in_val = max(0.0, total_assets - retained_val)
+        debt_balance = float(debt_outstanding.loc[year]) if year in debt_outstanding.index else 0.0
+        paid_in_val = max(0.0, total_assets - debt_balance - retained_val)
 
         intangible.append(intangible_val)
         ppe.append(ppe_val)
@@ -1149,9 +1204,9 @@ def _compute_financial_statements(
     rd_cap_add = cons["rd_cap_add"]
     cash_from_investing = capex_cash + rd_cap_add
     equity_issuance = pd.Series(0.0, index=years)
-    debt_draw = pd.Series(0.0, index=years)
-    debt_repay = pd.Series(0.0, index=years)
-    interest_paid = pd.Series(0.0, index=years)
+    debt_draw = debt_schedule["Draw"]
+    debt_repay = debt_schedule["Repayment"]
+    interest_paid = debt_schedule["Interest accrual"]
     cash_from_financing = equity_issuance + debt_draw - debt_repay - interest_paid
     net_cash = cash_from_ops + cash_from_investing + cash_from_financing
     starting_cash = pd.Series(0.0, index=years)
@@ -1184,6 +1239,17 @@ def _compute_financial_statements(
             "Ending cash balance": ending_cash,
         }
     )
+
+    position_df["Cash"] = ending_cash
+    position_df["Debt outstanding"] = debt_outstanding
+    position_df["Total liabilities"] = debt_outstanding
+    position_df["Total assets"] = position_df["Total assets"] + position_df["Cash"]
+    position_df["Paid-in capital"] = (
+        position_df["Total assets"]
+        - position_df["Total liabilities"]
+        - position_df["Retained earnings"]
+    ).clip(lower=0.0)
+    position_df["Total equity"] = position_df["Retained earnings"] + position_df["Paid-in capital"]
 
     return perf_df, position_df, cash_flow_df
 
@@ -2685,6 +2751,9 @@ def _apply_cash_flow_assumptions(
     debt_repay = float(snapshot_summary.get("debt_repay") or 0.0)
     interest_paid = float(snapshot_summary.get("interest_paid") or 0.0)
 
+    if not any([beginning_cash, equity_issuance, debt_draw, debt_repay, interest_paid]):
+        return updated
+
     updated["Equity issuance"] = pd.Series(equity_issuance, index=years)
     updated["Debt drawdowns"] = pd.Series(debt_draw, index=years)
     updated["Debt repayments"] = pd.Series(debt_repay, index=years)
@@ -4110,6 +4179,119 @@ def main() -> None:
                 vaccine_df["Implied revenue"],
             )
 
+        with st.expander("Debt schedule"):
+            debt_enabled = st.checkbox(
+                "Enable debt financing",
+                value=bool(st.session_state.get("debt_enabled", False)),
+            )
+            debt_cols = st.columns(3)
+            debt_principal = debt_cols[0].number_input(
+                "Debt principal",
+                min_value=0.0,
+                value=float(st.session_state.get("debt_principal") or 0.0),
+                step=1_000_000.0,
+            )
+            debt_interest_rate = debt_cols[1].number_input(
+                "Interest rate",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(st.session_state.get("debt_interest_rate") or 0.06),
+                step=0.005,
+                format="%0.3f",
+            )
+            debt_term_years = debt_cols[2].number_input(
+                "Term (years)",
+                min_value=1,
+                value=int(st.session_state.get("debt_term_years") or 5),
+                step=1,
+            )
+            debt_cols2 = st.columns(3)
+            debt_draw_year = debt_cols2[0].number_input(
+                "Draw year",
+                min_value=int(first_year),
+                max_value=int(first_year + n_years - 1),
+                value=int(st.session_state.get("debt_draw_year") or int(first_year)),
+                step=1,
+            )
+            debt_interest_only_years = debt_cols2[1].number_input(
+                "Interest-only years",
+                min_value=0,
+                value=int(st.session_state.get("debt_interest_only_years") or 0),
+                step=1,
+            )
+            debt_covenant_min_cash = debt_cols2[2].number_input(
+                "Minimum cash covenant",
+                min_value=0.0,
+                value=float(st.session_state.get("debt_covenant_min_cash") or 0.0),
+                step=1_000_000.0,
+            )
+            debt_cols3 = st.columns(2)
+            debt_covenant_max_debt_to_ebitda = debt_cols3[0].number_input(
+                "Max debt/EBITDA covenant",
+                min_value=0.0,
+                value=float(st.session_state.get("debt_covenant_max_debt_to_ebitda") or 0.0),
+                step=0.25,
+            )
+            st.caption("Debt schedule uses straight-line amortization after any interest-only period.")
+
+            st.session_state["debt_enabled"] = debt_enabled
+            st.session_state["debt_principal"] = debt_principal
+            st.session_state["debt_interest_rate"] = debt_interest_rate
+            st.session_state["debt_term_years"] = debt_term_years
+            st.session_state["debt_draw_year"] = debt_draw_year
+            st.session_state["debt_interest_only_years"] = debt_interest_only_years
+            st.session_state["debt_covenant_min_cash"] = debt_covenant_min_cash
+            st.session_state["debt_covenant_max_debt_to_ebitda"] = debt_covenant_max_debt_to_ebitda
+
+            debt_cfg = ModelConfig(
+                first_year=int(first_year),
+                n_years=int(n_years),
+                debt_enabled=debt_enabled,
+                debt_principal=float(debt_principal),
+                debt_draw_year=int(debt_draw_year),
+                debt_term_years=int(debt_term_years),
+                debt_interest_rate=float(debt_interest_rate),
+                debt_interest_only_years=int(debt_interest_only_years),
+                debt_covenant_min_cash=float(debt_covenant_min_cash),
+                debt_covenant_max_debt_to_ebitda=float(debt_covenant_max_debt_to_ebitda),
+            )
+            debt_schedule = _build_debt_schedule(debt_cfg, debt_cfg.years)
+            st.session_state["debt_schedule"] = debt_schedule
+            st.session_state["debt_financing_total"] = float(
+                pd.to_numeric(debt_schedule["Draw"], errors="coerce").fillna(0.0).sum()
+            )
+            st.dataframe(
+                debt_schedule.style.format(
+                    {
+                        "Opening balance": "{:,.0f}",
+                        "Draw": "{:,.0f}",
+                        "Repayment": "{:,.0f}",
+                        "Interest accrual": "{:,.0f}",
+                        "Closing balance": "{:,.0f}",
+                    }
+                )
+            )
+            valuation_result = st.session_state.get("valuation_result")
+            if debt_enabled and valuation_result is not None:
+                _, _, cash_flow_df = _compute_financial_statements(
+                    valuation_result.consolidated,
+                    debt_cfg,
+                )
+                cash_balance = cash_flow_df.get("Ending cash balance", pd.Series(dtype=float))
+                ebitda = valuation_result.consolidated.get("ebitda")
+                if ebitda is not None:
+                    debt_to_ebitda = debt_schedule["Closing balance"].div(
+                        ebitda.replace(0, np.nan)
+                    )
+                    if debt_covenant_max_debt_to_ebitda > 0 and debt_to_ebitda.max() > debt_covenant_max_debt_to_ebitda:
+                        st.warning("Debt/EBITDA covenant breached in the projection.")
+                if (
+                    debt_covenant_min_cash > 0
+                    and not cash_balance.empty
+                    and cash_balance.min() < debt_covenant_min_cash
+                ):
+                    st.warning("Minimum cash covenant breached in the projection.")
+
         with st.expander("Uses and sources of funds"):
             funding_required = float(st.session_state.get("funding_required", 250_000_000.0))
             planned_new_equity = float(st.session_state.get("planned_new_equity", 200_000_000.0))
@@ -4144,6 +4326,18 @@ def main() -> None:
                         "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
                     },
                 )
+                debt_financing_total = float(st.session_state.get("debt_financing_total") or 0.0)
+                if {"Item", "Amount"}.issubset(sources_df.columns):
+                    debt_mask = sources_df["Item"].astype(str).str.strip().str.lower() == "debt financing"
+                    if debt_mask.any():
+                        sources_df.loc[debt_mask, "Amount"] = debt_financing_total
+                        st.session_state["sources_table"] = sources_df
+                    elif debt_financing_total > 0:
+                        sources_df.loc[len(sources_df)] = {
+                            "Item": "Debt financing",
+                            "Amount": debt_financing_total,
+                        }
+                        st.session_state["sources_table"] = sources_df
                 sources_other_total = 0.0
                 if {"Item", "Amount"}.issubset(sources_df.columns):
                     source_items = sources_df["Item"].astype(str).str.strip().str.lower()
@@ -4301,6 +4495,16 @@ def main() -> None:
             working_capital_pct_sales=float(wc_pct),
             ev_ebitda_multiple=float(ev_multiple),
             sales_ramp_factors=ramp,
+            debt_enabled=bool(st.session_state.get("debt_enabled", False)),
+            debt_principal=float(st.session_state.get("debt_principal") or 0.0),
+            debt_draw_year=int(st.session_state.get("debt_draw_year") or int(first_year)),
+            debt_term_years=int(st.session_state.get("debt_term_years") or 0),
+            debt_interest_rate=float(st.session_state.get("debt_interest_rate") or 0.0),
+            debt_interest_only_years=int(st.session_state.get("debt_interest_only_years") or 0),
+            debt_covenant_min_cash=float(st.session_state.get("debt_covenant_min_cash") or 0.0),
+            debt_covenant_max_debt_to_ebitda=float(
+                st.session_state.get("debt_covenant_max_debt_to_ebitda") or 0.0
+            ),
         )
 
         st.subheader("Product assumptions")
