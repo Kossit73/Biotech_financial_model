@@ -5290,7 +5290,15 @@ def main() -> None:
             st.info("Configure the model and run a valuation before using VC analysis.")
         else:
             vc_col1, vc_col2, vc_col3, vc_col4 = st.columns(4)
-            exit_year = vc_col1.number_input("Exit year", value=model_cfg.first_year + 5)
+            cons_index = valuation_result.consolidated.index
+            exit_year_min = int(cons_index.min())
+            exit_year_max = int(cons_index.max())
+            exit_year = vc_col1.number_input(
+                "Exit year",
+                min_value=exit_year_min,
+                max_value=exit_year_max,
+                value=min(exit_year_max, model_cfg.first_year + 5),
+            )
             target_irr = vc_col2.slider("Target IRR", 0.05, 0.6, 0.3)
             ownership = vc_col3.slider("Investor ownership at exit", 0.05, 0.9, 0.25)
             new_money = vc_col4.number_input(
@@ -5305,17 +5313,21 @@ def main() -> None:
                 new_money=float(new_money),
             )
             vc_valuator = VCValuator(valuation_result)
-            vc_output = vc_valuator.vc_method(vc_inputs, exit_multiple=float(exit_multiple))
-            vc_df = pd.DataFrame(
-                {
-                    "Metric": list(vc_output.keys()),
-                    "Value": [
-                        f"{value:,.0f}" if "irr" not in key else f"{value:.2%}"
-                        for key, value in vc_output.items()
-                    ],
-                }
-            )
-            st.table(vc_df)
+            try:
+                vc_output = vc_valuator.vc_method(vc_inputs, exit_multiple=float(exit_multiple))
+            except ValueError as exc:
+                st.error(f"VC method failed: {exc}")
+            else:
+                vc_df = pd.DataFrame(
+                    {
+                        "Metric": list(vc_output.keys()),
+                        "Value": [
+                            f"{value:,.0f}" if "irr" not in key else f"{value:.2%}"
+                            for key, value in vc_output.items()
+                        ],
+                    }
+                )
+                st.table(vc_df)
 
     with rag_tab:
         _render_rag_assistant_page()
