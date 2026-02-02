@@ -4400,6 +4400,20 @@ def main() -> None:
                 ]
             )
             st.dataframe(reconciliation.style.format({"Amount": "{:,.0f}"}))
+            if valuation_result is not None:
+                cons = valuation_result.consolidated
+                burn_schedule = pd.DataFrame(
+                    {"Burn (FCFF < 0)": (-cons["fcff_after_wc"].clip(upper=0)).astype(float)},
+                    index=cons.index,
+                )
+                wc_schedule = pd.DataFrame(
+                    {"Working capital draw": (-cons["delta_wc"].clip(upper=0)).astype(float)},
+                    index=cons.index,
+                )
+                st.markdown("**Burn schedule**")
+                st.dataframe(burn_schedule.style.format("{:,.0f}"))
+                st.markdown("**Working capital schedule**")
+                st.dataframe(wc_schedule.style.format("{:,.0f}"))
 
         with st.expander("Risk-adjusted DCF valuation method - assumptions"):
             col_a, col_b, col_c = st.columns(3)
