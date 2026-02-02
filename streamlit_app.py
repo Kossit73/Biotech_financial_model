@@ -5198,7 +5198,16 @@ def main() -> None:
                 horizon_max = int(max(5, horizon_years))
                 horizon_default = int(min(10, horizon_max))
                 horizon_default = min(max(5, horizon_default), horizon_max)
-                horizon = st.slider("Forecast steps", 5, horizon_max, horizon_default)
+                if horizon_max <= 5:
+                    horizon = st.number_input(
+                        "Forecast steps",
+                        min_value=5,
+                        max_value=5,
+                        value=5,
+                        step=1,
+                    )
+                else:
+                    horizon = st.slider("Forecast steps", 5, horizon_max, horizon_default)
                 if st.button("Run time-series model"):
                     fe = ForecastEngine(model_cfg)
                     period_index = pd.period_range(str(model_cfg.first_year), periods=len(cons), freq="Y")
