@@ -4179,7 +4179,7 @@ def main() -> None:
                 vaccine_df["Implied revenue"],
             )
 
-        with st.expander("Debt schedule"):
+        with st.expander("Debt schedule", expanded=True):
             debt_enabled = st.checkbox(
                 "Enable debt financing",
                 value=bool(st.session_state.get("debt_enabled", False)),
