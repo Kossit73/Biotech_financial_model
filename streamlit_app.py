@@ -3168,6 +3168,16 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
                     for run in paragraph.runs:
                         run.font.size = shared.Pt(7)
 
+    def _add_docx_picture(document, image) -> None:
+        if image is None:
+            return
+        if hasattr(image, "seek"):
+            try:
+                image.seek(0)
+            except (AttributeError, io.UnsupportedOperation):
+                pass
+        document.add_picture(image)
+
     docx_module = importlib.import_module("docx")
     shared = importlib.import_module("docx.shared")
     Document = docx_module.Document
@@ -3309,32 +3319,32 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     if payload.get("chart_images"):
         document.add_heading("Financial Statements Charts", level=2)
         if payload["chart_images"].get("financial_statements_chart"):
-            document.add_picture(payload["chart_images"]["financial_statements_chart"])
+            _add_docx_picture(document, payload["chart_images"]["financial_statements_chart"])
         document.add_heading("Dashboard Charts", level=2)
         if payload["chart_images"].get("dashboard_chart"):
-            document.add_picture(payload["chart_images"]["dashboard_chart"])
+            _add_docx_picture(document, payload["chart_images"]["dashboard_chart"])
         if payload["chart_images"].get("dashboard_fcff_bar"):
-            document.add_picture(payload["chart_images"]["dashboard_fcff_bar"])
+            _add_docx_picture(document, payload["chart_images"]["dashboard_fcff_bar"])
         document.add_heading("Advanced Analytics Charts", level=2)
         if payload["chart_images"].get("analytics_decomposition"):
-            document.add_picture(payload["chart_images"]["analytics_decomposition"])
+            _add_docx_picture(document, payload["chart_images"]["analytics_decomposition"])
         if payload["chart_images"].get("analytics_segmentation"):
-            document.add_picture(payload["chart_images"]["analytics_segmentation"])
+            _add_docx_picture(document, payload["chart_images"]["analytics_segmentation"])
         if payload["chart_images"].get("analytics_tornado"):
-            document.add_picture(payload["chart_images"]["analytics_tornado"])
+            _add_docx_picture(document, payload["chart_images"]["analytics_tornado"])
         if payload["chart_images"].get("spider_diagnostics"):
-            document.add_picture(payload["chart_images"]["spider_diagnostics"])
+            _add_docx_picture(document, payload["chart_images"]["spider_diagnostics"])
         if payload["chart_images"].get("margin_intensity_analysis"):
-            document.add_picture(payload["chart_images"]["margin_intensity_analysis"])
+            _add_docx_picture(document, payload["chart_images"]["margin_intensity_analysis"])
         if payload["chart_images"].get("vaccine_break_even_chart"):
-            document.add_picture(payload["chart_images"]["vaccine_break_even_chart"])
+            _add_docx_picture(document, payload["chart_images"]["vaccine_break_even_chart"])
         if payload["chart_images"].get("monte_carlo_results"):
-            document.add_picture(payload["chart_images"]["monte_carlo_results"])
+            _add_docx_picture(document, payload["chart_images"]["monte_carlo_results"])
         document.add_heading("Scenario Analysis Charts", level=2)
         if payload["chart_images"].get("scenario_results"):
-            document.add_picture(payload["chart_images"]["scenario_results"])
+            _add_docx_picture(document, payload["chart_images"]["scenario_results"])
         if payload["chart_images"].get("scenario_custom"):
-            document.add_picture(payload["chart_images"]["scenario_custom"])
+            _add_docx_picture(document, payload["chart_images"]["scenario_custom"])
     document.save(docx_buffer)
     docx_buffer.seek(0)
     return docx_buffer
