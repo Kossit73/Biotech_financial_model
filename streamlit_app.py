@@ -952,8 +952,6 @@ def _default_debt_schedule(first_year: int, n_years: int) -> pd.DataFrame:
         {
             "Year": years,
             "Debt drawdowns": [0.0] * len(years),
-            "Debt repayments": [0.0] * len(years),
-            "Interest paid": [0.0] * len(years),
         }
     )
 
@@ -966,8 +964,6 @@ def _blank_debt_schedule_row(df: pd.DataFrame, first_year: int, n_years: int) ->
     return {
         "Year": year,
         "Debt drawdowns": 0.0,
-        "Debt repayments": 0.0,
-        "Interest paid": 0.0,
     }
 
 
@@ -2735,6 +2731,7 @@ def _apply_cash_flow_assumptions(
 def _apply_debt_schedule(
     cash_flow_df: Optional[pd.DataFrame],
     debt_schedule: Optional[pd.DataFrame],
+    interest_rate: float,
 ) -> Optional[pd.DataFrame]:
     if cash_flow_df is None or cash_flow_df.empty:
         return cash_flow_df
@@ -2750,9 +2747,31 @@ def _apply_debt_schedule(
     schedule = schedule.dropna(subset=["Year"]).set_index("Year")
     schedule = schedule.reindex(updated.index).fillna(0.0)
 
-    for column in ["Debt drawdowns", "Debt repayments", "Interest paid"]:
-        if column in schedule.columns:
-            updated[column] = pd.to_numeric(schedule[column], errors="coerce").fillna(0.0)
+    drawdowns = pd.to_numeric(schedule.get("Debt drawdowns", 0.0), errors="coerce").fillna(0.0)
+    begin_balances = []
+    principal_repayments = []
+    interest_charges = []
+    end_balances = []
+    balance = 0.0
+    years = list(updated.index)
+    total_years = len(years)
+    for idx, year in enumerate(years):
+        draw = float(drawdowns.loc[year]) if year in drawdowns.index else 0.0
+        remaining_periods = max(total_years - idx, 1)
+        principal = (balance + draw) / remaining_periods
+        interest = balance * float(interest_rate)
+        end_balance = balance + draw - principal
+
+        begin_balances.append(balance)
+        principal_repayments.append(principal)
+        interest_charges.append(interest)
+        end_balances.append(end_balance)
+
+        balance = end_balance
+
+    updated["Debt drawdowns"] = pd.Series(drawdowns.values, index=updated.index)
+    updated["Debt repayments"] = pd.Series(principal_repayments, index=updated.index)
+    updated["Interest paid"] = pd.Series(interest_charges, index=updated.index)
 
     updated["Net cash from financing"] = (
         updated.get("Equity issuance", 0.0)
@@ -4024,6 +4043,7 @@ def _render_rag_assistant_page() -> None:
         cash_flow_df = _apply_debt_schedule(
             cash_flow_df,
             st.session_state.get("debt_schedule_table"),
+            float(st.session_state.get("debt_interest_rate", 0.0)),
         )
         cash_flow_df = _apply_cash_flow_assumptions(cash_flow_df, snapshot_state)
         bundle_payload = {
@@ -4265,6 +4285,15 @@ def main() -> None:
                 )
             st.session_state["debt_schedule_first_year"] = int(first_year)
             st.session_state["debt_schedule_n_years"] = int(n_years)
+            debt_interest_rate = st.number_input(
+                "Debt interest rate",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(st.session_state.get("debt_interest_rate", 0.08)),
+                step=0.005,
+                format="%.3f",
+                key="debt_interest_rate",
+            )
             debt_schedule_df = _render_product_assumption_table(
                 session_key="debt_schedule_table",
                 default_factory=lambda: _default_debt_schedule(int(first_year), int(n_years)),
@@ -4280,16 +4309,10 @@ def main() -> None:
                     "Debt drawdowns": st.column_config.NumberColumn(
                         "Debt drawdowns", step=1_000_000.0
                     ),
-                    "Debt repayments": st.column_config.NumberColumn(
-                        "Debt repayments", step=1_000_000.0
-                    ),
-                    "Interest paid": st.column_config.NumberColumn(
-                        "Interest paid", step=100_000.0
-                    ),
                 },
             )
             st.session_state["debt_schedule_table"] = debt_schedule_df
-            st.caption("Edit debt activity by year to feed the cash flow statement and debt schedule.")
+            st.caption("Edit debt drawdowns; repayments and interest are calculated from the rate.")
             funding_gap = funding_required - uses_total
             st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
             if abs(funding_gap) > 1.0:
@@ -4777,6 +4800,7 @@ def main() -> None:
             cash_flow_df = _apply_debt_schedule(
                 cash_flow_df,
                 st.session_state.get("debt_schedule_table"),
+                float(st.session_state.get("debt_interest_rate", 0.0)),
             )
             st.markdown("**Statement of Financial Performance**")
             st.dataframe(
