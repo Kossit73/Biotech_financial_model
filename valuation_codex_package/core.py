@@ -60,6 +60,9 @@ class ProductConfig:
 
     cogs_patent: float = 0.30
     cogs_post: float = 0.50
+    labor_pct: float = 0.12
+    overhead_pct: float = 0.08
+    material_pct: float = 0.10
     sales_marketing_pct: float = 0.15
     gna_pct: float = 0.10
     royalty_pct: float = 0.0
@@ -171,6 +174,9 @@ class Product:
             cogs_vals.append(-pct * rev)
         df["cogs"] = cogs_vals
 
+        df["labor"] = -cfg.labor_pct * df["revenue"]
+        df["overhead"] = -cfg.overhead_pct * df["revenue"]
+        df["materials"] = -cfg.material_pct * df["revenue"]
         df["sales_marketing"] = -cfg.sales_marketing_pct * df["revenue"]
         df["gna"] = -cfg.gna_pct * df["revenue"]
         df["royalty"] = -cfg.royalty_pct * df["revenue"]
@@ -205,6 +211,9 @@ class Product:
         df["ebit"] = (
             df["revenue"]
             + df["cogs"]
+            + df["labor"]
+            + df["overhead"]
+            + df["materials"]
             + df["sales_marketing"]
             + df["gna"]
             + df["royalty"]
@@ -242,6 +251,9 @@ class Portfolio:
         base_cols = [
             "revenue",
             "cogs",
+            "labor",
+            "overhead",
+            "materials",
             "sales_marketing",
             "gna",
             "royalty",
@@ -427,6 +439,9 @@ class ScenarioEngine:
             cfg_dict["post_patent_revenue_target"] *= scenario.revenue_multiplier
             cfg_dict["cogs_patent"] *= scenario.cost_multiplier
             cfg_dict["cogs_post"] *= scenario.cost_multiplier
+            cfg_dict["labor_pct"] *= scenario.cost_multiplier
+            cfg_dict["overhead_pct"] *= scenario.cost_multiplier
+            cfg_dict["material_pct"] *= scenario.cost_multiplier
             cfg_dict["sales_marketing_pct"] *= scenario.cost_multiplier
             cfg_dict["gna_pct"] *= scenario.cost_multiplier
             cfg_dict["royalty_pct"] *= scenario.cost_multiplier
@@ -524,6 +539,9 @@ class MonteCarloEngine:
                 cfg_dict["post_patent_revenue_target"] *= rev_scale
                 cfg_dict["cogs_patent"] *= cogs_scale
                 cfg_dict["cogs_post"] *= cogs_scale
+                cfg_dict["labor_pct"] *= cogs_scale
+                cfg_dict["overhead_pct"] *= cogs_scale
+                cfg_dict["material_pct"] *= cogs_scale
                 new_cfg = ProductConfig(**cfg_dict)
                 new_products.append(Product(new_cfg, model_cfg))
 

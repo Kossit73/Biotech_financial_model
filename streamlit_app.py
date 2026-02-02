@@ -89,6 +89,9 @@ def _default_products() -> pd.DataFrame:
             "market_growth_post": 0.0,
             "cogs_patent": 0.32,
             "cogs_post": 0.5,
+            "labor_pct": 0.14,
+            "overhead_pct": 0.09,
+            "material_pct": 0.11,
             "sales_marketing_pct": 0.18,
             "gna_pct": 0.12,
             "rd_remaining_pre_launch": 180_000_000,
@@ -109,6 +112,9 @@ def _default_products() -> pd.DataFrame:
             "market_growth_post": 0.01,
             "cogs_patent": 0.28,
             "cogs_post": 0.45,
+            "labor_pct": 0.12,
+            "overhead_pct": 0.08,
+            "material_pct": 0.1,
             "sales_marketing_pct": 0.16,
             "gna_pct": 0.1,
             "rd_remaining_pre_launch": 90_000_000,
@@ -132,6 +138,9 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
         post_patent_revenue_target=25_000_000,
         cogs_patent=0.35,
         cogs_post=0.5,
+        labor_pct=0.12,
+        overhead_pct=0.08,
+        material_pct=0.1,
         sales_marketing_pct=0.15,
         gna_pct=0.1,
         rd_remaining_pre_launch=25_000_000,
@@ -947,6 +956,27 @@ def _default_ramp_schedule() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _default_debt_schedule(first_year: int, n_years: int) -> pd.DataFrame:
+    years = list(range(int(first_year), int(first_year) + int(n_years)))
+    return pd.DataFrame(
+        {
+            "Year": years,
+            "Debt drawdowns": [0.0] * len(years),
+        }
+    )
+
+
+def _blank_debt_schedule_row(df: pd.DataFrame, first_year: int, n_years: int) -> Dict:
+    if df.empty or "Year" not in df.columns:
+        year = int(first_year)
+    else:
+        year = int(pd.to_numeric(df["Year"], errors="coerce").max() or first_year) + 1
+    return {
+        "Year": year,
+        "Debt drawdowns": 0.0,
+    }
+
+
 def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(default)
 
@@ -1026,6 +1056,9 @@ def _validate_product_df(df: pd.DataFrame) -> pd.DataFrame:
     percent_cols = [
         "cogs_patent",
         "cogs_post",
+        "labor_pct",
+        "overhead_pct",
+        "material_pct",
         "sales_marketing_pct",
         "gna_pct",
         "royalty_pct",
@@ -1139,6 +1172,9 @@ def _compute_financial_statements(
         {
             "Revenue": cons["revenue"],
             "COGS": cons["cogs"],
+            "Materials": cons["materials"],
+            "Labor": cons["labor"],
+            "Overhead": cons["overhead"],
             "Sales & Marketing": cons["sales_marketing"],
             "G&A": cons["gna"],
             "Royalty": cons["royalty"],
@@ -1219,6 +1255,9 @@ def _compute_financial_statements(
     cash_flow_df = pd.DataFrame(
         {
             "EBIT": cons["ebit"],
+            "Materials": cons["materials"],
+            "Labor": cons["labor"],
+            "Overhead": cons["overhead"],
             "Cash taxes paid": cons["tax"],
             "Depreciation & amortization": da_positive,
             "Receivables change": receivables_change,
@@ -2776,6 +2815,71 @@ def _apply_cash_flow_assumptions(
     return updated
 
 
+def _apply_debt_schedule(
+    cash_flow_df: Optional[pd.DataFrame],
+    debt_schedule: Optional[pd.DataFrame],
+    interest_rate: float,
+) -> Optional[pd.DataFrame]:
+    if cash_flow_df is None or cash_flow_df.empty:
+        return cash_flow_df
+    if debt_schedule is None or debt_schedule.empty:
+        return cash_flow_df
+
+    updated = cash_flow_df.copy()
+    schedule = debt_schedule.copy()
+    if "Year" not in schedule.columns:
+        return cash_flow_df
+
+    schedule["Year"] = pd.to_numeric(schedule["Year"], errors="coerce").astype("Int64")
+    schedule = schedule.dropna(subset=["Year"]).set_index("Year")
+    if schedule.index.has_duplicates:
+        schedule = schedule.groupby(level=0).sum()
+    schedule = schedule.reindex(updated.index).fillna(0.0)
+
+    drawdowns = pd.to_numeric(schedule.get("Debt drawdowns", 0.0), errors="coerce").fillna(0.0)
+    begin_balances = []
+    principal_repayments = []
+    interest_charges = []
+    end_balances = []
+    balance = 0.0
+    years = list(updated.index)
+    total_years = len(years)
+    for idx, year in enumerate(years):
+        draw = float(drawdowns.loc[year]) if year in drawdowns.index else 0.0
+        remaining_periods = max(total_years - idx, 1)
+        principal = (balance + draw) / remaining_periods
+        interest = balance * float(interest_rate)
+        end_balance = balance + draw - principal
+
+        begin_balances.append(balance)
+        principal_repayments.append(principal)
+        interest_charges.append(interest)
+        end_balances.append(end_balance)
+
+        balance = end_balance
+
+    updated["Debt drawdowns"] = pd.Series(drawdowns.values, index=updated.index)
+    updated["Debt repayments"] = pd.Series(principal_repayments, index=updated.index)
+    updated["Interest paid"] = pd.Series(interest_charges, index=updated.index)
+
+    updated["Net cash from financing"] = (
+        updated.get("Equity issuance", 0.0)
+        + updated.get("Debt drawdowns", 0.0)
+        - updated.get("Debt repayments", 0.0)
+        - updated.get("Interest paid", 0.0)
+    )
+    updated["Net change in cash"] = (
+        updated.get("Net cash from operations", 0.0)
+        + updated.get("Net cash from investing", 0.0)
+        + updated.get("Net cash from financing", 0.0)
+    )
+    if "Beginning cash balance" in updated.columns:
+        beginning_cash = updated["Beginning cash balance"].fillna(0.0)
+        updated["Ending cash balance"] = beginning_cash + updated["Net change in cash"].cumsum()
+
+    return updated
+
+
 def _build_chart_tables(
     valuation_result: Optional[ValuationResult],
     model_cfg: Optional[ModelConfig],
@@ -4035,6 +4139,11 @@ def _render_rag_assistant_page() -> None:
             cons = valuation_result.consolidated
             cons_df = cons.copy()
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
+        cash_flow_df = _apply_debt_schedule(
+            cash_flow_df,
+            st.session_state.get("debt_schedule_table"),
+            float(st.session_state.get("debt_interest_rate", 0.0)),
+        )
         cash_flow_df = _apply_cash_flow_assumptions(cash_flow_df, snapshot_state)
         bundle_payload = {
             "snapshot": snapshot_payload,
@@ -4387,6 +4496,47 @@ def main() -> None:
                 st.metric("Total sources", f"{sources_total:,.0f}")
             delta = sources_total - uses_total
             st.info(f"Funding gap (sources - uses): {delta:,.0f}")
+
+        with st.expander("Debt schedule inputs", expanded=False):
+            debt_table_changed = (
+                st.session_state.get("debt_schedule_first_year") != int(first_year)
+                or st.session_state.get("debt_schedule_n_years") != int(n_years)
+            )
+            if debt_table_changed or "debt_schedule_table" not in st.session_state:
+                st.session_state["debt_schedule_table"] = _default_debt_schedule(
+                    int(first_year),
+                    int(n_years),
+                )
+            st.session_state["debt_schedule_first_year"] = int(first_year)
+            st.session_state["debt_schedule_n_years"] = int(n_years)
+            debt_interest_rate = st.number_input(
+                "Debt interest rate",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(st.session_state.get("debt_interest_rate", 0.08)),
+                step=0.005,
+                format="%.3f",
+                key="debt_interest_rate",
+            )
+            debt_schedule_df = _render_product_assumption_table(
+                session_key="debt_schedule_table",
+                default_factory=lambda: _default_debt_schedule(int(first_year), int(n_years)),
+                blank_row_factory=lambda df: _blank_debt_schedule_row(
+                    df,
+                    int(first_year),
+                    int(n_years),
+                ),
+                id_column=None,
+                name_column="Year",
+                column_config={
+                    "Year": st.column_config.NumberColumn("Year", step=1),
+                    "Debt drawdowns": st.column_config.NumberColumn(
+                        "Debt drawdowns", step=1_000_000.0
+                    ),
+                },
+            )
+            st.session_state["debt_schedule_table"] = debt_schedule_df
+            st.caption("Edit debt drawdowns; repayments and interest are calculated from the rate.")
             funding_gap = funding_required - uses_total
             st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
             if abs(funding_gap) > 1.0:
@@ -4856,6 +5006,15 @@ def main() -> None:
                 "success_prob": st.column_config.NumberColumn(
                     "Success probability", min_value=0.0, max_value=1.0, step=0.05
                 ),
+                "labor_pct": st.column_config.NumberColumn(
+                    "Labor %", min_value=0.0, max_value=1.0, step=0.01
+                ),
+                "overhead_pct": st.column_config.NumberColumn(
+                    "Overhead %", min_value=0.0, max_value=1.0, step=0.01
+                ),
+                "material_pct": st.column_config.NumberColumn(
+                    "Material %", min_value=0.0, max_value=1.0, step=0.01
+                ),
             },
             id_column=None,
             name_column="name",
@@ -4895,6 +5054,11 @@ def main() -> None:
                 )
                 st.line_chart(cons_display)
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
+            cash_flow_df = _apply_debt_schedule(
+                cash_flow_df,
+                st.session_state.get("debt_schedule_table"),
+                float(st.session_state.get("debt_interest_rate", 0.0)),
+            )
             st.markdown("**Statement of Financial Performance**")
             st.dataframe(
                 perf_df.style.format({col: "{:.0f}" for col in perf_df.columns})
@@ -4907,6 +5071,25 @@ def main() -> None:
             st.dataframe(
                 cash_flow_df.style.format({col: "{:.0f}" for col in cash_flow_df.columns})
             )
+            debt_draw = cash_flow_df.get("Debt drawdowns")
+            debt_repay = cash_flow_df.get("Debt repayments")
+            if debt_draw is not None and debt_repay is not None:
+                debt_balance = (debt_draw.fillna(0.0) - debt_repay.fillna(0.0)).cumsum()
+                debt_schedule = pd.DataFrame(
+                    {
+                        "Beginning balance": debt_balance.shift(1).fillna(0.0),
+                        "Debt drawdowns": debt_draw.fillna(0.0),
+                        "Debt repayments": debt_repay.fillna(0.0),
+                        "Ending balance": debt_balance,
+                    },
+                    index=cash_flow_df.index,
+                )
+                st.markdown("**Debt schedule**")
+                st.dataframe(
+                    debt_schedule.style.format({col: "{:.0f}" for col in debt_schedule.columns})
+                )
+            else:
+                st.info("Debt schedule unavailable: cash flow inputs are missing debt columns.")
             st.markdown("**Excel Model Download**")
             excel_bytes = st.session_state.get("financial_excel_bytes")
             download_container = st.container()
@@ -5426,7 +5609,16 @@ def main() -> None:
                 horizon_max = int(max(5, horizon_years))
                 horizon_default = int(min(10, horizon_max))
                 horizon_default = min(max(5, horizon_default), horizon_max)
-                horizon = st.slider("Forecast steps", 5, horizon_max, horizon_default)
+                if horizon_max <= 5:
+                    horizon = st.number_input(
+                        "Forecast steps",
+                        min_value=5,
+                        max_value=5,
+                        value=5,
+                        step=1,
+                    )
+                else:
+                    horizon = st.slider("Forecast steps", 5, horizon_max, horizon_default)
                 if st.button("Run time-series model"):
                     fe = ForecastEngine(model_cfg)
                     period_index = pd.period_range(str(model_cfg.first_year), periods=len(cons), freq="Y")
@@ -5509,7 +5701,15 @@ def main() -> None:
             st.info("Configure the model and run a valuation before using VC analysis.")
         else:
             vc_col1, vc_col2, vc_col3, vc_col4 = st.columns(4)
-            exit_year = vc_col1.number_input("Exit year", value=model_cfg.first_year + 5)
+            cons_index = valuation_result.consolidated.index
+            exit_year_min = int(cons_index.min())
+            exit_year_max = int(cons_index.max())
+            exit_year = vc_col1.number_input(
+                "Exit year",
+                min_value=exit_year_min,
+                max_value=exit_year_max,
+                value=min(exit_year_max, model_cfg.first_year + 5),
+            )
             target_irr = vc_col2.slider("Target IRR", 0.05, 0.6, 0.3)
             ownership = vc_col3.slider("Investor ownership at exit", 0.05, 0.9, 0.25)
             new_money = vc_col4.number_input(
@@ -5535,17 +5735,21 @@ def main() -> None:
                 new_money=float(new_money),
             )
             vc_valuator = VCValuator(valuation_result)
-            vc_output = vc_valuator.vc_method(vc_inputs, exit_multiple=float(exit_multiple))
-            vc_df = pd.DataFrame(
-                {
-                    "Metric": list(vc_output.keys()),
-                    "Value": [
-                        f"{value:,.0f}" if "irr" not in key else f"{value:.2%}"
-                        for key, value in vc_output.items()
-                    ],
-                }
-            )
-            st.table(vc_df)
+            try:
+                vc_output = vc_valuator.vc_method(vc_inputs, exit_multiple=float(exit_multiple))
+            except ValueError as exc:
+                st.error(f"VC method failed: {exc}")
+            else:
+                vc_df = pd.DataFrame(
+                    {
+                        "Metric": list(vc_output.keys()),
+                        "Value": [
+                            f"{value:,.0f}" if "irr" not in key else f"{value:.2%}"
+                            for key, value in vc_output.items()
+                        ],
+                    }
+                )
+                st.table(vc_df)
 
     with rag_tab:
         _render_rag_assistant_page()
