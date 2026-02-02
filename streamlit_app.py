@@ -89,6 +89,9 @@ def _default_products() -> pd.DataFrame:
             "market_growth_post": 0.0,
             "cogs_patent": 0.32,
             "cogs_post": 0.5,
+            "labor_pct": 0.14,
+            "overhead_pct": 0.09,
+            "material_pct": 0.11,
             "sales_marketing_pct": 0.18,
             "gna_pct": 0.12,
             "rd_remaining_pre_launch": 180_000_000,
@@ -109,6 +112,9 @@ def _default_products() -> pd.DataFrame:
             "market_growth_post": 0.01,
             "cogs_patent": 0.28,
             "cogs_post": 0.45,
+            "labor_pct": 0.12,
+            "overhead_pct": 0.08,
+            "material_pct": 0.1,
             "sales_marketing_pct": 0.16,
             "gna_pct": 0.1,
             "rd_remaining_pre_launch": 90_000_000,
@@ -132,6 +138,9 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
         post_patent_revenue_target=25_000_000,
         cogs_patent=0.35,
         cogs_post=0.5,
+        labor_pct=0.12,
+        overhead_pct=0.08,
+        material_pct=0.1,
         sales_marketing_pct=0.15,
         gna_pct=0.1,
         rd_remaining_pre_launch=25_000_000,
@@ -1046,6 +1055,9 @@ def _validate_product_df(df: pd.DataFrame) -> pd.DataFrame:
     percent_cols = [
         "cogs_patent",
         "cogs_post",
+        "labor_pct",
+        "overhead_pct",
+        "material_pct",
         "sales_marketing_pct",
         "gna_pct",
         "royalty_pct",
@@ -1106,6 +1118,9 @@ def _compute_financial_statements(
         {
             "Revenue": cons["revenue"],
             "COGS": cons["cogs"],
+            "Materials": cons["materials"],
+            "Labor": cons["labor"],
+            "Overhead": cons["overhead"],
             "Sales & Marketing": cons["sales_marketing"],
             "G&A": cons["gna"],
             "Royalty": cons["royalty"],
@@ -1185,6 +1200,9 @@ def _compute_financial_statements(
     cash_flow_df = pd.DataFrame(
         {
             "EBIT": cons["ebit"],
+            "Materials": cons["materials"],
+            "Labor": cons["labor"],
+            "Overhead": cons["overhead"],
             "Cash taxes paid": cons["tax"],
             "Depreciation & amortization": da_positive,
             "Receivables change": receivables_change,
@@ -4757,6 +4775,15 @@ def main() -> None:
                 "include_in_consolidation": st.column_config.CheckboxColumn("Include", default=True),
                 "success_prob": st.column_config.NumberColumn(
                     "Success probability", min_value=0.0, max_value=1.0, step=0.05
+                ),
+                "labor_pct": st.column_config.NumberColumn(
+                    "Labor %", min_value=0.0, max_value=1.0, step=0.01
+                ),
+                "overhead_pct": st.column_config.NumberColumn(
+                    "Overhead %", min_value=0.0, max_value=1.0, step=0.01
+                ),
+                "material_pct": st.column_config.NumberColumn(
+                    "Material %", min_value=0.0, max_value=1.0, step=0.01
                 ),
             },
             id_column=None,
