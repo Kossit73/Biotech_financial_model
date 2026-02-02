@@ -2763,6 +2763,8 @@ def _apply_debt_schedule(
 
     schedule["Year"] = pd.to_numeric(schedule["Year"], errors="coerce").astype("Int64")
     schedule = schedule.dropna(subset=["Year"]).set_index("Year")
+    if schedule.index.has_duplicates:
+        schedule = schedule.groupby(level=0).sum()
     schedule = schedule.reindex(updated.index).fillna(0.0)
 
     drawdowns = pd.to_numeric(schedule.get("Debt drawdowns", 0.0), errors="coerce").fillna(0.0)
