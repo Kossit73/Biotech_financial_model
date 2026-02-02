@@ -5289,6 +5289,17 @@ def main() -> None:
             )
             exit_multiple = st.slider("Exit EV/EBITDA multiple", 2.0, 25.0, model_cfg.ev_ebitda_multiple)
 
+            available_years = list(valuation_result.consolidated.index)
+            if available_years:
+                min_year = int(min(available_years))
+                max_year = int(max(available_years))
+                if exit_year < min_year or exit_year > max_year:
+                    st.warning(
+                        f"Exit year {int(exit_year)} is outside the modeled range ({min_year}-{max_year}). "
+                        "Clamping to the nearest available year."
+                    )
+                exit_year = min(max(int(exit_year), min_year), max_year)
+
             vc_inputs = VCInputs(
                 exit_year=int(exit_year),
                 target_irr=float(target_irr),
