@@ -4679,6 +4679,25 @@ def main() -> None:
             st.dataframe(
                 cash_flow_df.style.format({col: "{:.0f}" for col in cash_flow_df.columns})
             )
+            debt_draw = cash_flow_df.get("Debt drawdowns")
+            debt_repay = cash_flow_df.get("Debt repayments")
+            if debt_draw is not None and debt_repay is not None:
+                debt_balance = (debt_draw.fillna(0.0) - debt_repay.fillna(0.0)).cumsum()
+                debt_schedule = pd.DataFrame(
+                    {
+                        "Beginning balance": debt_balance.shift(1).fillna(0.0),
+                        "Debt drawdowns": debt_draw.fillna(0.0),
+                        "Debt repayments": debt_repay.fillna(0.0),
+                        "Ending balance": debt_balance,
+                    },
+                    index=cash_flow_df.index,
+                )
+                st.markdown("**Debt schedule**")
+                st.dataframe(
+                    debt_schedule.style.format({col: "{:.0f}" for col in debt_schedule.columns})
+                )
+            else:
+                st.info("Debt schedule unavailable: cash flow inputs are missing debt columns.")
             st.markdown("**Excel Model Download**")
             excel_bytes = st.session_state.get("financial_excel_bytes")
             download_container = st.container()
