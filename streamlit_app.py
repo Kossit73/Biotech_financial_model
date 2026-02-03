@@ -5165,12 +5165,12 @@ def main() -> None:
                         .sum()
                     )
                     capex_df = capex_df.merge(shared_summary, on="ID_vaccine", how="left")
-                    capex_df["Shared Pre-GTM capex (USD)"] = capex_df[
-                        "Shared Pre-GTM capex (USD)"
-                    ].fillna(0.0)
-                    capex_df["Shared Post-GTM capex (USD/year)"] = capex_df[
-                        "Shared Post-GTM capex (USD/year)"
-                    ].fillna(0.0)
+                    capex_df["Shared Pre-GTM capex (USD)"] = capex_df.get(
+                        "Shared Pre-GTM capex (USD)", pd.Series(0.0, index=capex_df.index)
+                    ).fillna(0.0)
+                    capex_df["Shared Post-GTM capex (USD/year)"] = capex_df.get(
+                        "Shared Post-GTM capex (USD/year)", pd.Series(0.0, index=capex_df.index)
+                    ).fillna(0.0)
                     capex_df["Total Pre-GTM capex (USD)"] = (
                         capex_df["Total Pre-GTM capex (USD)"]
                         + capex_df["Shared Pre-GTM capex (USD)"]
