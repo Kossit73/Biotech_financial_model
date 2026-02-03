@@ -4274,6 +4274,15 @@ def main() -> None:
                         .fillna(0.0)
                         .sum()
                     )
+                debt_draw_total = 0.0
+                debt_schedule_df = st.session_state.get("debt_schedule_table")
+                if debt_schedule_df is not None and "Debt drawdowns" in debt_schedule_df.columns:
+                    debt_draw_total = float(
+                        pd.to_numeric(debt_schedule_df["Debt drawdowns"], errors="coerce")
+                        .fillna(0.0)
+                        .sum()
+                    )
+                sources_other_total += debt_draw_total
                 valuation_result = st.session_state.get("valuation_result")
                 burn_total = 0.0
                 wc_total = 0.0
