@@ -4573,14 +4573,20 @@ def main() -> None:
             if "Post patent customers per year" not in revenue_df.columns:
                 revenue_df["Post patent customers per year"] = patent_customers * cust_adj.fillna(1.0)
             else:
-                mask_missing = revenue_df["Post patent customers per year"].isna()
+                post_patent_customers = _coerce_numeric(
+                    revenue_df["Post patent customers per year"], 0.0
+                )
+                mask_missing = post_patent_customers.isna() | (post_patent_customers == 0)
                 revenue_df.loc[mask_missing, "Post patent customers per year"] = (
                     patent_customers[mask_missing] * cust_adj.fillna(1.0)[mask_missing]
                 )
             if "Post patent price (USD/customer)" not in revenue_df.columns:
                 revenue_df["Post patent price (USD/customer)"] = patent_price * price_adj.fillna(1.0)
             else:
-                mask_price = revenue_df["Post patent price (USD/customer)"].isna()
+                post_patent_price = _coerce_numeric(
+                    revenue_df["Post patent price (USD/customer)"], 0.0
+                )
+                mask_price = post_patent_price.isna() | (post_patent_price == 0)
                 revenue_df.loc[mask_price, "Post patent price (USD/customer)"] = (
                     patent_price[mask_price] * price_adj.fillna(1.0)[mask_price]
                 )
