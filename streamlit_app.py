@@ -162,13 +162,21 @@ def _default_vaccine_sales_table(first_year: int = 2024, horizon_years: int = 5)
 
     doses = _extend([5, 7, 10, 12, 12], len(years))
     prices = _extend([25, 26, 27, 27, 28], len(years))
-    data = {
-        "Year": years,
-        "Doses (M)": doses,
-        "Price per dose": prices,
-        "Comments": [""] * len(years),
-    }
-    return pd.DataFrame(data)
+    vaccine_rows = _default_vaccine_revenue_table()[["ID_vaccine", "Vaccine name"]]
+    rows: List[Dict[str, Any]] = []
+    for _, vaccine in vaccine_rows.iterrows():
+        for idx, year in enumerate(years):
+            rows.append(
+                {
+                    "ID_vaccine": vaccine["ID_vaccine"],
+                    "Vaccine name": vaccine["Vaccine name"],
+                    "Year": year,
+                    "Doses (M)": doses[idx],
+                    "Price per dose": prices[idx],
+                    "Comments": "",
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
@@ -188,7 +196,19 @@ def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
         last_price = pd.to_numeric(df["Price per dose"], errors="coerce").dropna()
         if not last_price.empty:
             price = float(last_price.iloc[-1])
+    vaccine_id = _next_vaccine_id(df)
+    vaccine_name = "New vaccine"
+    if "ID_vaccine" in df.columns and not df.empty:
+        last_id = df["ID_vaccine"].dropna()
+        if not last_id.empty:
+            vaccine_id = str(last_id.iloc[-1])
+    if "Vaccine name" in df.columns and not df.empty:
+        last_name = df["Vaccine name"].dropna()
+        if not last_name.empty:
+            vaccine_name = str(last_name.iloc[-1])
     return {
+        "ID_vaccine": vaccine_id,
+        "Vaccine name": vaccine_name,
         "Year": next_year,
         "Doses (M)": doses,
         "Price per dose": price,
@@ -3218,41 +3238,50 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
     return images
 
 
-def _sync_vaccine_sales_product(
+def _sync_vaccine_sales_products(
     product_df: pd.DataFrame,
-    implied_revenue: pd.Series,
+    vaccine_sales_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    if implied_revenue.empty:
+    if vaccine_sales_df.empty:
+        return product_df
+    if "Implied revenue" not in vaccine_sales_df.columns:
         return product_df
 
-    avg_revenue = float(implied_revenue.mean())
-    default_row = _blank_product_row(name="Vaccine Sales (Implied)")
-    default_row.update(
-        {
-            "stage": "Commercial",
-            "success_prob": 1.0,
-            "include_in_consolidation": True,
-            "preexisting_market": True,
-            "time_to_market": 0,
-            "patent_years": 20,
-            "patent_revenue_target": avg_revenue,
-            "post_patent_revenue_target": avg_revenue,
-            "market_growth_patent": 0.0,
-            "market_growth_post": 0.0,
-        }
-    )
     updated = product_df.copy()
     if "name" not in updated.columns:
         return updated
 
-    match = updated["name"] == "Vaccine Sales (Implied)"
-    if match.any():
-        idx = updated.index[match][0]
-        for key, value in default_row.items():
-            if key in updated.columns:
-                updated.at[idx, key] = value
-    else:
-        updated = pd.concat([updated, pd.DataFrame([default_row])], ignore_index=True)
+    grouped = (
+        vaccine_sales_df.groupby(["ID_vaccine", "Vaccine name"], dropna=False)["Implied revenue"]
+        .mean()
+        .reset_index()
+    )
+    for _, row in grouped.iterrows():
+        vaccine_name = str(row.get("Vaccine name") or row.get("ID_vaccine") or "Vaccine")
+        avg_revenue = float(row.get("Implied revenue") or 0.0)
+        default_row = _blank_product_row(name=vaccine_name)
+        default_row.update(
+            {
+                "stage": "Commercial",
+                "success_prob": 1.0,
+                "include_in_consolidation": True,
+                "preexisting_market": True,
+                "time_to_market": 0,
+                "patent_years": 20,
+                "patent_revenue_target": avg_revenue,
+                "post_patent_revenue_target": avg_revenue,
+                "market_growth_patent": 0.0,
+                "market_growth_post": 0.0,
+            }
+        )
+        match = updated["name"] == vaccine_name
+        if match.any():
+            idx = updated.index[match][0]
+            for key, value in default_row.items():
+                if key in updated.columns:
+                    updated.at[idx, key] = value
+        else:
+            updated = pd.concat([updated, pd.DataFrame([default_row])], ignore_index=True)
     return updated
 
 
@@ -4407,8 +4436,10 @@ def main() -> None:
                 default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
                 blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
                 id_column=None,
-                name_column="Year",
+                name_column="Vaccine name",
                 column_config={
+                    "ID_vaccine": st.column_config.TextColumn("ID", help="Vaccine ID"),
+                    "Vaccine name": st.column_config.TextColumn("Vaccine name"),
                     "Year": st.column_config.NumberColumn("Year", step=1),
                     "Doses (M)": st.column_config.NumberColumn("Doses (M)", min_value=0.0, step=0.5),
                     "Price per dose": st.column_config.NumberColumn(
@@ -4433,32 +4464,25 @@ def main() -> None:
                 if {
                     "Patent customers per year",
                     "Patent price (USD/customer)",
+                    "ID_vaccine",
                 }.issubset(revenue_table.columns):
                     price_series = _coerce_numeric(
                         revenue_table["Patent price (USD/customer)"], 0.0
                     ).replace(0, np.nan)
-                    current_targets = _coerce_numeric(
-                        revenue_table["Patent customers per year"], 0.0
-                    ) * price_series
-                    total_target = float(current_targets.sum())
-                    if total_target > 0:
-                        weights = current_targets / total_target
-                    else:
-                        weights = pd.Series(
-                            1.0 / max(len(revenue_table), 1),
-                            index=revenue_table.index,
-                        )
-                    avg_revenue = float(vaccine_df["Implied revenue"].mean())
-                    desired_targets = avg_revenue * weights
+                    revenue_table["ID_vaccine"] = revenue_table["ID_vaccine"].astype(str)
+                    sales_by_vaccine = (
+                        vaccine_df.groupby("ID_vaccine")["Implied revenue"].mean().to_dict()
+                    )
+                    desired_targets = revenue_table["ID_vaccine"].map(sales_by_vaccine).fillna(0.0)
                     revenue_table["Patent customers per year"] = (
                         desired_targets / price_series
                     ).fillna(0.0)
                     st.session_state["vaccine_revenue_table"] = revenue_table
             st.metric(f"{int(n_years)}-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
             base_products = st.session_state.get("product_table", _default_products())
-            st.session_state["product_table"] = _sync_vaccine_sales_product(
+            st.session_state["product_table"] = _sync_vaccine_sales_products(
                 base_products,
-                vaccine_df["Implied revenue"],
+                vaccine_df,
             )
 
         with st.expander("Uses and sources of funds"):
