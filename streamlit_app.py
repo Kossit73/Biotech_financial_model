@@ -4224,6 +4224,40 @@ def main() -> None:
             price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
             vaccine_df["Implied revenue"] = doses * 1e6 * price
             st.session_state["vaccine_sales_table"] = vaccine_df
+            sync_sales_to_revenue = st.checkbox(
+                "Sync vaccine sales to revenue estimation",
+                value=True,
+                key="sync_vaccine_sales_to_revenue",
+            )
+            if sync_sales_to_revenue and not vaccine_df.empty:
+                revenue_table = st.session_state.get(
+                    "vaccine_revenue_table",
+                    _default_vaccine_revenue_table(),
+                ).copy()
+                if {
+                    "Patent customers per year",
+                    "Patent price (USD/customer)",
+                }.issubset(revenue_table.columns):
+                    price_series = _coerce_numeric(
+                        revenue_table["Patent price (USD/customer)"], 0.0
+                    ).replace(0, np.nan)
+                    current_targets = _coerce_numeric(
+                        revenue_table["Patent customers per year"], 0.0
+                    ) * price_series
+                    total_target = float(current_targets.sum())
+                    if total_target > 0:
+                        weights = current_targets / total_target
+                    else:
+                        weights = pd.Series(
+                            1.0 / max(len(revenue_table), 1),
+                            index=revenue_table.index,
+                        )
+                    avg_revenue = float(vaccine_df["Implied revenue"].mean())
+                    desired_targets = avg_revenue * weights
+                    revenue_table["Patent customers per year"] = (
+                        desired_targets / price_series
+                    ).fillna(0.0)
+                    st.session_state["vaccine_revenue_table"] = revenue_table
             st.metric(f"{int(n_years)}-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
             base_products = st.session_state.get("product_table", _default_products())
             st.session_state["product_table"] = _sync_vaccine_sales_product(
