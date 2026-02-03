@@ -427,16 +427,34 @@ def _default_vaccine_capex_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Pre-GTM capex spent (USD)": 55_000_000,
-            "Pre-GTM capex remaining (USD)": 25_000_000,
-            "Post-GTM yearly capex (USD)": 6_500_000,
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 35_000_000,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 3_500_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 12_000_000,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 900_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 6_000_000,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 800_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 4_000_000,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 500_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 15_000_000,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 1_200_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 8_000_000,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 700_000,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Pre-GTM capex spent (USD)": 35_000_000,
-            "Pre-GTM capex remaining (USD)": 15_000_000,
-            "Post-GTM yearly capex (USD)": 4_000_000,
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 22_000_000,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 2_800_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 8_000_000,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 650_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 4_000_000,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 550_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 3_000_000,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 400_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 9_000_000,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 900_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 5_000_000,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 450_000,
         },
     ]
     return pd.DataFrame(data)
@@ -535,9 +553,18 @@ def _blank_vaccine_capex_row(df: pd.DataFrame) -> Dict:
     return {
         "ID_vaccine": next_id,
         "Vaccine name": "New vaccine",
-        "Pre-GTM capex spent (USD)": 10_000_000,
-        "Pre-GTM capex remaining (USD)": 5_000_000,
-        "Post-GTM yearly capex (USD)": 2_000_000,
+        "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 8_000_000,
+        "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 1_200_000,
+        "Quality & Compliance Infrastructure (Pre-GTM, USD)": 3_000_000,
+        "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 300_000,
+        "Cold-chain / Distribution Assets (Pre-GTM, USD)": 2_000_000,
+        "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 250_000,
+        "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 1_500_000,
+        "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 200_000,
+        "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 4_000_000,
+        "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 350_000,
+        "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 2_500_000,
+        "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 250_000,
     }
 
 
@@ -1279,10 +1306,32 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         ) + _coerce_numeric(rd_df.get("Pre-GTM remaining (USD)", pd.Series(dtype=float)))
 
     capex_df = st.session_state.get("vaccine_capex_table", pd.DataFrame()).copy()
+    capex_pre_cols = [
+        "Manufacturing & Scale-up Assets (Pre-GTM, USD)",
+        "Quality & Compliance Infrastructure (Pre-GTM, USD)",
+        "Cold-chain / Distribution Assets (Pre-GTM, USD)",
+        "IT / Data / Digital Infrastructure (Pre-GTM, USD)",
+        "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)",
+        "Process Development & Tech-Transfer Assets (Pre-GTM, USD)",
+    ]
+    capex_post_cols = [
+        "Manufacturing & Scale-up Assets (Post-GTM, USD/year)",
+        "Quality & Compliance Infrastructure (Post-GTM, USD/year)",
+        "Cold-chain / Distribution Assets (Post-GTM, USD/year)",
+        "IT / Data / Digital Infrastructure (Post-GTM, USD/year)",
+        "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)",
+        "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)",
+    ]
     if "Total Pre-GTM capex (USD)" not in capex_df.columns:
-        capex_df["Total Pre-GTM capex (USD)"] = _coerce_numeric(
-            capex_df.get("Pre-GTM capex spent (USD)", pd.Series(dtype=float))
-        ) + _coerce_numeric(capex_df.get("Pre-GTM capex remaining (USD)", pd.Series(dtype=float)))
+        capex_pre = capex_df.get(capex_pre_cols, pd.DataFrame()).apply(
+            pd.to_numeric, errors="coerce"
+        )
+        capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
+    if "Total Post-GTM capex (USD/year)" not in capex_df.columns:
+        capex_post = capex_df.get(capex_post_cols, pd.DataFrame()).apply(
+            pd.to_numeric, errors="coerce"
+        )
+        capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
 
     merged = dev_df.merge(revenue_df, on=["ID_vaccine", "Vaccine name"], how="left")
     merged = merged.merge(cost_df, on=["ID_vaccine", "Vaccine name"], how="left")
@@ -1309,7 +1358,7 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         unit_variable_cost = unit_price * operating_cost_pct
         unit_fixed_cost = float(row.get("G&A total (USD)", 0.0) or 0.0) + float(
             row.get("Post-GTM annual cost (USD/year)", 0.0) or 0.0
-        ) + float(row.get("Post-GTM yearly capex (USD)", 0.0) or 0.0)
+        ) + float(row.get("Total Post-GTM capex (USD/year)", 0.0) or 0.0)
 
         inputs.append(
             {
@@ -4728,18 +4777,37 @@ def main() -> None:
                 default_factory=_default_vaccine_capex_table,
                 blank_row_factory=_blank_vaccine_capex_row,
             )
-            capex_df["Total Pre-GTM capex (USD)"] = _coerce_numeric(
-                capex_df.get("Pre-GTM capex spent (USD)", pd.Series(dtype=float))
-            ) + _coerce_numeric(capex_df.get("Pre-GTM capex remaining (USD)", pd.Series(dtype=float)))
+            capex_pre_cols = [
+                "Manufacturing & Scale-up Assets (Pre-GTM, USD)",
+                "Quality & Compliance Infrastructure (Pre-GTM, USD)",
+                "Cold-chain / Distribution Assets (Pre-GTM, USD)",
+                "IT / Data / Digital Infrastructure (Pre-GTM, USD)",
+                "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)",
+                "Process Development & Tech-Transfer Assets (Pre-GTM, USD)",
+            ]
+            capex_post_cols = [
+                "Manufacturing & Scale-up Assets (Post-GTM, USD/year)",
+                "Quality & Compliance Infrastructure (Post-GTM, USD/year)",
+                "Cold-chain / Distribution Assets (Post-GTM, USD/year)",
+                "IT / Data / Digital Infrastructure (Post-GTM, USD/year)",
+                "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)",
+                "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)",
+            ]
+            capex_pre = capex_df.get(capex_pre_cols, pd.DataFrame()).apply(
+                pd.to_numeric, errors="coerce"
+            )
+            capex_post = capex_df.get(capex_post_cols, pd.DataFrame()).apply(
+                pd.to_numeric, errors="coerce"
+            )
+            capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
+            capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
             st.session_state["vaccine_capex_table"] = capex_df
             capex_display = capex_df[
                 [
                     "ID_vaccine",
                     "Vaccine name",
-                    "Pre-GTM capex spent (USD)",
-                    "Pre-GTM capex remaining (USD)",
                     "Total Pre-GTM capex (USD)",
-                    "Post-GTM yearly capex (USD)",
+                    "Total Post-GTM capex (USD/year)",
                 ]
             ]
             capex_fmt = {
