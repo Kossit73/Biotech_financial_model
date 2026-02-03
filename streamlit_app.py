@@ -218,14 +218,39 @@ def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
 
 def _default_uses_table() -> pd.DataFrame:
     data = [
-        {"Item": "Clinical trials", "Amount": 150_000_000},
-        {"Item": "Manufacturing scale-up", "Amount": 90_000_000},
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Item": "Clinical trials",
+            "Amount": 150_000_000,
+        },
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Item": "Manufacturing scale-up",
+            "Amount": 90_000_000,
+        },
     ]
     return pd.DataFrame(data)
 
 
 def _blank_use_row(df: pd.DataFrame) -> Dict:
-    return {"Item": "New use", "Amount": 0.0}
+    next_id = _next_vaccine_id(df)
+    vaccine_name = "New vaccine"
+    if "ID_vaccine" in df.columns and not df.empty:
+        last_id = df["ID_vaccine"].dropna()
+        if not last_id.empty:
+            next_id = str(last_id.iloc[-1])
+    if "Vaccine name" in df.columns and not df.empty:
+        last_name = df["Vaccine name"].dropna()
+        if not last_name.empty:
+            vaccine_name = str(last_name.iloc[-1])
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": vaccine_name,
+        "Item": "New use",
+        "Amount": 0.0,
+    }
 
 
 def _default_sources_table() -> pd.DataFrame:
@@ -4502,11 +4527,23 @@ def main() -> None:
                     id_column=None,
                     name_column="Item",
                     column_config={
+                        "ID_vaccine": st.column_config.TextColumn("ID", help="Vaccine ID"),
+                        "Vaccine name": st.column_config.TextColumn("Vaccine name"),
                         "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
                     },
                 )
                 uses_total = float(uses_df.get("Amount", pd.Series(dtype=float)).sum())
                 st.metric("Total uses", f"{uses_total:,.0f}")
+                if {"ID_vaccine", "Vaccine name", "Amount"}.issubset(uses_df.columns):
+                    uses_by_vaccine = (
+                        uses_df.groupby(["ID_vaccine", "Vaccine name"], dropna=False)["Amount"]
+                        .sum()
+                        .reset_index()
+                    )
+                    st.dataframe(
+                        uses_by_vaccine.style.format({"Amount": "{:,.0f}"}),
+                        use_container_width=True,
+                    )
             with sources_col:
                 st.markdown("**Sources**")
                 sources_df = _render_product_assumption_table(
