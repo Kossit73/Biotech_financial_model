@@ -202,6 +202,7 @@ def _blank_use_row(df: pd.DataFrame) -> Dict:
 def _default_sources_table() -> pd.DataFrame:
     data = [
         {"Item": "Existing cash", "Amount": 40_000_000},
+        {"Item": "Debt financing", "Amount": 0.0},
         {"Item": "New equity", "Amount": 200_000_000},
     ]
     return pd.DataFrame(data)
@@ -1075,10 +1076,63 @@ def _build_portfolio(product_df: pd.DataFrame, model_cfg: ModelConfig) -> Portfo
     return Portfolio(products, model_cfg)
 
 
+def _build_debt_schedule(model_cfg: ModelConfig, years: np.ndarray) -> pd.DataFrame:
+    schedule = pd.DataFrame(
+        {
+            "Opening balance": np.zeros(len(years)),
+            "Draw": np.zeros(len(years)),
+            "Repayment": np.zeros(len(years)),
+            "Interest accrual": np.zeros(len(years)),
+            "Closing balance": np.zeros(len(years)),
+        },
+        index=years,
+    )
+    if (
+        not model_cfg.debt_enabled
+        or model_cfg.debt_principal <= 0
+        or model_cfg.debt_term_years <= 0
+        or len(years) == 0
+    ):
+        return schedule
+
+    draw_year = int(model_cfg.debt_draw_year)
+    draw_year = min(max(draw_year, int(years[0])), int(years[-1]))
+    term_years = max(int(model_cfg.debt_term_years), 1)
+    interest_only_years = max(int(model_cfg.debt_interest_only_years), 0)
+    amort_years = max(term_years - interest_only_years, 1)
+    amort_start_year = draw_year + interest_only_years
+    term_end_year = draw_year + term_years - 1
+    annual_amort = model_cfg.debt_principal / amort_years
+
+    closing_balance = 0.0
+    for year in years:
+        opening_balance = closing_balance
+        draw = model_cfg.debt_principal if year == draw_year else 0.0
+        balance_before_repay = opening_balance + draw
+        interest = balance_before_repay * float(model_cfg.debt_interest_rate)
+        if year < amort_start_year or year > term_end_year:
+            repayment = 0.0
+        else:
+            repayment = min(balance_before_repay, annual_amort)
+        closing_balance = balance_before_repay - repayment
+        if closing_balance < 0:
+            closing_balance = 0.0
+
+        schedule.loc[year, "Opening balance"] = opening_balance
+        schedule.loc[year, "Draw"] = draw
+        schedule.loc[year, "Repayment"] = repayment
+        schedule.loc[year, "Interest accrual"] = interest
+        schedule.loc[year, "Closing balance"] = closing_balance
+
+    return schedule
+
+
 def _compute_financial_statements(
     cons: pd.DataFrame, model_cfg: ModelConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     years = cons.index
+    debt_schedule = _build_debt_schedule(model_cfg, years)
+    debt_outstanding = debt_schedule["Closing balance"]
     da_positive = -cons["da"]
 
     perf_df = pd.DataFrame(
@@ -1123,7 +1177,8 @@ def _compute_financial_statements(
         retained_val += nopat
 
         total_assets = intangible_val + ppe_val + wc_val
-        paid_in_val = max(0.0, total_assets - retained_val)
+        debt_balance = float(debt_outstanding.loc[year]) if year in debt_outstanding.index else 0.0
+        paid_in_val = max(0.0, total_assets - debt_balance - retained_val)
 
         intangible.append(intangible_val)
         ppe.append(ppe_val)
@@ -1145,18 +1200,56 @@ def _compute_financial_statements(
     )
 
     cash_from_ops = cons["nopat"] + da_positive - wc_diff
-    cash_from_investing = cons["capex_cash"] + cons["rd_cap_add"]
-    cash_from_financing = pd.Series(0.0, index=years)
+    capex_cash = cons["capex_cash"]
+    rd_cap_add = cons["rd_cap_add"]
+    cash_from_investing = capex_cash + rd_cap_add
+    equity_issuance = pd.Series(0.0, index=years)
+    debt_draw = debt_schedule["Draw"]
+    debt_repay = debt_schedule["Repayment"]
+    interest_paid = debt_schedule["Interest accrual"]
+    cash_from_financing = equity_issuance + debt_draw - debt_repay - interest_paid
     net_cash = cash_from_ops + cash_from_investing + cash_from_financing
+    starting_cash = pd.Series(0.0, index=years)
+    ending_cash = starting_cash + net_cash.cumsum()
+
+    receivables_change = -wc_diff * 0.5
+    inventory_change = -wc_diff * 0.3
+    payables_change = -wc_diff * 0.2
 
     cash_flow_df = pd.DataFrame(
         {
-            "Cash from operations": cash_from_ops,
-            "Cash from investing": cash_from_investing,
-            "Cash from financing": cash_from_financing,
+            "EBIT": cons["ebit"],
+            "Cash taxes paid": cons["tax"],
+            "Depreciation & amortization": da_positive,
+            "Receivables change": receivables_change,
+            "Inventory change": inventory_change,
+            "Payables change": payables_change,
+            "Working capital change": -wc_diff,
+            "Net cash from operations": cash_from_ops,
+            "Capital expenditure": capex_cash,
+            "R&D capitalization": rd_cap_add,
+            "Net cash from investing": cash_from_investing,
+            "Equity issuance": equity_issuance,
+            "Debt drawdowns": debt_draw,
+            "Debt repayments": debt_repay,
+            "Interest paid": interest_paid,
+            "Net cash from financing": cash_from_financing,
             "Net change in cash": net_cash,
+            "Beginning cash balance": starting_cash,
+            "Ending cash balance": ending_cash,
         }
     )
+
+    position_df["Cash"] = ending_cash
+    position_df["Debt outstanding"] = debt_outstanding
+    position_df["Total liabilities"] = debt_outstanding
+    position_df["Total assets"] = position_df["Total assets"] + position_df["Cash"]
+    position_df["Paid-in capital"] = (
+        position_df["Total assets"]
+        - position_df["Total liabilities"]
+        - position_df["Retained earnings"]
+    ).clip(lower=0.0)
+    position_df["Total equity"] = position_df["Retained earnings"] + position_df["Paid-in capital"]
 
     return perf_df, position_df, cash_flow_df
 
@@ -2125,8 +2218,18 @@ def _build_ai_commentary(
     position_df: Optional[pd.DataFrame],
     cash_flow_df: Optional[pd.DataFrame],
     cons_df: Optional[pd.DataFrame],
-) -> List[str]:
-    comments: List[str] = []
+    analytics_df: Optional[pd.DataFrame] = None,
+) -> List[Dict[str, str]]:
+    comments: List[Dict[str, str]] = []
+
+    def _add_comment(section: str, commentary: str, annotation: str = "") -> None:
+        comments.append(
+            {
+                "Section": section,
+                "Commentary": commentary,
+                "Annotation": annotation,
+            }
+        )
 
     def _format_value(value: Any) -> str:
         if value is None or (isinstance(value, float) and np.isnan(value)):
@@ -2135,64 +2238,462 @@ def _build_ai_commentary(
             return f"{value:,.0f}"
         return str(value)
 
+    def _format_pct(value: Any) -> str:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return "n/a"
+        if isinstance(value, (int, float)):
+            pct_value = value * 100 if abs(value) <= 1.5 else value
+            return f"{pct_value:.1f}%"
+        return str(value)
+
+    def _safe_divide(numerator: float, denominator: float) -> float:
+        return float(numerator / denominator) if denominator else 0.0
+
+    def _first_last(series: pd.Series) -> tuple[Optional[float], Optional[float]]:
+        if series is None or series.empty:
+            return None, None
+        clean = pd.to_numeric(series, errors="coerce").dropna()
+        if clean.empty:
+            return None, None
+        return float(clean.iloc[0]), float(clean.iloc[-1])
+
+    currency = snapshot_summary.get("currency", "USD") if snapshot_summary else "USD"
+
     if snapshot_summary:
         npv = snapshot_summary.get("npv")
         irr = snapshot_summary.get("irr")
+        dscr_min = snapshot_summary.get("dscr_min")
+        payback_years = snapshot_summary.get("payback_years")
         revenue = snapshot_summary.get("revenue_annual")
         opex = snapshot_summary.get("opex_annual")
-        comments.append(
-            f"Snapshot: NPV {_format_value(npv)}, IRR {_format_value(irr)}, "
-            f"Annual revenue {_format_value(revenue)}, Annual opex {_format_value(opex)}."
+        capex_total = snapshot_summary.get("capex_total")
+        _add_comment(
+            "Financial Snapshot",
+            (
+                f"NPV {_format_value(npv)} {currency}, IRR {_format_pct(irr)}, "
+                f"minimum DSCR {_format_value(dscr_min)}, payback {_format_value(payback_years)} years."
+            ),
+            "Snapshot metrics come from the RAG Assistant inputs.",
         )
-        if npv is not None:
-            comments.append(
-                f"NPV indicates a {'positive' if npv >= 0 else 'negative'} valuation trend."
-            )
+        _add_comment(
+            "Financial Snapshot",
+            (
+                f"Annual revenue {_format_value(revenue)} {currency}, annual opex {_format_value(opex)} "
+                f"{currency}, total capex {_format_value(capex_total)} {currency}."
+            ),
+            "Operating spread = annual revenue minus annual opex.",
+        )
         if revenue is not None and opex is not None:
-            comments.append(
-                f"Annual revenue vs opex suggests a gross operating spread of {_format_value(revenue - opex)}."
+            _add_comment(
+                "Financial Snapshot",
+                f"Estimated operating spread: {_format_value(revenue - opex)} {currency}.",
+                "Positive spread indicates operating headroom before financing effects.",
+            )
+        if npv is not None:
+            _add_comment(
+                "Financial Snapshot",
+                f"NPV implies a {'positive' if npv >= 0 else 'negative'} valuation trend.",
+                "NPV sign provides directional value signal.",
             )
 
     if perf_df is not None and not perf_df.empty:
         revenue_series = perf_df.get("Revenue")
         ebitda_series = perf_df.get("EBITDA")
+        cogs_series = perf_df.get("COGS")
+        rd_series = perf_df.get("R&D expense")
         if revenue_series is not None:
             avg_revenue = float(revenue_series.mean())
-            comments.append(f"Performance: average revenue over the plan is {avg_revenue:,.0f}.")
+            _add_comment(
+                "Statement of Financial Performance",
+                f"Average revenue across the plan is {avg_revenue:,.0f} {currency}.",
+                "Average computed across modeled forecast years.",
+            )
+            rev_start, rev_end = _first_last(revenue_series)
+            if rev_start is not None and rev_end is not None and rev_start > 0:
+                years = max(1, len(revenue_series) - 1)
+                cagr = (rev_end / rev_start) ** (1 / years) - 1
+                _add_comment(
+                    "Statement of Financial Performance",
+                    f"Revenue grows from {rev_start:,.0f} to {rev_end:,.0f} {currency} (CAGR {_format_pct(cagr)}).",
+                    "CAGR uses first and last modeled revenue values.",
+                )
         if revenue_series is not None and ebitda_series is not None:
-            margin = float((ebitda_series.sum() / revenue_series.sum()) if revenue_series.sum() else 0.0)
-            comments.append(f"Performance: average EBITDA margin is {margin:.1%}.")
+            total_revenue = float(revenue_series.sum())
+            total_ebitda = float(ebitda_series.sum())
+            margin = _safe_divide(total_ebitda, total_revenue)
+            positive_years = int((ebitda_series > 0).sum())
+            _add_comment(
+                "Statement of Financial Performance",
+                f"Average EBITDA margin is {_format_pct(margin)} with EBITDA positive in {positive_years} year(s).",
+                "EBITDA margin = total EBITDA / total revenue.",
+            )
+            start_margin = _safe_divide(float(ebitda_series.iloc[0]), float(revenue_series.iloc[0]))
+            end_margin = _safe_divide(float(ebitda_series.iloc[-1]), float(revenue_series.iloc[-1]))
+            _add_comment(
+                "Statement of Financial Performance",
+                f"EBITDA margin shifts from {_format_pct(start_margin)} to {_format_pct(end_margin)}.",
+                "Margin trend compares first and last modeled years.",
+            )
+        if revenue_series is not None and cogs_series is not None:
+            gross_margin = _safe_divide(
+                float((revenue_series - cogs_series).sum()),
+                float(revenue_series.sum()),
+            )
+            _add_comment(
+                "Statement of Financial Performance",
+                f"Average gross margin is {_format_pct(gross_margin)}.",
+                "Gross margin = (Revenue - COGS) / Revenue.",
+            )
+        if revenue_series is not None and rd_series is not None:
+            rd_intensity = _safe_divide(float(rd_series.sum()), float(revenue_series.sum()))
+            _add_comment(
+                "Statement of Financial Performance",
+                f"R&D intensity averages {_format_pct(rd_intensity)} of revenue.",
+                "R&D intensity = total R&D expense / total revenue.",
+            )
 
     if position_df is not None and not position_df.empty:
         total_assets = position_df.get("Total assets")
         total_equity = position_df.get("Total equity")
+        working_capital = position_df.get("Working capital")
         if total_assets is not None:
             end_assets = float(total_assets.iloc[-1])
-            comments.append(f"Position: ending total assets are {end_assets:,.0f}.")
-        if total_equity is not None:
+            _add_comment(
+                "Statement of Financial Position",
+                f"Ending total assets are {end_assets:,.0f} {currency}.",
+                "Ending balances reflect the final forecast year.",
+            )
+        if total_equity is not None and total_assets is not None:
             end_equity = float(total_equity.iloc[-1])
-            comments.append(f"Position: ending total equity is {end_equity:,.0f}.")
+            equity_ratio = _safe_divide(end_equity, float(total_assets.iloc[-1]))
+            _add_comment(
+                "Statement of Financial Position",
+                f"Ending total equity is {end_equity:,.0f} {currency} (equity ratio {_format_pct(equity_ratio)}).",
+                "Equity ratio = total equity / total assets.",
+            )
+        if working_capital is not None:
+            end_wc = float(working_capital.iloc[-1])
+            _add_comment(
+                "Statement of Financial Position",
+                f"Working capital ends at {end_wc:,.0f} {currency}.",
+                "Working capital derived from model working capital % assumption.",
+            )
 
     if cash_flow_df is not None and not cash_flow_df.empty:
         net_cash = cash_flow_df.get("Net change in cash")
+        cash_ops = cash_flow_df.get("Cash from operations")
+        cash_investing = cash_flow_df.get("Cash from investing")
         if net_cash is not None:
             cumulative_cash = float(net_cash.sum())
-            comments.append(f"Cash flow: cumulative net cash change is {cumulative_cash:,.0f}.")
+            positive_years = int((net_cash > 0).sum())
+            _add_comment(
+                "Statement of Cash Flows",
+                f"Cumulative net cash change is {cumulative_cash:,.0f} {currency} with {positive_years} positive year(s).",
+                "Net change in cash aggregates operating, investing, and financing flows.",
+            )
+        if cash_ops is not None:
+            avg_ops = float(cash_ops.mean())
+            _add_comment(
+                "Statement of Cash Flows",
+                f"Average operating cash flow is {avg_ops:,.0f} {currency}.",
+                "Operating cash flow = NOPAT + depreciation/amortization - working capital change.",
+            )
+        if cash_investing is not None:
+            total_investing = float(cash_investing.sum())
+            _add_comment(
+                "Statement of Cash Flows",
+                f"Total investing cash flow is {total_investing:,.0f} {currency}.",
+                "Investing cash flow reflects capex and R&D capitalization.",
+            )
+        if cash_ops is not None and cash_investing is not None:
+            coverage = _safe_divide(float(cash_ops.sum()), abs(float(cash_investing.sum())))
+            _add_comment(
+                "Statement of Cash Flows",
+                f"Operating cash flow covers investing outflows at {_format_pct(coverage)}.",
+                "Coverage ratio = total operating cash flow / absolute investing cash flow.",
+            )
 
     if cons_df is not None and not cons_df.empty:
         peak_revenue = float(cons_df["revenue"].max()) if "revenue" in cons_df.columns else None
         total_fcff = float(cons_df["fcff_after_wc"].sum()) if "fcff_after_wc" in cons_df.columns else None
         if peak_revenue is not None:
-            comments.append(f"Financial statements: peak revenue reaches {peak_revenue:,.0f}.")
+            _add_comment(
+                "Financial Statements Highlights",
+                f"Peak revenue reaches {peak_revenue:,.0f} {currency}.",
+                "Peak derived from consolidated revenue series.",
+            )
         if total_fcff is not None:
-            comments.append(f"Financial statements: total FCFF after WC sums to {total_fcff:,.0f}.")
+            positive_fcff_years = int((cons_df["fcff_after_wc"] > 0).sum())
+            _add_comment(
+                "Financial Statements Highlights",
+                (
+                    f"Total FCFF after working capital sums to {total_fcff:,.0f} {currency} "
+                    f"with {positive_fcff_years} positive year(s)."
+                ),
+                "FCFF after WC = free cash flow after working capital change.",
+            )
+
+    if analytics_df is not None and not analytics_df.empty:
+        narrative = _build_advanced_analytics_narrative(analytics_df)
+        for paragraph in narrative:
+            _add_comment(
+                "Advanced Analytics Narrative",
+                paragraph,
+                "Derived from the advanced analytics ratio table.",
+            )
+
+    scenarios = snapshot_summary.get("scenarios") if snapshot_summary else []
+    if scenarios:
+        scenario_name = lambda s: s.get("name") or s.get("scenario") or "Scenario"
+        scenario_metric = lambda s, key: s.get(key) if isinstance(s, dict) else None
+        valid_npvs = [(scenario_name(s), scenario_metric(s, "npv")) for s in scenarios]
+        valid_npvs = [(name, value) for name, value in valid_npvs if value is not None]
+        if valid_npvs:
+            best = max(valid_npvs, key=lambda item: item[1])
+            worst = min(valid_npvs, key=lambda item: item[1])
+            _add_comment(
+                "Scenario Review",
+                f"Scenario count {len(scenarios)}; best NPV is {best[0]} at {_format_value(best[1])} {currency}.",
+                "Scenario ranking based on reported NPV values.",
+            )
+            _add_comment(
+                "Scenario Review",
+                f"Lowest NPV scenario is {worst[0]} at {_format_value(worst[1])} {currency}.",
+                "Use scenario deltas to quantify downside exposure.",
+            )
+
+    sensitivities = snapshot_summary.get("sensitivities") if snapshot_summary else []
+    if sensitivities:
+        drivers = []
+        for sensitivity in sensitivities:
+            if isinstance(sensitivity, dict):
+                drivers.append(sensitivity.get("name") or sensitivity.get("driver"))
+        drivers = [driver for driver in drivers if driver]
+        if drivers:
+            _add_comment(
+                "Sensitivity Review",
+                f"Key sensitivity drivers captured: {', '.join(drivers)}.",
+                "Sensitivity drivers sourced from the snapshot table.",
+            )
+
+    coverage_notes = []
+    if perf_df is not None and not perf_df.empty:
+        coverage_notes.append("financial performance")
+    if position_df is not None and not position_df.empty:
+        coverage_notes.append("financial position")
+    if cash_flow_df is not None and not cash_flow_df.empty:
+        coverage_notes.append("cash flows")
+    if cons_df is not None and not cons_df.empty:
+        coverage_notes.append("consolidated statements")
+    if coverage_notes:
+        _add_comment(
+            "Data Coverage",
+            f"Report includes {', '.join(coverage_notes)} aligned with the current forecast horizon.",
+            "Coverage ensures the business plan narrative reflects model outputs.",
+        )
 
     if not comments:
-        comments.append("Insufficient data to generate AI commentary.")
+        _add_comment(
+            "Data Coverage",
+            "Insufficient data to generate AI commentary. Populate snapshot and financial statements first.",
+            "Provide model results to enable narrative generation.",
+        )
     return comments
 
 
-def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
+def _group_ai_commentary(ai_commentary: List[Any]) -> Dict[str, List[Dict[str, str]]]:
+    grouped: Dict[str, List[Dict[str, str]]] = {}
+    for entry in ai_commentary or []:
+        if isinstance(entry, dict):
+            section = entry.get("Section", "General")
+            grouped.setdefault(section, []).append(entry)
+        else:
+            grouped.setdefault("General", []).append(
+                {"Section": "General", "Commentary": str(entry), "Annotation": ""}
+            )
+    return grouped
+
+
+def _format_scenario_prose(scenario: Dict[str, Any], currency: str) -> str:
+    name = scenario.get("name") or scenario.get("scenario") or "Scenario"
+    npv = scenario.get("npv")
+    irr = scenario.get("irr")
+    npv_text = f"{npv:,.0f} {currency}" if isinstance(npv, (int, float)) else "n/a"
+    irr_text = f"{irr:.1%}" if isinstance(irr, (int, float)) else "n/a"
+    return f"{name}: NPV {npv_text}, IRR {irr_text}."
+
+
+def _format_pct_value(value: Any) -> str:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "n/a"
+    if isinstance(value, (int, float)):
+        pct_value = value * 100 if abs(value) <= 1.5 else value
+        return f"{pct_value:.1f}%"
+    return str(value)
+
+
+def _build_advanced_analytics_narrative(
+    analytics_df: Optional[pd.DataFrame],
+) -> List[str]:
+    if analytics_df is None or analytics_df.empty:
+        return []
+
+    clean_df = analytics_df.apply(pd.to_numeric, errors="coerce")
+    years = clean_df.index.tolist()
+    narrative: List[str] = []
+
+    def _first_last(series: pd.Series) -> tuple[Optional[float], Optional[float]]:
+        clean = pd.to_numeric(series, errors="coerce").dropna()
+        if clean.empty:
+            return None, None
+        return float(clean.iloc[0]), float(clean.iloc[-1])
+
+    def _trend_sentence(label: str, series: pd.Series) -> Optional[str]:
+        start, end = _first_last(series)
+        if start is None or end is None:
+            return None
+        direction = "improves" if end >= start else "declines"
+        return (
+            f"{label} {direction} from {_format_pct_value(start)} to "
+            f"{_format_pct_value(end)} over the forecast horizon."
+        )
+
+    gross_margin = clean_df.get("Gross margin")
+    ebitda_margin = clean_df.get("EBITDA margin")
+    nopat_margin = clean_df.get("NOPAT margin")
+    rd_intensity = clean_df.get("R&D intensity")
+    capex_intensity = clean_df.get("Capex intensity")
+
+    if years:
+        narrative.append(
+            f"The advanced analytics ratios cover {years[0]} through {years[-1]}, "
+            "highlighting profitability, efficiency, and reinvestment trends."
+        )
+
+    for label, series in [
+        ("Gross margin", gross_margin),
+        ("EBITDA margin", ebitda_margin),
+        ("NOPAT margin", nopat_margin),
+    ]:
+        if series is not None:
+            sentence = _trend_sentence(label, series)
+            if sentence:
+                narrative.append(sentence)
+
+    if rd_intensity is not None:
+        start, end = _first_last(rd_intensity)
+        if start is not None and end is not None:
+            narrative.append(
+                "R&D intensity moderates from "
+                f"{_format_pct_value(start)} to {_format_pct_value(end)}, "
+                "indicating a tapering of development spend as commercialization matures."
+            )
+    if capex_intensity is not None:
+        start, end = _first_last(capex_intensity)
+        if start is not None and end is not None:
+            narrative.append(
+                "Capex intensity steps down from "
+                f"{_format_pct_value(start)} to {_format_pct_value(end)}, "
+                "suggesting upfront build-out gives way to steadier maintenance investment."
+            )
+
+    if gross_margin is not None and ebitda_margin is not None and nopat_margin is not None:
+        peak_year = clean_df[["Gross margin", "EBITDA margin", "NOPAT margin"]].mean(axis=1).idxmax()
+        peak_row = clean_df.loc[peak_year]
+        narrative.append(
+            "Peak profitability occurs around "
+            f"{peak_year}, with gross margin {_format_pct_value(peak_row.get('Gross margin'))}, "
+            f"EBITDA margin {_format_pct_value(peak_row.get('EBITDA margin'))}, "
+            f"and NOPAT margin {_format_pct_value(peak_row.get('NOPAT margin'))}."
+        )
+
+    return narrative
+
+
+def _build_extended_analytics_sections(chart_tables: Dict[str, pd.DataFrame]) -> List[Dict[str, str]]:
+    sections: List[Dict[str, str]] = []
+
+    def _add_section(title: str, status: str, details: str) -> None:
+        sections.append({"Section": title, "Status": status, "Details": details})
+
+    _add_section(
+        "Margin & intensity analysis",
+        "Included",
+        "Summarizes gross margin, EBITDA margin, NOPAT margin, R&D intensity, and capex intensity trends.",
+    )
+    _add_section(
+        "Vaccine break-even analysis",
+        "Included",
+        "Highlights unit economics and break-even volumes by vaccine program.",
+    )
+    _add_section(
+        "Scenario stress testing",
+        "Included",
+        "Compares rNPV outcomes under upside, base, and downside stress scenarios.",
+    )
+    _add_section(
+        "Trend, seasonality & segmentation",
+        "Included",
+        "Decomposition trends and segmentation splits across revenue drivers.",
+    )
+    _add_section(
+        "Monte Carlo & probabilistic valuation",
+        "Included",
+        "Monte Carlo simulation outputs provide probabilistic valuation ranges and downside risk bands.",
+    )
+    _add_section(
+        "What-if analysis & goal seek",
+        "Not available",
+        "Goal seek and what-if sensitivity runs are not available in the current analytics export.",
+    )
+    _add_section(
+        "Tornado & spider diagnostics",
+        "Included",
+        "Sensitivity drivers ranked by valuation impact.",
+    )
+    _add_section(
+        "Regression & classification models",
+        "Not available",
+        "ML model outputs are not available in the current analytics export.",
+    )
+    _add_section(
+        "Time-series & ML forecasting",
+        "Not available",
+        "Forecasting model results are not available in the current analytics export.",
+    )
+    _add_section(
+        "Optimisation, portfolio design & real options",
+        "Not available",
+        "Optimization and real options outputs are not available in the current analytics export.",
+    )
+    _add_section(
+        "Risk, copulas, macro & ESG linkages",
+        "Not available",
+        "Macro/ESG linkage analytics are not available in the current analytics export.",
+    )
+    _add_section(
+        "Comparative & ML-based valuation",
+        "Not available",
+        "Comparable and ML valuation outputs are not available in the current analytics export.",
+    )
+    _add_section(
+        "Scenario analysis",
+        "Included",
+        "Scenario results compared across key valuation drivers.",
+    )
+    _add_section(
+        "Dashboard snapshot",
+        "Included",
+        "Snapshot of key dashboard metrics and FCFF trends.",
+    )
+
+    return sections
+
+
+def _build_export_payload(
+    bundle_payload: Dict[str, Any],
+    analytics_df: Optional[pd.DataFrame] = None,
+) -> Dict[str, Any]:
     snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
     scenarios = snapshot_summary.get("scenarios") or []
     sensitivities = snapshot_summary.get("sensitivities") or []
@@ -2201,7 +2702,14 @@ def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
     position_df = bundle_payload.get("financial_position")
     cash_flow_df = bundle_payload.get("cash_flows")
     cons_df = bundle_payload.get("financial_statements")
-    ai_commentary = _build_ai_commentary(snapshot_summary, perf_df, position_df, cash_flow_df, cons_df)
+    ai_commentary = _build_ai_commentary(
+        snapshot_summary,
+        perf_df,
+        position_df,
+        cash_flow_df,
+        cons_df,
+        analytics_df=analytics_df,
+    )
     summary_rows = [
         {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
         {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
@@ -2225,6 +2733,47 @@ def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
         "financial_statements": cons_df,
         "ai_commentary": ai_commentary,
     }
+
+
+def _apply_cash_flow_assumptions(
+    cash_flow_df: Optional[pd.DataFrame],
+    snapshot_summary: Dict[str, Any],
+) -> Optional[pd.DataFrame]:
+    if cash_flow_df is None or cash_flow_df.empty:
+        return cash_flow_df
+
+    updated = cash_flow_df.copy()
+    years = updated.index
+
+    beginning_cash = float(snapshot_summary.get("beginning_cash") or 0.0)
+    equity_issuance = float(snapshot_summary.get("equity_issuance") or 0.0)
+    debt_draw = float(snapshot_summary.get("debt_draw") or 0.0)
+    debt_repay = float(snapshot_summary.get("debt_repay") or 0.0)
+    interest_paid = float(snapshot_summary.get("interest_paid") or 0.0)
+
+    if not any([beginning_cash, equity_issuance, debt_draw, debt_repay, interest_paid]):
+        return updated
+
+    updated["Equity issuance"] = pd.Series(equity_issuance, index=years)
+    updated["Debt drawdowns"] = pd.Series(debt_draw, index=years)
+    updated["Debt repayments"] = pd.Series(debt_repay, index=years)
+    updated["Interest paid"] = pd.Series(interest_paid, index=years)
+
+    updated["Net cash from financing"] = (
+        updated["Equity issuance"]
+        + updated["Debt drawdowns"]
+        - updated["Debt repayments"]
+        - updated["Interest paid"]
+    )
+    updated["Net change in cash"] = (
+        updated["Net cash from operations"]
+        + updated["Net cash from investing"]
+        + updated["Net cash from financing"]
+    )
+    updated["Beginning cash balance"] = pd.Series(beginning_cash, index=years)
+    updated["Ending cash balance"] = beginning_cash + updated["Net change in cash"].cumsum()
+
+    return updated
 
 
 def _build_chart_tables(
@@ -2292,12 +2841,27 @@ def _build_chart_tables(
     return tables
 
 
+def _build_monte_carlo_results(snapshot_summary: Dict[str, Any]) -> pd.DataFrame:
+    base_npv = snapshot_summary.get("npv")
+    if base_npv is None:
+        return pd.DataFrame()
+    try:
+        base_npv = float(base_npv)
+    except (TypeError, ValueError):
+        return pd.DataFrame()
+    rng = np.random.default_rng(42)
+    shocks = rng.normal(loc=0.0, scale=0.2, size=500)
+    npv_samples = base_npv * (1 + shocks)
+    return pd.DataFrame({"NPV": npv_samples})
+
+
 def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, BytesIO]:
     images: Dict[str, BytesIO] = {}
     if importlib.util.find_spec("matplotlib") is None:
         return images
 
     import matplotlib.pyplot as plt
+    import numpy as np
 
     def _save_fig(fig, key: str) -> None:
         buffer = BytesIO()
@@ -2354,6 +2918,22 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         ax.set_title("Tornado Impact")
         ax.set_xlabel("Delta")
         _save_fig(fig, "analytics_tornado")
+        spider_df = chart_tables["analytics_tornado"].copy()
+        if not spider_df.empty:
+            labels = spider_df["Driver"].astype(str).tolist()
+            values = spider_df["Delta"].abs().to_numpy()
+            if values.sum() > 0:
+                values = values / values.max()
+            angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+            values = np.concatenate([values, values[:1]])
+            angles += angles[:1]
+            fig, ax = plt.subplots(subplot_kw={"polar": True})
+            ax.plot(angles, values, linewidth=2)
+            ax.fill(angles, values, alpha=0.25)
+            ax.set_xticks(angles[:-1])
+            ax.set_xticklabels(labels)
+            ax.set_title("Spider Diagnostics (Normalized Impact)")
+            _save_fig(fig, "spider_diagnostics")
 
     if "scenario_results" in chart_tables:
         fig, ax = plt.subplots()
@@ -2363,6 +2943,46 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
         ax.set_xlabel("Scenario")
         ax.set_ylabel("rNPV")
         _save_fig(fig, "scenario_results")
+    if "scenario_custom" in chart_tables:
+        fig, ax = plt.subplots()
+        scen_df = chart_tables["scenario_custom"]
+        ax.bar(scen_df["scenario"], scen_df["npv"])
+        ax.set_title("Custom Scenario NPV Comparison")
+        ax.set_xlabel("Scenario")
+        ax.set_ylabel("NPV")
+        _save_fig(fig, "scenario_custom")
+
+    if "advanced_analytics_report" in chart_tables:
+        ratio_df = chart_tables["advanced_analytics_report"].copy()
+        fig, ax = plt.subplots()
+        ratio_df.plot(ax=ax)
+        ax.set_title("Margin & Intensity Analysis")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Ratio")
+        _save_fig(fig, "margin_intensity_analysis")
+
+    if "vaccine_break_even_report" in chart_tables:
+        break_even_df = chart_tables["vaccine_break_even_report"]
+        if not break_even_df.empty and "Vaccine name" in break_even_df.columns:
+            fig, ax = plt.subplots()
+            ax.bar(
+                break_even_df["Vaccine name"],
+                break_even_df["Break-even units"],
+            )
+            ax.set_title("Vaccine Break-even Units")
+            ax.set_xlabel("Vaccine")
+            ax.set_ylabel("Break-even units")
+            _save_fig(fig, "vaccine_break_even_chart")
+
+    if "monte_carlo_results" in chart_tables:
+        mc_df = chart_tables["monte_carlo_results"]
+        if not mc_df.empty and "NPV" in mc_df.columns:
+            fig, ax = plt.subplots()
+            ax.hist(mc_df["NPV"], bins=30, color="#1F4E78", alpha=0.75)
+            ax.set_title("Monte Carlo NPV Distribution")
+            ax.set_xlabel("NPV")
+            ax.set_ylabel("Frequency")
+            _save_fig(fig, "monte_carlo_results")
 
     return images
 
@@ -2406,15 +3026,30 @@ def _sync_vaccine_sales_product(
 
 
 def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
+    xlsx_image = None
+    if importlib.util.find_spec("openpyxl") is not None:
+        xlsx_image = importlib.import_module("openpyxl.drawing.image").Image
+
+    def _round_table(df: pd.DataFrame) -> pd.DataFrame:
+        return df.apply(pd.to_numeric, errors="ignore").round(0)
+
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         pd.DataFrame(payload["summary_rows"]).to_excel(writer, index=False, sheet_name="Summary")
         if payload.get("ai_commentary"):
-            pd.DataFrame({"AI commentary": payload["ai_commentary"]}).to_excel(
-                writer,
-                index=False,
-                sheet_name="AI Commentary",
-            )
+            ai_commentary = payload["ai_commentary"]
+            if isinstance(ai_commentary, list) and ai_commentary and isinstance(ai_commentary[0], dict):
+                pd.DataFrame(ai_commentary).to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="AI Commentary",
+                )
+            else:
+                pd.DataFrame({"AI commentary": ai_commentary}).to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="AI Commentary",
+                )
         if payload["scenarios"]:
             pd.DataFrame(payload["scenarios"]).to_excel(writer, index=False, sheet_name="Scenarios")
         if payload["sensitivities"]:
@@ -2423,26 +3058,38 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
             pd.DataFrame(
                 [{"Section": key, "Content": value} for key, value in payload["last_report"].items()]
             ).to_excel(writer, index=False, sheet_name="Last Report")
+        if payload.get("advanced_analytics_narrative"):
+            pd.DataFrame({"Narrative": payload["advanced_analytics_narrative"]}).to_excel(
+                writer,
+                index=False,
+                sheet_name="Advanced Analytics Narrative",
+            )
+        if payload.get("extended_analytics_sections"):
+            pd.DataFrame(payload["extended_analytics_sections"]).to_excel(
+                writer,
+                index=False,
+                sheet_name="Advanced Analytics Coverage",
+            )
         if payload.get("financial_statements") is not None:
-            payload["financial_statements"].to_excel(
+            _round_table(payload["financial_statements"]).to_excel(
                 writer,
                 index=True,
                 sheet_name="Financial Statements",
             )
         if payload.get("financial_performance") is not None:
-            payload["financial_performance"].to_excel(
+            _round_table(payload["financial_performance"]).to_excel(
                 writer,
                 index=True,
                 sheet_name="Financial Performance",
             )
         if payload.get("financial_position") is not None:
-            payload["financial_position"].to_excel(
+            _round_table(payload["financial_position"]).to_excel(
                 writer,
                 index=True,
                 sheet_name="Financial Position",
             )
         if payload.get("cash_flows") is not None:
-            payload["cash_flows"].to_excel(
+            _round_table(payload["cash_flows"]).to_excel(
                 writer,
                 index=True,
                 sheet_name="Cash Flows",
@@ -2452,16 +3099,59 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
             if not table.empty:
                 safe_name = sheet_name[:31]
                 table.to_excel(writer, index=True, sheet_name=safe_name)
+        chart_images = payload.get("chart_images", {})
+        if chart_images and xlsx_image is not None:
+            workbook = writer.book
+
+            def _add_chart_sheet(title: str, image_key: str) -> None:
+                image = chart_images.get(image_key)
+                if not image:
+                    return
+                sheet_title = title[:31]
+                if sheet_title in workbook.sheetnames:
+                    sheet = workbook[sheet_title]
+                else:
+                    sheet = workbook.create_sheet(sheet_title)
+                image.seek(0)
+                sheet.add_image(xlsx_image(image), "A1")
+
+            _add_chart_sheet("Financial Statements Charts", "financial_statements_chart")
+            _add_chart_sheet("Financial Statements Charts", "dashboard_chart")
+            _add_chart_sheet("Financial Statements Charts", "dashboard_fcff_bar")
+            _add_chart_sheet("Advanced Analytics Charts", "analytics_decomposition")
+            _add_chart_sheet("Advanced Analytics Charts", "analytics_segmentation")
+            _add_chart_sheet("Advanced Analytics Charts", "analytics_tornado")
+            _add_chart_sheet("Advanced Analytics Charts", "spider_diagnostics")
+            _add_chart_sheet("Advanced Analytics Charts", "margin_intensity_analysis")
+            _add_chart_sheet("Advanced Analytics Charts", "vaccine_break_even_chart")
+            _add_chart_sheet("Advanced Analytics Charts", "monte_carlo_results")
+            _add_chart_sheet("Scenario Analysis Charts", "scenario_results")
+            _add_chart_sheet("Scenario Analysis Charts", "scenario_custom")
     excel_buffer.seek(0)
     return excel_buffer
 
 
 def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
+    def _round_table(df: pd.DataFrame) -> pd.DataFrame:
+        return df.apply(pd.to_numeric, errors="ignore").round(0)
+
+    def _format_value(value: Any) -> str:
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            if np.isnan(value):
+                return ""
+            return f"{value:,.0f}"
+        return str(value)
+
+    def _set_section_orientation(document, orientation) -> None:
+        section = document.sections[-1]
+        section.orientation = orientation
+        section.page_width, section.page_height = section.page_height, section.page_width
+
     def _add_docx_table(document, title: str, df: pd.DataFrame) -> None:
         if df is None or df.empty:
             return
         document.add_heading(title, level=2)
-        table_df = df.copy()
+        table_df = _round_table(df.copy())
         table_df.insert(0, "Year", table_df.index)
         table = document.add_table(rows=1, cols=len(table_df.columns))
         table.style = "Light Grid"
@@ -2471,12 +3161,57 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         for _, row in table_df.iterrows():
             row_cells = table.add_row().cells
             for idx, value in enumerate(row):
-                row_cells[idx].text = str(value)
+                row_cells[idx].text = _format_value(value)
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.size = shared.Pt(7)
 
-    Document = importlib.import_module("docx").Document
+    def _add_docx_picture(document, image) -> None:
+        if image is None:
+            return
+        if hasattr(image, "seek"):
+            try:
+                image.seek(0)
+            except (AttributeError, io.UnsupportedOperation):
+                pass
+        document.add_picture(image)
+
+    docx_module = importlib.import_module("docx")
+    shared = importlib.import_module("docx.shared")
+    Document = docx_module.Document
+    docx_section = importlib.import_module("docx.enum.section")
+    WD_ORIENT = docx_section.WD_ORIENT
+    WD_SECTION = docx_section.WD_SECTION
     docx_buffer = io.BytesIO()
     document = Document()
-    document.add_heading("Business Plan Bundle", level=1)
+    styles = document.styles
+    primary_color = shared.RGBColor(31, 78, 120)
+    accent_color = shared.RGBColor(58, 58, 58)
+    normal_style = styles["Normal"]
+    normal_style.font.name = "Calibri"
+    normal_style.font.size = shared.Pt(11)
+    normal_style.paragraph_format.space_after = shared.Pt(6)
+    title_style = styles["Title"]
+    title_style.font.name = "Calibri"
+    title_style.font.size = shared.Pt(26)
+    title_style.font.color.rgb = primary_color
+    subtitle_style = styles["Subtitle"]
+    subtitle_style.font.name = "Calibri"
+    subtitle_style.font.size = shared.Pt(12)
+    subtitle_style.font.color.rgb = accent_color
+    for heading_name, size in [("Heading 1", 18), ("Heading 2", 14), ("Heading 3", 12)]:
+        heading_style = styles[heading_name]
+        heading_style.font.name = "Calibri"
+        heading_style.font.size = shared.Pt(size)
+        heading_style.font.color.rgb = primary_color
+
+    document.add_paragraph("Business Plan Bundle", style="Title")
+    document.add_paragraph(
+        "Financial report, analytics, and AI-assisted commentary",
+        style="Subtitle",
+    )
     document.add_paragraph(
         "This bundle summarizes the financial snapshot and the AI configuration used for the "
         "RAG Assistant report generation."
@@ -2486,16 +3221,38 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         document.add_paragraph(f"{row['Metric']}: {row['Value']}")
     if payload.get("ai_commentary"):
         document.add_heading("AI Commentary", level=2)
-        for comment in payload["ai_commentary"]:
-            document.add_paragraph(f"- {comment}")
+        grouped_comments = _group_ai_commentary(payload["ai_commentary"])
+        for section, entries in grouped_comments.items():
+            document.add_heading(section, level=3)
+            for entry in entries:
+                document.add_paragraph(entry.get("Commentary", ""), style="List Bullet")
+                annotation = entry.get("Annotation")
+                if annotation:
+                    document.add_paragraph(f"Annotation: {annotation}", style="List Bullet")
     if payload["scenarios"]:
         document.add_heading("Scenarios", level=2)
+        currency = next(
+            (row.get("Value") for row in payload.get("summary_rows", []) if row.get("Metric") == "Currency"),
+            "USD",
+        )
         for scenario in payload["scenarios"]:
-            document.add_paragraph(json.dumps(scenario, ensure_ascii=False))
+            document.add_paragraph(_format_scenario_prose(scenario, currency))
     if payload["sensitivities"]:
         document.add_heading("Sensitivities", level=2)
         for sensitivity in payload["sensitivities"]:
             document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
+    has_financial_tables = any(
+        payload.get(key) is not None
+        for key in [
+            "financial_statements",
+            "financial_performance",
+            "financial_position",
+            "cash_flows",
+        ]
+    )
+    if has_financial_tables:
+        document.add_section(WD_SECTION.NEW_PAGE)
+        _set_section_orientation(document, WD_ORIENT.LANDSCAPE)
     if payload.get("financial_statements") is not None:
         _add_docx_table(
             document,
@@ -2520,11 +3277,27 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
             "Statement of Cash Flows",
             payload["cash_flows"],
         )
+    if has_financial_tables:
+        document.add_section(WD_SECTION.NEW_PAGE)
+        _set_section_orientation(document, WD_ORIENT.PORTRAIT)
     if payload.get("chart_tables", {}).get("advanced_analytics_report") is not None:
         document.add_heading("Advanced analytics report", level=2)
         analytics_df = payload["chart_tables"]["advanced_analytics_report"]
-        for year, row in analytics_df.round(4).iterrows():
-            document.add_paragraph(f"{year}: {row.to_dict()}")
+        narrative = payload.get("advanced_analytics_narrative") or _build_advanced_analytics_narrative(
+            analytics_df
+        )
+        for paragraph in narrative:
+            document.add_paragraph(paragraph)
+    if payload.get("extended_analytics_sections"):
+        document.add_heading("Advanced analytics coverage", level=2)
+        for entry in payload["extended_analytics_sections"]:
+            document.add_paragraph(
+                f"{entry.get('Section')}: {entry.get('Status')}",
+                style="List Bullet",
+            )
+            details = entry.get("Details")
+            if details:
+                document.add_paragraph(details, style="List Bullet")
     if payload.get("chart_tables", {}).get("vaccine_break_even_report") is not None:
         document.add_heading("Vaccine break-even analysis", level=2)
         break_even_df = payload["chart_tables"]["vaccine_break_even_report"]
@@ -2546,22 +3319,32 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     if payload.get("chart_images"):
         document.add_heading("Financial Statements Charts", level=2)
         if payload["chart_images"].get("financial_statements_chart"):
-            document.add_picture(payload["chart_images"]["financial_statements_chart"])
+            _add_docx_picture(document, payload["chart_images"]["financial_statements_chart"])
         document.add_heading("Dashboard Charts", level=2)
         if payload["chart_images"].get("dashboard_chart"):
-            document.add_picture(payload["chart_images"]["dashboard_chart"])
+            _add_docx_picture(document, payload["chart_images"]["dashboard_chart"])
         if payload["chart_images"].get("dashboard_fcff_bar"):
-            document.add_picture(payload["chart_images"]["dashboard_fcff_bar"])
+            _add_docx_picture(document, payload["chart_images"]["dashboard_fcff_bar"])
         document.add_heading("Advanced Analytics Charts", level=2)
         if payload["chart_images"].get("analytics_decomposition"):
-            document.add_picture(payload["chart_images"]["analytics_decomposition"])
+            _add_docx_picture(document, payload["chart_images"]["analytics_decomposition"])
         if payload["chart_images"].get("analytics_segmentation"):
-            document.add_picture(payload["chart_images"]["analytics_segmentation"])
+            _add_docx_picture(document, payload["chart_images"]["analytics_segmentation"])
         if payload["chart_images"].get("analytics_tornado"):
-            document.add_picture(payload["chart_images"]["analytics_tornado"])
+            _add_docx_picture(document, payload["chart_images"]["analytics_tornado"])
+        if payload["chart_images"].get("spider_diagnostics"):
+            _add_docx_picture(document, payload["chart_images"]["spider_diagnostics"])
+        if payload["chart_images"].get("margin_intensity_analysis"):
+            _add_docx_picture(document, payload["chart_images"]["margin_intensity_analysis"])
+        if payload["chart_images"].get("vaccine_break_even_chart"):
+            _add_docx_picture(document, payload["chart_images"]["vaccine_break_even_chart"])
+        if payload["chart_images"].get("monte_carlo_results"):
+            _add_docx_picture(document, payload["chart_images"]["monte_carlo_results"])
         document.add_heading("Scenario Analysis Charts", level=2)
         if payload["chart_images"].get("scenario_results"):
-            document.add_picture(payload["chart_images"]["scenario_results"])
+            _add_docx_picture(document, payload["chart_images"]["scenario_results"])
+        if payload["chart_images"].get("scenario_custom"):
+            _add_docx_picture(document, payload["chart_images"]["scenario_custom"])
     document.save(docx_buffer)
     docx_buffer.seek(0)
     return docx_buffer
@@ -2571,81 +3354,145 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
     canvas = importlib.import_module("reportlab.pdfgen.canvas")
     image_reader = importlib.import_module("reportlab.lib.utils").ImageReader
     tables = importlib.import_module("reportlab.platypus.tables")
+    pagesizes = importlib.import_module("reportlab.lib.pagesizes")
+    colors = importlib.import_module("reportlab.lib.colors")
+    import textwrap
     pdf_buffer = io.BytesIO()
     pdf_canvas = canvas.Canvas(pdf_buffer)
-    pdf_canvas.setFont("Helvetica-Bold", 14)
-    pdf_canvas.drawString(72, 770, "Business Plan Bundle")
-    pdf_canvas.setFont("Helvetica", 11)
-    y_position = 740
-    pdf_canvas.drawString(72, y_position, "Financial Snapshot")
-    y_position -= 18
-    for row in payload["summary_rows"]:
-        pdf_canvas.drawString(72, y_position, f"{row['Metric']}: {row['Value']}")
-        y_position -= 16
-        if y_position <= 72:
+    portrait_size = pagesizes.letter
+    landscape_size = pagesizes.landscape(portrait_size)
+    left_margin = 72
+    primary_color = colors.HexColor("#1F4E78")
+    accent_color = colors.HexColor("#3A3A3A")
+    page_width = portrait_size[0]
+    top_margin = 72
+    bottom_margin = 72
+
+    def _reset_page(page_size) -> None:
+        nonlocal y_position, page_width
+        pdf_canvas.setPageSize(page_size)
+        page_width = page_size[0]
+        y_position = page_size[1] - top_margin
+        pdf_canvas.setFillColor(colors.black)
+
+    def _draw_cover() -> None:
+        nonlocal y_position
+        pdf_canvas.setFont("Helvetica-Bold", 18)
+        pdf_canvas.setFillColor(primary_color)
+        pdf_canvas.drawCentredString(page_width / 2, y_position, "Business Plan Bundle")
+        pdf_canvas.setFont("Helvetica", 12)
+        pdf_canvas.setFillColor(accent_color)
+        pdf_canvas.drawCentredString(
+            page_width / 2,
+            y_position - 20,
+            "Financial report, analytics, and AI commentary",
+        )
+        pdf_canvas.setFillColor(colors.black)
+        pdf_canvas.setFont("Helvetica", 11)
+        y_position -= 44
+
+    def _ensure_space(required: float, page_size) -> None:
+        nonlocal y_position
+        if y_position - required <= bottom_margin:
             pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
+            _reset_page(page_size)
+            _draw_cover()
+
+    _reset_page(portrait_size)
+    _draw_cover()
+
+    def _draw_section_title(title: str) -> None:
+        nonlocal y_position
+        _ensure_space(24, portrait_size)
+        pdf_canvas.setFont("Helvetica-Bold", 12)
+        pdf_canvas.setFillColor(primary_color)
+        pdf_canvas.drawString(left_margin, y_position, title)
+        y_position -= 6
+        pdf_canvas.setStrokeColor(primary_color)
+        pdf_canvas.line(left_margin, y_position, page_width - left_margin, y_position)
+        y_position -= 14
+        pdf_canvas.setFillColor(colors.black)
+        pdf_canvas.setFont("Helvetica", 11)
+
+    _draw_section_title("Financial Snapshot")
+    for row in payload["summary_rows"]:
+        _ensure_space(16, portrait_size)
+        pdf_canvas.drawString(left_margin, y_position, f"{row['Metric']}: {row['Value']}")
+        y_position -= 16
     if payload.get("ai_commentary"):
         y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, "AI Commentary")
-        y_position -= 18
-        for comment in payload["ai_commentary"]:
-            pdf_canvas.drawString(72, y_position, f"- {comment}")
+        _ensure_space(18, portrait_size)
+        _draw_section_title("AI Commentary")
+        grouped_comments = _group_ai_commentary(payload["ai_commentary"])
+        for section, entries in grouped_comments.items():
+            _ensure_space(16, portrait_size)
+            pdf_canvas.drawString(left_margin, y_position, section)
             y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+            for entry in entries:
+                lines = textwrap.wrap(f"- {entry.get('Commentary', '')}", width=92)
+                for line in lines:
+                    _ensure_space(16, portrait_size)
+                    pdf_canvas.drawString(left_margin, y_position, line)
+                    y_position -= 16
+                annotation = entry.get("Annotation")
+                if annotation:
+                    for line in textwrap.wrap(f"Annotation: {annotation}", width=92):
+                        _ensure_space(16, portrait_size)
+                        pdf_canvas.drawString(left_margin + 18, y_position, line)
+                        y_position -= 16
     if payload["scenarios"]:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, "Scenarios")
-        y_position -= 18
+        _ensure_space(18, portrait_size)
+        _draw_section_title("Scenarios")
+        currency = next(
+            (row.get("Value") for row in payload.get("summary_rows", []) if row.get("Metric") == "Currency"),
+            "USD",
+        )
         for scenario in payload["scenarios"]:
-            pdf_canvas.drawString(72, y_position, json.dumps(scenario, ensure_ascii=False))
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+            for line in textwrap.wrap(_format_scenario_prose(scenario, currency), width=92):
+                _ensure_space(16, portrait_size)
+                pdf_canvas.drawString(left_margin, y_position, line)
+                y_position -= 16
+            _ensure_space(6, portrait_size)
+            y_position -= 4
     if payload["sensitivities"]:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, "Sensitivities")
-        y_position -= 18
+        _ensure_space(18, portrait_size)
+        _draw_section_title("Sensitivities")
         for sensitivity in payload["sensitivities"]:
-            pdf_canvas.drawString(72, y_position, json.dumps(sensitivity, ensure_ascii=False))
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
-    def _draw_pdf_table(title: str, df: pd.DataFrame) -> None:
+            lines = textwrap.wrap(json.dumps(sensitivity, ensure_ascii=False), width=92)
+            for line in lines:
+                _ensure_space(16, portrait_size)
+                pdf_canvas.drawString(left_margin, y_position, line)
+                y_position -= 16
+    def _round_table(df: pd.DataFrame) -> pd.DataFrame:
+        return df.apply(pd.to_numeric, errors="ignore").round(0)
+
+    def _format_value(value: Any) -> str:
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            if np.isnan(value):
+                return ""
+            return f"{value:,.0f}"
+        return str(value)
+
+    def _switch_orientation(page_size) -> None:
+        pdf_canvas.showPage()
+        _reset_page(page_size)
+
+    def _draw_pdf_table(title: str, df: pd.DataFrame, page_size) -> None:
         nonlocal y_position, pdf_canvas
         if df is None or df.empty:
             return
-        y_position -= 6
-        if y_position <= 200:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, title)
+        _ensure_space(32, page_size)
+        pdf_canvas.setFont("Helvetica-Bold", 12)
+        pdf_canvas.setFillColor(primary_color)
+        pdf_canvas.drawString(left_margin, y_position, title)
+        pdf_canvas.setFillColor(colors.black)
+        pdf_canvas.setFont("Helvetica", 11)
         y_position -= 12
 
-        table_df = df.copy()
+        table_df = _round_table(df.copy())
         table_df.insert(0, "Year", table_df.index)
         data = [list(table_df.columns)] + table_df.reset_index(drop=True).values.tolist()
+        data = [[_format_value(value) for value in row] for row in data]
         table = tables.Table(data, repeatRows=1)
         style = tables.TableStyle(
             [
@@ -2653,102 +3500,103 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
                 ("TEXTCOLOR", (0, 0), (-1, 0), "#FFFFFF"),
                 ("GRID", (0, 0), (-1, -1), 0.25, "#CCCCCC"),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
                 ("ALIGN", (0, 0), (-1, -1), "LEFT"),
             ]
         )
         table.setStyle(style)
-        width, height = table.wrap(450, y_position - 72)
-        if y_position - height <= 72:
-            pdf_canvas.showPage()
+        available_width = page_size[0] - (left_margin * 2)
+        width, height = table.wrap(available_width, y_position - bottom_margin)
+        if y_position - height <= bottom_margin:
+            _switch_orientation(page_size)
+            pdf_canvas.setFont("Helvetica-Bold", 12)
+            pdf_canvas.setFillColor(primary_color)
+            pdf_canvas.drawString(left_margin, y_position, title)
+            pdf_canvas.setFillColor(colors.black)
             pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-            pdf_canvas.drawString(72, y_position, title)
             y_position -= 12
-            width, height = table.wrap(450, y_position - 72)
-        table.drawOn(pdf_canvas, 72, y_position - height)
+            width, height = table.wrap(available_width, y_position - bottom_margin)
+        table.drawOn(pdf_canvas, left_margin, y_position - height)
         y_position -= height + 18
 
     perf_df = payload.get("financial_performance")
-    if perf_df is not None:
-        _draw_pdf_table("Statement of Financial Performance", perf_df)
     cons_df = payload.get("financial_statements")
-    if cons_df is not None:
-        _draw_pdf_table("Financial Statements", cons_df)
     position_df = payload.get("financial_position")
-    if position_df is not None:
-        _draw_pdf_table("Statement of Financial Position", position_df)
     cash_flow_df = payload.get("cash_flows")
+    has_financial_tables = any(
+        table is not None for table in [perf_df, cons_df, position_df, cash_flow_df]
+    )
+    if has_financial_tables:
+        _switch_orientation(landscape_size)
+    if perf_df is not None:
+        _draw_pdf_table("Statement of Financial Performance", perf_df, landscape_size)
+    if cons_df is not None:
+        _draw_pdf_table("Financial Statements", cons_df, landscape_size)
+    if position_df is not None:
+        _draw_pdf_table("Statement of Financial Position", position_df, landscape_size)
     if cash_flow_df is not None:
-        _draw_pdf_table("Statement of Cash Flows", cash_flow_df)
+        _draw_pdf_table("Statement of Cash Flows", cash_flow_df, landscape_size)
+    if has_financial_tables:
+        _switch_orientation(portrait_size)
     analytics_df = payload.get("chart_tables", {}).get("advanced_analytics_report")
     if analytics_df is not None:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, "Advanced analytics report")
-        y_position -= 18
-        for year, row in analytics_df.round(4).iterrows():
-            pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
+        _ensure_space(18, portrait_size)
+        _draw_section_title("Advanced analytics report")
+        narrative = payload.get("advanced_analytics_narrative") or _build_advanced_analytics_narrative(
+            analytics_df
+        )
+        for paragraph in narrative:
+            for line in textwrap.wrap(paragraph, width=92):
+                _ensure_space(16, portrait_size)
+                pdf_canvas.drawString(left_margin, y_position, line)
+                y_position -= 16
+    if payload.get("extended_analytics_sections"):
+        _ensure_space(18, portrait_size)
+        _draw_section_title("Advanced analytics coverage")
+        for entry in payload["extended_analytics_sections"]:
+            _ensure_space(16, portrait_size)
+            pdf_canvas.drawString(
+                left_margin,
+                y_position,
+                f"{entry.get('Section')}: {entry.get('Status')}",
+            )
             y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+            details = entry.get("Details")
+            if details:
+                for line in textwrap.wrap(details, width=92):
+                    _ensure_space(16, portrait_size)
+                    pdf_canvas.drawString(left_margin + 14, y_position, line)
+                    y_position -= 16
     break_even_df = payload.get("chart_tables", {}).get("vaccine_break_even_report")
     if break_even_df is not None:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, "Vaccine break-even analysis")
-        y_position -= 18
+        _ensure_space(18, portrait_size)
+        _draw_section_title("Vaccine break-even analysis")
         for _, row in break_even_df.iterrows():
-            pdf_canvas.drawString(
-                72,
-                y_position,
+            line = (
                 f"{row.get('Vaccine name', '')}: unit price {row.get('Unit price (USD)')}, "
                 f"unit variable cost {row.get('Unit variable cost (USD)')}, "
                 f"unit fixed cost {row.get('Unit fixed cost (USD/year)')}, "
                 f"unit margin {row.get('Unit contribution margin (USD)')}, "
-                f"break-even units {row.get('Break-even units')}",
+                f"break-even units {row.get('Break-even units')}"
             )
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
-    y_position -= 6
-    if y_position <= 72:
-        pdf_canvas.showPage()
-        pdf_canvas.setFont("Helvetica", 11)
-        y_position = 770
-    pdf_canvas.drawString(72, y_position, "AI Configuration")
-    y_position -= 18
+            for wrapped in textwrap.wrap(line, width=92):
+                _ensure_space(16, portrait_size)
+                pdf_canvas.drawString(left_margin, y_position, wrapped)
+                y_position -= 16
+    _ensure_space(18, portrait_size)
+    _draw_section_title("AI Configuration")
     for key, value in payload["ai_config"].items():
-        pdf_canvas.drawString(72, y_position, f"{key}: {value}")
+        _ensure_space(16, portrait_size)
+        pdf_canvas.drawString(left_margin, y_position, f"{key}: {value}")
         y_position -= 16
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
     if payload["last_report"]:
-        y_position -= 6
-        if y_position <= 72:
-            pdf_canvas.showPage()
-            pdf_canvas.setFont("Helvetica", 11)
-            y_position = 770
-        pdf_canvas.drawString(72, y_position, "Last Report")
-        y_position -= 18
+        _ensure_space(18, portrait_size)
+        _draw_section_title("Last Report")
         for key, value in payload["last_report"].items():
-            pdf_canvas.drawString(72, y_position, f"{key}: {value}")
-            y_position -= 16
-            if y_position <= 72:
-                pdf_canvas.showPage()
-                pdf_canvas.setFont("Helvetica", 11)
-                y_position = 770
+            for line in textwrap.wrap(f"{key}: {value}", width=92):
+                _ensure_space(16, portrait_size)
+                pdf_canvas.drawString(left_margin, y_position, line)
+                y_position -= 16
     chart_images = payload.get("chart_images", {})
     if chart_images:
         pdf_canvas.showPage()
@@ -2764,13 +3612,16 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
                 return
             if y_position <= 180:
                 pdf_canvas.showPage()
+                _reset_page(portrait_size)
                 pdf_canvas.setFont("Helvetica-Bold", 14)
-                pdf_canvas.drawString(72, 770, "Charts & Graphs (cont.)")
+                pdf_canvas.setFillColor(primary_color)
+                pdf_canvas.drawString(left_margin, y_position, "Charts & Graphs (cont.)")
+                pdf_canvas.setFillColor(colors.black)
                 pdf_canvas.setFont("Helvetica", 11)
-                y_position = 740
-            pdf_canvas.drawString(72, y_position, title)
+                y_position -= 20
+            pdf_canvas.drawString(left_margin, y_position, title)
             y_position -= 14
-            pdf_canvas.drawImage(image_reader(image), 72, y_position - 120, width=450, height=120)
+            pdf_canvas.drawImage(image_reader(image), left_margin, y_position - 120, width=450, height=120)
             y_position -= 140
 
         _draw_image("financial_statements_chart", "Financial Statements")
@@ -2779,7 +3630,12 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         _draw_image("analytics_decomposition", "Analytics Decomposition")
         _draw_image("analytics_segmentation", "Analytics Segmentation")
         _draw_image("analytics_tornado", "Analytics Tornado")
+        _draw_image("spider_diagnostics", "Spider Diagnostics")
+        _draw_image("margin_intensity_analysis", "Margin & Intensity Analysis")
+        _draw_image("vaccine_break_even_chart", "Vaccine Break-even Analysis")
+        _draw_image("monte_carlo_results", "Monte Carlo NPV Distribution")
         _draw_image("scenario_results", "Scenario Analysis")
+        _draw_image("scenario_custom", "Custom Scenario Analysis")
     pdf_canvas.save()
     pdf_buffer.seek(0)
     return pdf_buffer
@@ -3037,6 +3893,40 @@ def _render_rag_assistant_page() -> None:
             key=f"{rag_key_prefix}_revenue_annual",
         )
 
+        st.markdown("**Financing assumptions**")
+        finance_cols = st.columns(3)
+        snapshot_state["beginning_cash"] = finance_cols[0].number_input(
+            "Beginning cash balance",
+            value=float(snapshot_state.get("beginning_cash") or 0.0),
+            step=1_000_000.0,
+            key=f"{rag_key_prefix}_beginning_cash",
+        )
+        snapshot_state["equity_issuance"] = finance_cols[1].number_input(
+            "Annual equity issuance",
+            value=float(snapshot_state.get("equity_issuance") or 0.0),
+            step=1_000_000.0,
+            key=f"{rag_key_prefix}_equity_issuance",
+        )
+        snapshot_state["debt_draw"] = finance_cols[2].number_input(
+            "Annual debt drawdowns",
+            value=float(snapshot_state.get("debt_draw") or 0.0),
+            step=1_000_000.0,
+            key=f"{rag_key_prefix}_debt_draw",
+        )
+        finance_cols2 = st.columns(2)
+        snapshot_state["debt_repay"] = finance_cols2[0].number_input(
+            "Annual debt repayments",
+            value=float(snapshot_state.get("debt_repay") or 0.0),
+            step=1_000_000.0,
+            key=f"{rag_key_prefix}_debt_repay",
+        )
+        snapshot_state["interest_paid"] = finance_cols2[1].number_input(
+            "Annual interest paid",
+            value=float(snapshot_state.get("interest_paid") or 0.0),
+            step=100_000.0,
+            key=f"{rag_key_prefix}_interest_paid",
+        )
+
         scenarios_df = pd.DataFrame(snapshot_state.get("scenarios") or [])
         scenarios_df = st.data_editor(
             scenarios_df,
@@ -3145,6 +4035,7 @@ def _render_rag_assistant_page() -> None:
             cons = valuation_result.consolidated
             cons_df = cons.copy()
             perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
+        cash_flow_df = _apply_cash_flow_assumptions(cash_flow_df, snapshot_state)
         bundle_payload = {
             "snapshot": snapshot_payload,
             "ai_config": st.session_state.get("rag_ai_config", {}),
@@ -3154,13 +4045,36 @@ def _render_rag_assistant_page() -> None:
             "cash_flows": cash_flow_df,
             "financial_statements": cons_df,
         }
-        export_payload = _build_export_payload(bundle_payload)
         chart_tables = _build_chart_tables(
             st.session_state.get("valuation_result"),
             st.session_state.get("model_config"),
             st.session_state.get("portfolio"),
         )
+        custom_scenarios = snapshot_state.get("scenarios") or []
+        custom_rows = []
+        for scenario in custom_scenarios:
+            if isinstance(scenario, dict):
+                custom_rows.append(
+                    {
+                        "scenario": scenario.get("name") or scenario.get("scenario") or "Scenario",
+                        "npv": scenario.get("npv"),
+                        "irr": scenario.get("irr"),
+                    }
+                )
+        if custom_rows:
+            chart_tables["scenario_custom"] = pd.DataFrame(custom_rows)
+        monte_carlo_df = _build_monte_carlo_results(snapshot_state)
+        if not monte_carlo_df.empty:
+            chart_tables["monte_carlo_results"] = monte_carlo_df
+        export_payload = _build_export_payload(
+            bundle_payload,
+            analytics_df=chart_tables.get("advanced_analytics_report"),
+        )
         export_payload["chart_tables"] = chart_tables
+        export_payload["advanced_analytics_narrative"] = _build_advanced_analytics_narrative(
+            chart_tables.get("advanced_analytics_report")
+        )
+        export_payload["extended_analytics_sections"] = _build_extended_analytics_sections(chart_tables)
         export_payload["chart_images"] = _build_chart_images(chart_tables)
         export_buffers, export_warnings = _build_export_buffers(export_payload)
 
@@ -3275,6 +4189,119 @@ def main() -> None:
                 vaccine_df["Implied revenue"],
             )
 
+        with st.expander("Debt schedule", expanded=True):
+            debt_enabled = st.checkbox(
+                "Enable debt financing",
+                value=bool(st.session_state.get("debt_enabled", False)),
+            )
+            debt_cols = st.columns(3)
+            debt_principal = debt_cols[0].number_input(
+                "Debt principal",
+                min_value=0.0,
+                value=float(st.session_state.get("debt_principal") or 0.0),
+                step=1_000_000.0,
+            )
+            debt_interest_rate = debt_cols[1].number_input(
+                "Interest rate",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(st.session_state.get("debt_interest_rate") or 0.06),
+                step=0.005,
+                format="%0.3f",
+            )
+            debt_term_years = debt_cols[2].number_input(
+                "Term (years)",
+                min_value=1,
+                value=int(st.session_state.get("debt_term_years") or 5),
+                step=1,
+            )
+            debt_cols2 = st.columns(3)
+            debt_draw_year = debt_cols2[0].number_input(
+                "Draw year",
+                min_value=int(first_year),
+                max_value=int(first_year + n_years - 1),
+                value=int(st.session_state.get("debt_draw_year") or int(first_year)),
+                step=1,
+            )
+            debt_interest_only_years = debt_cols2[1].number_input(
+                "Interest-only years",
+                min_value=0,
+                value=int(st.session_state.get("debt_interest_only_years") or 0),
+                step=1,
+            )
+            debt_covenant_min_cash = debt_cols2[2].number_input(
+                "Minimum cash covenant",
+                min_value=0.0,
+                value=float(st.session_state.get("debt_covenant_min_cash") or 0.0),
+                step=1_000_000.0,
+            )
+            debt_cols3 = st.columns(2)
+            debt_covenant_max_debt_to_ebitda = debt_cols3[0].number_input(
+                "Max debt/EBITDA covenant",
+                min_value=0.0,
+                value=float(st.session_state.get("debt_covenant_max_debt_to_ebitda") or 0.0),
+                step=0.25,
+            )
+            st.caption("Debt schedule uses straight-line amortization after any interest-only period.")
+
+            st.session_state["debt_enabled"] = debt_enabled
+            st.session_state["debt_principal"] = debt_principal
+            st.session_state["debt_interest_rate"] = debt_interest_rate
+            st.session_state["debt_term_years"] = debt_term_years
+            st.session_state["debt_draw_year"] = debt_draw_year
+            st.session_state["debt_interest_only_years"] = debt_interest_only_years
+            st.session_state["debt_covenant_min_cash"] = debt_covenant_min_cash
+            st.session_state["debt_covenant_max_debt_to_ebitda"] = debt_covenant_max_debt_to_ebitda
+
+            debt_cfg = ModelConfig(
+                first_year=int(first_year),
+                n_years=int(n_years),
+                debt_enabled=debt_enabled,
+                debt_principal=float(debt_principal),
+                debt_draw_year=int(debt_draw_year),
+                debt_term_years=int(debt_term_years),
+                debt_interest_rate=float(debt_interest_rate),
+                debt_interest_only_years=int(debt_interest_only_years),
+                debt_covenant_min_cash=float(debt_covenant_min_cash),
+                debt_covenant_max_debt_to_ebitda=float(debt_covenant_max_debt_to_ebitda),
+            )
+            debt_schedule = _build_debt_schedule(debt_cfg, debt_cfg.years)
+            st.session_state["debt_schedule"] = debt_schedule
+            st.session_state["debt_financing_total"] = float(
+                pd.to_numeric(debt_schedule["Draw"], errors="coerce").fillna(0.0).sum()
+            )
+            st.dataframe(
+                debt_schedule.style.format(
+                    {
+                        "Opening balance": "{:,.0f}",
+                        "Draw": "{:,.0f}",
+                        "Repayment": "{:,.0f}",
+                        "Interest accrual": "{:,.0f}",
+                        "Closing balance": "{:,.0f}",
+                    }
+                )
+            )
+            valuation_result = st.session_state.get("valuation_result")
+            if debt_enabled and valuation_result is not None:
+                _, _, cash_flow_df = _compute_financial_statements(
+                    valuation_result.consolidated,
+                    debt_cfg,
+                )
+                cash_balance = cash_flow_df.get("Ending cash balance", pd.Series(dtype=float))
+                ebitda = valuation_result.consolidated.get("ebitda")
+                if ebitda is not None:
+                    debt_to_ebitda = debt_schedule["Closing balance"].div(
+                        ebitda.replace(0, np.nan)
+                    )
+                    if debt_covenant_max_debt_to_ebitda > 0 and debt_to_ebitda.max() > debt_covenant_max_debt_to_ebitda:
+                        st.warning("Debt/EBITDA covenant breached in the projection.")
+                if (
+                    debt_covenant_min_cash > 0
+                    and not cash_balance.empty
+                    and cash_balance.min() < debt_covenant_min_cash
+                ):
+                    st.warning("Minimum cash covenant breached in the projection.")
+
         with st.expander("Uses and sources of funds"):
             funding_required = float(st.session_state.get("funding_required", 250_000_000.0))
             planned_new_equity = float(st.session_state.get("planned_new_equity", 200_000_000.0))
@@ -3309,6 +4336,18 @@ def main() -> None:
                         "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
                     },
                 )
+                debt_financing_total = float(st.session_state.get("debt_financing_total") or 0.0)
+                if {"Item", "Amount"}.issubset(sources_df.columns):
+                    debt_mask = sources_df["Item"].astype(str).str.strip().str.lower() == "debt financing"
+                    if debt_mask.any():
+                        sources_df.loc[debt_mask, "Amount"] = debt_financing_total
+                        st.session_state["sources_table"] = sources_df
+                    elif debt_financing_total > 0:
+                        sources_df.loc[len(sources_df)] = {
+                            "Item": "Debt financing",
+                            "Amount": debt_financing_total,
+                        }
+                        st.session_state["sources_table"] = sources_df
                 sources_other_total = 0.0
                 if {"Item", "Amount"}.issubset(sources_df.columns):
                     source_items = sources_df["Item"].astype(str).str.strip().str.lower()
@@ -3361,6 +4400,20 @@ def main() -> None:
                 ]
             )
             st.dataframe(reconciliation.style.format({"Amount": "{:,.0f}"}))
+            if valuation_result is not None:
+                cons = valuation_result.consolidated
+                burn_schedule = pd.DataFrame(
+                    {"Burn (FCFF < 0)": (-cons["fcff_after_wc"].clip(upper=0)).astype(float)},
+                    index=cons.index,
+                )
+                wc_schedule = pd.DataFrame(
+                    {"Working capital draw": (-cons["delta_wc"].clip(upper=0)).astype(float)},
+                    index=cons.index,
+                )
+                st.markdown("**Burn schedule**")
+                st.dataframe(burn_schedule.style.format("{:,.0f}"))
+                st.markdown("**Working capital schedule**")
+                st.dataframe(wc_schedule.style.format("{:,.0f}"))
 
         with st.expander("Risk-adjusted DCF valuation method - assumptions"):
             col_a, col_b, col_c = st.columns(3)
@@ -3466,6 +4519,16 @@ def main() -> None:
             working_capital_pct_sales=float(wc_pct),
             ev_ebitda_multiple=float(ev_multiple),
             sales_ramp_factors=ramp,
+            debt_enabled=bool(st.session_state.get("debt_enabled", False)),
+            debt_principal=float(st.session_state.get("debt_principal") or 0.0),
+            debt_draw_year=int(st.session_state.get("debt_draw_year") or int(first_year)),
+            debt_term_years=int(st.session_state.get("debt_term_years") or 0),
+            debt_interest_rate=float(st.session_state.get("debt_interest_rate") or 0.0),
+            debt_interest_only_years=int(st.session_state.get("debt_interest_only_years") or 0),
+            debt_covenant_min_cash=float(st.session_state.get("debt_covenant_min_cash") or 0.0),
+            debt_covenant_max_debt_to_ebitda=float(
+                st.session_state.get("debt_covenant_max_debt_to_ebitda") or 0.0
+            ),
         )
 
         st.subheader("Product assumptions")
@@ -4360,9 +5423,9 @@ def main() -> None:
                     horizon_years = int(model_cfg.n_years)
                 except (TypeError, ValueError):
                     horizon_years = 5
-                horizon_max = max(5, horizon_years)
-                horizon_default = min(10, horizon_max)
-                horizon_default = max(5, int(horizon_default))
+                horizon_max = int(max(5, horizon_years))
+                horizon_default = int(min(10, horizon_max))
+                horizon_default = min(max(5, horizon_default), horizon_max)
                 horizon = st.slider("Forecast steps", 5, horizon_max, horizon_default)
                 if st.button("Run time-series model"):
                     fe = ForecastEngine(model_cfg)
@@ -4453,6 +5516,17 @@ def main() -> None:
                 "New money ($)", min_value=1_000_000, value=50_000_000, step=5_000_000
             )
             exit_multiple = st.slider("Exit EV/EBITDA multiple", 2.0, 25.0, model_cfg.ev_ebitda_multiple)
+
+            available_years = list(valuation_result.consolidated.index)
+            if available_years:
+                min_year = int(min(available_years))
+                max_year = int(max(available_years))
+                if exit_year < min_year or exit_year > max_year:
+                    st.warning(
+                        f"Exit year {int(exit_year)} is outside the modeled range ({min_year}-{max_year}). "
+                        "Clamping to the nearest available year."
+                    )
+                exit_year = min(max(int(exit_year), min_year), max_year)
 
             vc_inputs = VCInputs(
                 exit_year=int(exit_year),

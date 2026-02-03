@@ -24,6 +24,14 @@ class ModelConfig:
     ev_ebitda_multiple: float = 8.0
     working_capital_pct_sales: float = 0.08
     sales_ramp_factors: List[float] | None = None
+    debt_enabled: bool = False
+    debt_principal: float = 0.0
+    debt_draw_year: int = 2024
+    debt_term_years: int = 5
+    debt_interest_rate: float = 0.06
+    debt_interest_only_years: int = 0
+    debt_covenant_min_cash: float = 0.0
+    debt_covenant_max_debt_to_ebitda: float = 0.0
 
     def __post_init__(self) -> None:
         if self.sales_ramp_factors is None:
