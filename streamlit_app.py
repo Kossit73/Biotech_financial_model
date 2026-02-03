@@ -907,6 +907,11 @@ def _apply_yearly_increment(
         options=numeric_cols,
         key=f"{section_key}_inc_col",
     )
+    compound = st.checkbox(
+        "Compound annually (apply % growth)",
+        value=False,
+        key=f"{section_key}_inc_compound",
+    )
     increment = st.number_input(
         "Increment per year",
         value=1.0,
@@ -927,7 +932,17 @@ def _apply_yearly_increment(
     st.caption(f"Current value: {base_value:,.2f}")
 
     if st.button("Apply increment", key=f"{section_key}_inc_apply", use_container_width=True):
-        df.at[selected_idx, target_col] = float(base_value) + increment * years
+        start_pos = df.index.get_loc(selected_idx)
+        for offset in range(int(years)):
+            row_pos = start_pos + offset
+            if row_pos >= len(df.index):
+                break
+            row_idx = df.index[row_pos]
+            if compound:
+                next_value = float(base_value) * ((1 + increment) ** offset)
+            else:
+                next_value = float(base_value) + increment * offset
+            df.at[row_idx, target_col] = next_value
         st.session_state[section_key] = df
         st.success("Increment applied")
     return st.session_state.get(section_key, df)
