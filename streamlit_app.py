@@ -162,13 +162,21 @@ def _default_vaccine_sales_table(first_year: int = 2024, horizon_years: int = 5)
 
     doses = _extend([5, 7, 10, 12, 12], len(years))
     prices = _extend([25, 26, 27, 27, 28], len(years))
-    data = {
-        "Year": years,
-        "Doses (M)": doses,
-        "Price per dose": prices,
-        "Comments": [""] * len(years),
-    }
-    return pd.DataFrame(data)
+    vaccine_rows = _default_vaccine_revenue_table()[["ID_vaccine", "Vaccine name"]]
+    rows: List[Dict[str, Any]] = []
+    for _, vaccine in vaccine_rows.iterrows():
+        for idx, year in enumerate(years):
+            rows.append(
+                {
+                    "ID_vaccine": vaccine["ID_vaccine"],
+                    "Vaccine name": vaccine["Vaccine name"],
+                    "Year": year,
+                    "Doses (M)": doses[idx],
+                    "Price per dose": prices[idx],
+                    "Comments": "",
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
@@ -188,7 +196,19 @@ def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
         last_price = pd.to_numeric(df["Price per dose"], errors="coerce").dropna()
         if not last_price.empty:
             price = float(last_price.iloc[-1])
+    vaccine_id = _next_vaccine_id(df)
+    vaccine_name = "New vaccine"
+    if "ID_vaccine" in df.columns and not df.empty:
+        last_id = df["ID_vaccine"].dropna()
+        if not last_id.empty:
+            vaccine_id = str(last_id.iloc[-1])
+    if "Vaccine name" in df.columns and not df.empty:
+        last_name = df["Vaccine name"].dropna()
+        if not last_name.empty:
+            vaccine_name = str(last_name.iloc[-1])
     return {
+        "ID_vaccine": vaccine_id,
+        "Vaccine name": vaccine_name,
         "Year": next_year,
         "Doses (M)": doses,
         "Price per dose": price,
@@ -198,14 +218,39 @@ def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
 
 def _default_uses_table() -> pd.DataFrame:
     data = [
-        {"Item": "Clinical trials", "Amount": 150_000_000},
-        {"Item": "Manufacturing scale-up", "Amount": 90_000_000},
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Item": "Clinical trials",
+            "Amount": 150_000_000,
+        },
+        {
+            "ID_vaccine": "VAC-001",
+            "Vaccine name": "AgSeed-101",
+            "Item": "Manufacturing scale-up",
+            "Amount": 90_000_000,
+        },
     ]
     return pd.DataFrame(data)
 
 
 def _blank_use_row(df: pd.DataFrame) -> Dict:
-    return {"Item": "New use", "Amount": 0.0}
+    next_id = _next_vaccine_id(df)
+    vaccine_name = "New vaccine"
+    if "ID_vaccine" in df.columns and not df.empty:
+        last_id = df["ID_vaccine"].dropna()
+        if not last_id.empty:
+            next_id = str(last_id.iloc[-1])
+    if "Vaccine name" in df.columns and not df.empty:
+        last_name = df["Vaccine name"].dropna()
+        if not last_name.empty:
+            vaccine_name = str(last_name.iloc[-1])
+    return {
+        "ID_vaccine": next_id,
+        "Vaccine name": vaccine_name,
+        "Item": "New use",
+        "Amount": 0.0,
+    }
 
 
 def _default_sources_table() -> pd.DataFrame:
@@ -427,17 +472,66 @@ def _default_vaccine_capex_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Pre-GTM capex spent (USD)": 55_000_000,
-            "Pre-GTM capex remaining (USD)": 25_000_000,
-            "Post-GTM yearly capex (USD)": 6_500_000,
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 35_000_000,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 3_500_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 12_000_000,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 900_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 6_000_000,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 800_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 4_000_000,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 500_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 15_000_000,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 1_200_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 8_000_000,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 700_000,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Pre-GTM capex spent (USD)": 35_000_000,
-            "Pre-GTM capex remaining (USD)": 15_000_000,
-            "Post-GTM yearly capex (USD)": 4_000_000,
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 22_000_000,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 2_800_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 8_000_000,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 650_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 4_000_000,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 550_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 3_000_000,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 400_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 9_000_000,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 900_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 5_000_000,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 450_000,
         },
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_shared_capex_pools_table() -> pd.DataFrame:
+    data = [
+        {
+            "Pool name": "Core manufacturing facility",
+            "Applies to (IDs or ALL)": "ALL",
+            "Allocation method": "Equal",
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 20_000_000,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 2_500_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 5_000_000,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 600_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 3_000_000,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 400_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 2_000_000,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 250_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 8_000_000,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 850_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 4_000_000,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 350_000,
+        }
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_shared_capex_allocations_table() -> pd.DataFrame:
+    data = [
+        {"Pool name": "Core manufacturing facility", "ID_vaccine": "VAC-001", "Weight": 0.5},
+        {"Pool name": "Core manufacturing facility", "ID_vaccine": "VAC-002", "Weight": 0.5},
     ]
     return pd.DataFrame(data)
 
@@ -535,9 +629,18 @@ def _blank_vaccine_capex_row(df: pd.DataFrame) -> Dict:
     return {
         "ID_vaccine": next_id,
         "Vaccine name": "New vaccine",
-        "Pre-GTM capex spent (USD)": 10_000_000,
-        "Pre-GTM capex remaining (USD)": 5_000_000,
-        "Post-GTM yearly capex (USD)": 2_000_000,
+        "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 8_000_000,
+        "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 1_200_000,
+        "Quality & Compliance Infrastructure (Pre-GTM, USD)": 3_000_000,
+        "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 300_000,
+        "Cold-chain / Distribution Assets (Pre-GTM, USD)": 2_000_000,
+        "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 250_000,
+        "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 1_500_000,
+        "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 200_000,
+        "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 4_000_000,
+        "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 350_000,
+        "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 2_500_000,
+        "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 250_000,
     }
 
 
@@ -571,6 +674,78 @@ def _ensure_table_state(key: str, default_factory: Callable[[], pd.DataFrame]) -
     if key not in st.session_state or st.session_state[key] is None:
         st.session_state[key] = default_factory()
     return st.session_state[key]
+
+
+def _parse_pool_targets(raw_value: str, fallback_ids: List[str]) -> List[str]:
+    if not raw_value:
+        return fallback_ids
+    cleaned = str(raw_value).strip()
+    if not cleaned:
+        return fallback_ids
+    if cleaned.upper() == "ALL":
+        return fallback_ids
+    targets = [item.strip() for item in cleaned.split(",") if item.strip()]
+    return targets or fallback_ids
+
+
+def _build_shared_capex_allocations(
+    dev_df: pd.DataFrame,
+    pools_df: pd.DataFrame,
+    allocations_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if dev_df.empty or "ID_vaccine" not in dev_df.columns:
+        return pd.DataFrame()
+    vaccine_ids = (
+        dev_df["ID_vaccine"].astype(str).dropna().tolist()
+        if "ID_vaccine" in dev_df.columns
+        else []
+    )
+    if pools_df.empty:
+        return pd.DataFrame()
+
+    rows: List[Dict[str, Any]] = []
+    alloc_df = allocations_df.copy()
+    for _, pool in pools_df.iterrows():
+        pool_name = str(pool.get("Pool name", "")).strip() or "Shared pool"
+        method = str(pool.get("Allocation method", "Equal")).strip() or "Equal"
+        targets = _parse_pool_targets(pool.get("Applies to (IDs or ALL)", ""), vaccine_ids)
+        targets = [t for t in targets if t in vaccine_ids]
+        if not targets:
+            continue
+
+        if method.lower().startswith("by weight"):
+            weights_df = alloc_df.loc[
+                alloc_df.get("Pool name", "") == pool_name, ["ID_vaccine", "Weight"]
+            ].copy()
+            weights_df["ID_vaccine"] = weights_df["ID_vaccine"].astype(str)
+            weights_df = weights_df[weights_df["ID_vaccine"].isin(targets)]
+            weights = _coerce_numeric(weights_df.get("Weight", pd.Series(dtype=float)), 0.0)
+            weight_map = dict(zip(weights_df["ID_vaccine"], weights))
+            total_weight = sum(weight_map.values())
+            if total_weight <= 0:
+                weight_map = {vid: 1.0 for vid in targets}
+                total_weight = float(len(targets))
+        else:
+            weight_map = {vid: 1.0 for vid in targets}
+            total_weight = float(len(targets))
+
+        for vid in targets:
+            weight = weight_map.get(vid, 0.0)
+            if total_weight <= 0:
+                share = 0.0
+            else:
+                share = weight / total_weight
+            rows.append(
+                {
+                    "ID_vaccine": vid,
+                    "Pool name": pool_name,
+                    "Share": share,
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
 
 
 def _format_row_label(
@@ -732,6 +907,11 @@ def _apply_yearly_increment(
         options=numeric_cols,
         key=f"{section_key}_inc_col",
     )
+    compound = st.checkbox(
+        "Compound annually (apply % growth)",
+        value=False,
+        key=f"{section_key}_inc_compound",
+    )
     increment = st.number_input(
         "Increment per year",
         value=1.0,
@@ -752,7 +932,17 @@ def _apply_yearly_increment(
     st.caption(f"Current value: {base_value:,.2f}")
 
     if st.button("Apply increment", key=f"{section_key}_inc_apply", use_container_width=True):
-        df.at[selected_idx, target_col] = float(base_value) + increment * years
+        start_pos = df.index.get_loc(selected_idx)
+        for offset in range(int(years)):
+            row_pos = start_pos + offset
+            if row_pos >= len(df.index):
+                break
+            row_idx = df.index[row_pos]
+            if compound:
+                next_value = float(base_value) * ((1 + increment) ** offset)
+            else:
+                next_value = float(base_value) + increment * offset
+            df.at[row_idx, target_col] = next_value
         st.session_state[section_key] = df
         st.success("Increment applied")
     return st.session_state.get(section_key, df)
@@ -1279,10 +1469,76 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         ) + _coerce_numeric(rd_df.get("Pre-GTM remaining (USD)", pd.Series(dtype=float)))
 
     capex_df = st.session_state.get("vaccine_capex_table", pd.DataFrame()).copy()
+    capex_pre_cols = [
+        "Manufacturing & Scale-up Assets (Pre-GTM, USD)",
+        "Quality & Compliance Infrastructure (Pre-GTM, USD)",
+        "Cold-chain / Distribution Assets (Pre-GTM, USD)",
+        "IT / Data / Digital Infrastructure (Pre-GTM, USD)",
+        "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)",
+        "Process Development & Tech-Transfer Assets (Pre-GTM, USD)",
+    ]
+    capex_post_cols = [
+        "Manufacturing & Scale-up Assets (Post-GTM, USD/year)",
+        "Quality & Compliance Infrastructure (Post-GTM, USD/year)",
+        "Cold-chain / Distribution Assets (Post-GTM, USD/year)",
+        "IT / Data / Digital Infrastructure (Post-GTM, USD/year)",
+        "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)",
+        "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)",
+    ]
     if "Total Pre-GTM capex (USD)" not in capex_df.columns:
-        capex_df["Total Pre-GTM capex (USD)"] = _coerce_numeric(
-            capex_df.get("Pre-GTM capex spent (USD)", pd.Series(dtype=float))
-        ) + _coerce_numeric(capex_df.get("Pre-GTM capex remaining (USD)", pd.Series(dtype=float)))
+        capex_pre = capex_df.get(capex_pre_cols, pd.DataFrame()).apply(
+            pd.to_numeric, errors="coerce"
+        )
+        capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
+    if "Total Post-GTM capex (USD/year)" not in capex_df.columns:
+        capex_post = capex_df.get(capex_post_cols, pd.DataFrame()).apply(
+            pd.to_numeric, errors="coerce"
+        )
+        capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
+
+    pools_df = st.session_state.get("shared_capex_pools_table", pd.DataFrame()).copy()
+    allocations_df = st.session_state.get("shared_capex_allocations_table", pd.DataFrame()).copy()
+    shared_allocations = _build_shared_capex_allocations(dev_df, pools_df, allocations_df)
+    if not shared_allocations.empty:
+        pool_values = pools_df.copy()
+        pool_values["Pool name"] = pool_values.get("Pool name", "").astype(str)
+        pool_values["Pre-GTM total (USD)"] = pool_values.get(capex_pre_cols, pd.DataFrame()).apply(
+            pd.to_numeric, errors="coerce"
+        ).fillna(0.0).sum(axis=1)
+        pool_values["Post-GTM total (USD/year)"] = pool_values.get(
+            capex_post_cols, pd.DataFrame()
+        ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+        shared_totals = shared_allocations.merge(
+            pool_values[["Pool name", "Pre-GTM total (USD)", "Post-GTM total (USD/year)"]],
+            on="Pool name",
+            how="left",
+        )
+        shared_totals["Shared Pre-GTM capex (USD)"] = (
+            shared_totals["Share"] * shared_totals["Pre-GTM total (USD)"].fillna(0.0)
+        )
+        shared_totals["Shared Post-GTM capex (USD/year)"] = (
+            shared_totals["Share"] * shared_totals["Post-GTM total (USD/year)"].fillna(0.0)
+        )
+        shared_summary = (
+            shared_totals.groupby("ID_vaccine", as_index=False)[
+                ["Shared Pre-GTM capex (USD)", "Shared Post-GTM capex (USD/year)"]
+            ]
+            .sum()
+        )
+        capex_df = capex_df.merge(shared_summary, on="ID_vaccine", how="left")
+        capex_df["Shared Pre-GTM capex (USD)"] = capex_df.get(
+            "Shared Pre-GTM capex (USD)", pd.Series(0.0, index=capex_df.index)
+        ).fillna(0.0)
+        capex_df["Shared Post-GTM capex (USD/year)"] = capex_df.get(
+            "Shared Post-GTM capex (USD/year)", pd.Series(0.0, index=capex_df.index)
+        ).fillna(0.0)
+        capex_df["Total Pre-GTM capex (USD)"] = (
+            capex_df["Total Pre-GTM capex (USD)"] + capex_df["Shared Pre-GTM capex (USD)"]
+        )
+        capex_df["Total Post-GTM capex (USD/year)"] = (
+            capex_df["Total Post-GTM capex (USD/year)"]
+            + capex_df["Shared Post-GTM capex (USD/year)"]
+        )
 
     merged = dev_df.merge(revenue_df, on=["ID_vaccine", "Vaccine name"], how="left")
     merged = merged.merge(cost_df, on=["ID_vaccine", "Vaccine name"], how="left")
@@ -1309,7 +1565,7 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         unit_variable_cost = unit_price * operating_cost_pct
         unit_fixed_cost = float(row.get("G&A total (USD)", 0.0) or 0.0) + float(
             row.get("Post-GTM annual cost (USD/year)", 0.0) or 0.0
-        ) + float(row.get("Post-GTM yearly capex (USD)", 0.0) or 0.0)
+        ) + float(row.get("Total Post-GTM capex (USD/year)", 0.0) or 0.0)
 
         inputs.append(
             {
@@ -3022,41 +3278,50 @@ def _build_chart_images(chart_tables: Dict[str, pd.DataFrame]) -> Dict[str, Byte
     return images
 
 
-def _sync_vaccine_sales_product(
+def _sync_vaccine_sales_products(
     product_df: pd.DataFrame,
-    implied_revenue: pd.Series,
+    vaccine_sales_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    if implied_revenue.empty:
+    if vaccine_sales_df.empty:
+        return product_df
+    if "Implied revenue" not in vaccine_sales_df.columns:
         return product_df
 
-    avg_revenue = float(implied_revenue.mean())
-    default_row = _blank_product_row(name="Vaccine Sales (Implied)")
-    default_row.update(
-        {
-            "stage": "Commercial",
-            "success_prob": 1.0,
-            "include_in_consolidation": True,
-            "preexisting_market": True,
-            "time_to_market": 0,
-            "patent_years": 20,
-            "patent_revenue_target": avg_revenue,
-            "post_patent_revenue_target": avg_revenue,
-            "market_growth_patent": 0.0,
-            "market_growth_post": 0.0,
-        }
-    )
     updated = product_df.copy()
     if "name" not in updated.columns:
         return updated
 
-    match = updated["name"] == "Vaccine Sales (Implied)"
-    if match.any():
-        idx = updated.index[match][0]
-        for key, value in default_row.items():
-            if key in updated.columns:
-                updated.at[idx, key] = value
-    else:
-        updated = pd.concat([updated, pd.DataFrame([default_row])], ignore_index=True)
+    grouped = (
+        vaccine_sales_df.groupby(["ID_vaccine", "Vaccine name"], dropna=False)["Implied revenue"]
+        .mean()
+        .reset_index()
+    )
+    for _, row in grouped.iterrows():
+        vaccine_name = str(row.get("Vaccine name") or row.get("ID_vaccine") or "Vaccine")
+        avg_revenue = float(row.get("Implied revenue") or 0.0)
+        default_row = _blank_product_row(name=vaccine_name)
+        default_row.update(
+            {
+                "stage": "Commercial",
+                "success_prob": 1.0,
+                "include_in_consolidation": True,
+                "preexisting_market": True,
+                "time_to_market": 0,
+                "patent_years": 20,
+                "patent_revenue_target": avg_revenue,
+                "post_patent_revenue_target": avg_revenue,
+                "market_growth_patent": 0.0,
+                "market_growth_post": 0.0,
+            }
+        )
+        match = updated["name"] == vaccine_name
+        if match.any():
+            idx = updated.index[match][0]
+            for key, value in default_row.items():
+                if key in updated.columns:
+                    updated.at[idx, key] = value
+        else:
+            updated = pd.concat([updated, pd.DataFrame([default_row])], ignore_index=True)
     return updated
 
 
@@ -4211,8 +4476,10 @@ def main() -> None:
                 default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
                 blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
                 id_column=None,
-                name_column="Year",
+                name_column="Vaccine name",
                 column_config={
+                    "ID_vaccine": st.column_config.TextColumn("ID", help="Vaccine ID"),
+                    "Vaccine name": st.column_config.TextColumn("Vaccine name"),
                     "Year": st.column_config.NumberColumn("Year", step=1),
                     "Doses (M)": st.column_config.NumberColumn("Doses (M)", min_value=0.0, step=0.5),
                     "Price per dose": st.column_config.NumberColumn(
@@ -4224,11 +4491,114 @@ def main() -> None:
             price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
             vaccine_df["Implied revenue"] = doses * 1e6 * price
             st.session_state["vaccine_sales_table"] = vaccine_df
+            with st.expander("Yearly Increment Helper", expanded=False):
+                if {"ID_vaccine", "Year"}.issubset(vaccine_df.columns):
+                    vaccine_ids = (
+                        vaccine_df["ID_vaccine"].dropna().astype(str).unique().tolist()
+                    )
+                    selected_id = st.selectbox(
+                        "Vaccine ID",
+                        options=vaccine_ids,
+                        key="vaccine_sales_inc_id",
+                    )
+                    target_col = st.selectbox(
+                        "Column",
+                        options=["Doses (M)", "Price per dose"],
+                        key="vaccine_sales_inc_col",
+                    )
+                    start_year = st.number_input(
+                        "Start year",
+                        value=int(first_year),
+                        step=1,
+                        key="vaccine_sales_inc_start_year",
+                    )
+                    periods = st.number_input(
+                        "Number of years",
+                        min_value=1,
+                        max_value=50,
+                        value=5,
+                        step=1,
+                        key="vaccine_sales_inc_periods",
+                    )
+                    increment = st.number_input(
+                        "Increment per year",
+                        value=1.0,
+                        step=0.1,
+                        key="vaccine_sales_inc_value",
+                    )
+                    use_compound = st.checkbox(
+                        "Compound annually (apply % growth)",
+                        value=False,
+                        key="vaccine_sales_inc_compound",
+                    )
+                    if st.button(
+                        "Apply increment",
+                        key="vaccine_sales_inc_apply",
+                        use_container_width=True,
+                    ):
+                        df = st.session_state.get("vaccine_sales_table", vaccine_df).copy()
+                        mask = (df["ID_vaccine"].astype(str) == str(selected_id)) & (
+                            pd.to_numeric(df["Year"], errors="coerce")
+                            >= int(start_year)
+                        )
+                        if mask.any():
+                            base_value = pd.to_numeric(
+                                df.loc[mask, target_col].iloc[0], errors="coerce"
+                            )
+                            if pd.isna(base_value):
+                                base_value = 0.0
+                            years = pd.to_numeric(
+                                df.loc[mask, "Year"], errors="coerce"
+                            ).astype(int)
+                            years_sorted = years.sort_values()
+                            for i, year in enumerate(years_sorted[: int(periods)]):
+                                if use_compound:
+                                    value = float(base_value) * ((1 + increment) ** i)
+                                else:
+                                    value = float(base_value) + increment * i
+                                df.loc[
+                                    (df["ID_vaccine"].astype(str) == str(selected_id))
+                                    & (df["Year"] == year),
+                                    target_col,
+                                ] = value
+                            st.session_state["vaccine_sales_table"] = df
+                            st.success("Increment applied to selected vaccine/year range.")
+                        else:
+                            st.warning("No matching rows found for the selected vaccine/year range.")
+                else:
+                    st.caption("Add vaccine IDs and years to use the helper.")
+            sync_sales_to_revenue = st.checkbox(
+                "Sync vaccine sales to revenue estimation",
+                value=True,
+                key="sync_vaccine_sales_to_revenue",
+            )
+            if sync_sales_to_revenue and not vaccine_df.empty:
+                revenue_table = st.session_state.get(
+                    "vaccine_revenue_table",
+                    _default_vaccine_revenue_table(),
+                ).copy()
+                if {
+                    "Patent customers per year",
+                    "Patent price (USD/customer)",
+                    "ID_vaccine",
+                }.issubset(revenue_table.columns):
+                    price_series = _coerce_numeric(
+                        revenue_table["Patent price (USD/customer)"], 0.0
+                    ).replace(0, np.nan)
+                    revenue_table["ID_vaccine"] = revenue_table["ID_vaccine"].astype(str)
+                    sales_by_vaccine = (
+                        vaccine_df.groupby("ID_vaccine")["Implied revenue"].mean().to_dict()
+                    )
+                    desired_targets = revenue_table["ID_vaccine"].map(sales_by_vaccine).fillna(0.0)
+                    revenue_table["Patent customers per year"] = (
+                        desired_targets / price_series
+                    ).fillna(0.0)
+                    st.session_state["vaccine_revenue_table"] = revenue_table
             st.metric(f"{int(n_years)}-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
             base_products = st.session_state.get("product_table", _default_products())
-            st.session_state["product_table"] = _sync_vaccine_sales_product(
+            st.session_state["product_table"] = _sync_vaccine_sales_products(
                 base_products,
-                vaccine_df["Implied revenue"],
+                vaccine_df,
             )
 
         with st.expander("Uses and sources of funds"):
@@ -4248,11 +4618,23 @@ def main() -> None:
                     id_column=None,
                     name_column="Item",
                     column_config={
+                        "ID_vaccine": st.column_config.TextColumn("ID", help="Vaccine ID"),
+                        "Vaccine name": st.column_config.TextColumn("Vaccine name"),
                         "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
                     },
                 )
                 uses_total = float(uses_df.get("Amount", pd.Series(dtype=float)).sum())
                 st.metric("Total uses", f"{uses_total:,.0f}")
+                if {"ID_vaccine", "Vaccine name", "Amount"}.issubset(uses_df.columns):
+                    uses_by_vaccine = (
+                        uses_df.groupby(["ID_vaccine", "Vaccine name"], dropna=False)["Amount"]
+                        .sum()
+                        .reset_index()
+                    )
+                    st.dataframe(
+                        uses_by_vaccine.style.format({"Amount": "{:,.0f}"}),
+                        use_container_width=True,
+                    )
             with sources_col:
                 st.markdown("**Sources**")
                 sources_df = _render_product_assumption_table(
@@ -4274,6 +4656,15 @@ def main() -> None:
                         .fillna(0.0)
                         .sum()
                     )
+                debt_draw_total = 0.0
+                debt_schedule_df = st.session_state.get("debt_schedule_table")
+                if debt_schedule_df is not None and "Debt drawdowns" in debt_schedule_df.columns:
+                    debt_draw_total = float(
+                        pd.to_numeric(debt_schedule_df["Debt drawdowns"], errors="coerce")
+                        .fillna(0.0)
+                        .sum()
+                    )
+                sources_other_total += debt_draw_total
                 valuation_result = st.session_state.get("valuation_result")
                 burn_total = 0.0
                 wc_total = 0.0
@@ -4564,14 +4955,20 @@ def main() -> None:
             if "Post patent customers per year" not in revenue_df.columns:
                 revenue_df["Post patent customers per year"] = patent_customers * cust_adj.fillna(1.0)
             else:
-                mask_missing = revenue_df["Post patent customers per year"].isna()
+                post_patent_customers = _coerce_numeric(
+                    revenue_df["Post patent customers per year"], 0.0
+                )
+                mask_missing = post_patent_customers.isna() | (post_patent_customers == 0)
                 revenue_df.loc[mask_missing, "Post patent customers per year"] = (
                     patent_customers[mask_missing] * cust_adj.fillna(1.0)[mask_missing]
                 )
             if "Post patent price (USD/customer)" not in revenue_df.columns:
                 revenue_df["Post patent price (USD/customer)"] = patent_price * price_adj.fillna(1.0)
             else:
-                mask_price = revenue_df["Post patent price (USD/customer)"].isna()
+                post_patent_price = _coerce_numeric(
+                    revenue_df["Post patent price (USD/customer)"], 0.0
+                )
+                mask_price = post_patent_price.isna() | (post_patent_price == 0)
                 revenue_df.loc[mask_price, "Post patent price (USD/customer)"] = (
                     patent_price[mask_price] * price_adj.fillna(1.0)[mask_price]
                 )
@@ -4674,23 +5071,128 @@ def main() -> None:
             st.dataframe(rd_display.style.format(rd_fmt))
 
         with st.expander("Vaccine CAPEX assumptions", expanded=True):
+            with st.expander("Shared CAPEX pools", expanded=False):
+                shared_pools_df = _render_product_assumption_table(
+                    session_key="shared_capex_pools_table",
+                    default_factory=_default_shared_capex_pools_table,
+                    blank_row_factory=lambda df: {
+                        "Pool name": "New shared pool",
+                        "Applies to (IDs or ALL)": "ALL",
+                        "Allocation method": "Equal",
+                    },
+                    column_config={
+                        "Allocation method": st.column_config.SelectboxColumn(
+                            "Allocation method", options=["Equal", "By Weight"]
+                        )
+                    },
+                )
+                st.session_state["shared_capex_pools_table"] = shared_pools_df
+            with st.expander("Shared CAPEX allocation weights", expanded=False):
+                shared_allocations_df = _render_product_assumption_table(
+                    session_key="shared_capex_allocations_table",
+                    default_factory=_default_shared_capex_allocations_table,
+                    blank_row_factory=lambda df: {
+                        "Pool name": "Core manufacturing facility",
+                        "ID_vaccine": _next_vaccine_id(df),
+                        "Weight": 1.0,
+                    },
+                )
+                st.session_state["shared_capex_allocations_table"] = shared_allocations_df
+
             capex_df = _render_product_assumption_table(
                 session_key="vaccine_capex_table",
                 default_factory=_default_vaccine_capex_table,
                 blank_row_factory=_blank_vaccine_capex_row,
             )
-            capex_df["Total Pre-GTM capex (USD)"] = _coerce_numeric(
-                capex_df.get("Pre-GTM capex spent (USD)", pd.Series(dtype=float))
-            ) + _coerce_numeric(capex_df.get("Pre-GTM capex remaining (USD)", pd.Series(dtype=float)))
+            capex_pre_cols = [
+                "Manufacturing & Scale-up Assets (Pre-GTM, USD)",
+                "Quality & Compliance Infrastructure (Pre-GTM, USD)",
+                "Cold-chain / Distribution Assets (Pre-GTM, USD)",
+                "IT / Data / Digital Infrastructure (Pre-GTM, USD)",
+                "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)",
+                "Process Development & Tech-Transfer Assets (Pre-GTM, USD)",
+            ]
+            capex_post_cols = [
+                "Manufacturing & Scale-up Assets (Post-GTM, USD/year)",
+                "Quality & Compliance Infrastructure (Post-GTM, USD/year)",
+                "Cold-chain / Distribution Assets (Post-GTM, USD/year)",
+                "IT / Data / Digital Infrastructure (Post-GTM, USD/year)",
+                "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)",
+                "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)",
+            ]
+            capex_pre = capex_df.get(capex_pre_cols, pd.DataFrame()).apply(
+                pd.to_numeric, errors="coerce"
+            )
+            capex_post = capex_df.get(capex_post_cols, pd.DataFrame()).apply(
+                pd.to_numeric, errors="coerce"
+            )
+            capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
+            capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
+            if not shared_pools_df.empty:
+                shared_allocations = _build_shared_capex_allocations(
+                    st.session_state.get("vaccine_development_table", pd.DataFrame()),
+                    shared_pools_df,
+                    shared_allocations_df,
+                )
+                if not shared_allocations.empty:
+                    pool_values = shared_pools_df.copy()
+                    pool_values["Pool name"] = pool_values.get("Pool name", "").astype(str)
+                    pool_values["Pre-GTM total (USD)"] = pool_values.get(
+                        capex_pre_cols, pd.DataFrame()
+                    ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+                    pool_values["Post-GTM total (USD/year)"] = pool_values.get(
+                        capex_post_cols, pd.DataFrame()
+                    ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+                    shared_totals = shared_allocations.merge(
+                        pool_values[
+                            ["Pool name", "Pre-GTM total (USD)", "Post-GTM total (USD/year)"]
+                        ],
+                        on="Pool name",
+                        how="left",
+                    )
+                    shared_totals["Shared Pre-GTM capex (USD)"] = (
+                        shared_totals["Share"]
+                        * shared_totals["Pre-GTM total (USD)"].fillna(0.0)
+                    )
+                    shared_totals["Shared Post-GTM capex (USD/year)"] = (
+                        shared_totals["Share"]
+                        * shared_totals["Post-GTM total (USD/year)"].fillna(0.0)
+                    )
+                    shared_summary = (
+                        shared_totals.groupby("ID_vaccine", as_index=False)[
+                            ["Shared Pre-GTM capex (USD)", "Shared Post-GTM capex (USD/year)"]
+                        ]
+                        .sum()
+                    )
+                    capex_df = capex_df.drop(
+                        columns=[
+                            "Shared Pre-GTM capex (USD)",
+                            "Shared Post-GTM capex (USD/year)",
+                        ],
+                        errors="ignore",
+                    )
+                    capex_df = capex_df.merge(shared_summary, on="ID_vaccine", how="left")
+                    capex_df["Shared Pre-GTM capex (USD)"] = capex_df.get(
+                        "Shared Pre-GTM capex (USD)", pd.Series(0.0, index=capex_df.index)
+                    ).fillna(0.0)
+                    capex_df["Shared Post-GTM capex (USD/year)"] = capex_df.get(
+                        "Shared Post-GTM capex (USD/year)", pd.Series(0.0, index=capex_df.index)
+                    ).fillna(0.0)
+                    capex_df["Total Pre-GTM capex (USD)"] = (
+                        capex_df["Total Pre-GTM capex (USD)"]
+                        + capex_df["Shared Pre-GTM capex (USD)"]
+                    )
+                    capex_df["Total Post-GTM capex (USD/year)"] = (
+                        capex_df["Total Post-GTM capex (USD/year)"]
+                        + capex_df["Shared Post-GTM capex (USD/year)"]
+                    )
             st.session_state["vaccine_capex_table"] = capex_df
             capex_display = capex_df[
                 [
                     "ID_vaccine",
                     "Vaccine name",
-                    "Pre-GTM capex spent (USD)",
-                    "Pre-GTM capex remaining (USD)",
                     "Total Pre-GTM capex (USD)",
-                    "Post-GTM yearly capex (USD)",
+                    "Total Post-GTM capex (USD/year)",
                 ]
             ]
             capex_fmt = {
@@ -4712,12 +5214,17 @@ def main() -> None:
                 },
             )
             revenue_lookup = st.session_state.get("vaccine_revenue_table", pd.DataFrame())
-            patent_lookup = revenue_lookup.set_index("ID_vaccine").get(
-                "Patent revenue target (USD)", pd.Series(dtype=float)
-            )
-            post_lookup = revenue_lookup.set_index("ID_vaccine").get(
-                "Post patent revenue target (USD)", pd.Series(dtype=float)
-            )
+            if "ID_vaccine" in revenue_lookup.columns:
+                revenue_lookup = revenue_lookup.drop_duplicates("ID_vaccine", keep="last")
+                patent_lookup = revenue_lookup.set_index("ID_vaccine").get(
+                    "Patent revenue target (USD)", pd.Series(dtype=float)
+                )
+                post_lookup = revenue_lookup.set_index("ID_vaccine").get(
+                    "Post patent revenue target (USD)", pd.Series(dtype=float)
+                )
+            else:
+                patent_lookup = pd.Series(dtype=float)
+                post_lookup = pd.Series(dtype=float)
             royalty_rate = _coerce_numeric(royalty_df.get("Royalty rate (%)", pd.Series(dtype=float))).div(100)
             royalty_df["Patent revenue (USD)"] = royalty_df["ID_vaccine"].map(patent_lookup)
             royalty_df["Post patent revenue (USD)"] = royalty_df["ID_vaccine"].map(post_lookup)
