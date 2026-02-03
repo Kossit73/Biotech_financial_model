@@ -4476,6 +4476,82 @@ def main() -> None:
             price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
             vaccine_df["Implied revenue"] = doses * 1e6 * price
             st.session_state["vaccine_sales_table"] = vaccine_df
+            with st.expander("Yearly Increment Helper", expanded=False):
+                if {"ID_vaccine", "Year"}.issubset(vaccine_df.columns):
+                    vaccine_ids = (
+                        vaccine_df["ID_vaccine"].dropna().astype(str).unique().tolist()
+                    )
+                    selected_id = st.selectbox(
+                        "Vaccine ID",
+                        options=vaccine_ids,
+                        key="vaccine_sales_inc_id",
+                    )
+                    target_col = st.selectbox(
+                        "Column",
+                        options=["Doses (M)", "Price per dose"],
+                        key="vaccine_sales_inc_col",
+                    )
+                    start_year = st.number_input(
+                        "Start year",
+                        value=int(first_year),
+                        step=1,
+                        key="vaccine_sales_inc_start_year",
+                    )
+                    periods = st.number_input(
+                        "Number of years",
+                        min_value=1,
+                        max_value=50,
+                        value=5,
+                        step=1,
+                        key="vaccine_sales_inc_periods",
+                    )
+                    increment = st.number_input(
+                        "Increment per year",
+                        value=1.0,
+                        step=0.1,
+                        key="vaccine_sales_inc_value",
+                    )
+                    use_compound = st.checkbox(
+                        "Compound annually (apply % growth)",
+                        value=False,
+                        key="vaccine_sales_inc_compound",
+                    )
+                    if st.button(
+                        "Apply increment",
+                        key="vaccine_sales_inc_apply",
+                        use_container_width=True,
+                    ):
+                        df = st.session_state.get("vaccine_sales_table", vaccine_df).copy()
+                        mask = (df["ID_vaccine"].astype(str) == str(selected_id)) & (
+                            pd.to_numeric(df["Year"], errors="coerce")
+                            >= int(start_year)
+                        )
+                        if mask.any():
+                            base_value = pd.to_numeric(
+                                df.loc[mask, target_col].iloc[0], errors="coerce"
+                            )
+                            if pd.isna(base_value):
+                                base_value = 0.0
+                            years = pd.to_numeric(
+                                df.loc[mask, "Year"], errors="coerce"
+                            ).astype(int)
+                            years_sorted = years.sort_values()
+                            for i, year in enumerate(years_sorted[: int(periods)]):
+                                if use_compound:
+                                    value = float(base_value) * ((1 + increment) ** i)
+                                else:
+                                    value = float(base_value) + increment * i
+                                df.loc[
+                                    (df["ID_vaccine"].astype(str) == str(selected_id))
+                                    & (df["Year"] == year),
+                                    target_col,
+                                ] = value
+                            st.session_state["vaccine_sales_table"] = df
+                            st.success("Increment applied to selected vaccine/year range.")
+                        else:
+                            st.warning("No matching rows found for the selected vaccine/year range.")
+                else:
+                    st.caption("Add vaccine IDs and years to use the helper.")
             sync_sales_to_revenue = st.checkbox(
                 "Sync vaccine sales to revenue estimation",
                 value=True,
