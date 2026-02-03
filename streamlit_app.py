@@ -4727,12 +4727,17 @@ def main() -> None:
                 },
             )
             revenue_lookup = st.session_state.get("vaccine_revenue_table", pd.DataFrame())
-            patent_lookup = revenue_lookup.set_index("ID_vaccine").get(
-                "Patent revenue target (USD)", pd.Series(dtype=float)
-            )
-            post_lookup = revenue_lookup.set_index("ID_vaccine").get(
-                "Post patent revenue target (USD)", pd.Series(dtype=float)
-            )
+            if "ID_vaccine" in revenue_lookup.columns:
+                revenue_lookup = revenue_lookup.drop_duplicates("ID_vaccine", keep="last")
+                patent_lookup = revenue_lookup.set_index("ID_vaccine").get(
+                    "Patent revenue target (USD)", pd.Series(dtype=float)
+                )
+                post_lookup = revenue_lookup.set_index("ID_vaccine").get(
+                    "Post patent revenue target (USD)", pd.Series(dtype=float)
+                )
+            else:
+                patent_lookup = pd.Series(dtype=float)
+                post_lookup = pd.Series(dtype=float)
             royalty_rate = _coerce_numeric(royalty_df.get("Royalty rate (%)", pd.Series(dtype=float))).div(100)
             royalty_df["Patent revenue (USD)"] = royalty_df["ID_vaccine"].map(patent_lookup)
             royalty_df["Post patent revenue (USD)"] = royalty_df["ID_vaccine"].map(post_lookup)
