@@ -5164,6 +5164,13 @@ def main() -> None:
                         ]
                         .sum()
                     )
+                    capex_df = capex_df.drop(
+                        columns=[
+                            "Shared Pre-GTM capex (USD)",
+                            "Shared Post-GTM capex (USD/year)",
+                        ],
+                        errors="ignore",
+                    )
                     capex_df = capex_df.merge(shared_summary, on="ID_vaccine", how="left")
                     capex_df["Shared Pre-GTM capex (USD)"] = capex_df.get(
                         "Shared Pre-GTM capex (USD)", pd.Series(0.0, index=capex_df.index)
