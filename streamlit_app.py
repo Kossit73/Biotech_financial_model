@@ -460,6 +460,37 @@ def _default_vaccine_capex_table() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _default_shared_capex_pools_table() -> pd.DataFrame:
+    data = [
+        {
+            "Pool name": "Core manufacturing facility",
+            "Applies to (IDs or ALL)": "ALL",
+            "Allocation method": "Equal",
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 20_000_000,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 2_500_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 5_000_000,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 600_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 3_000_000,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 400_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 2_000_000,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 250_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 8_000_000,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 850_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 4_000_000,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 350_000,
+        }
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_shared_capex_allocations_table() -> pd.DataFrame:
+    data = [
+        {"Pool name": "Core manufacturing facility", "ID_vaccine": "VAC-001", "Weight": 0.5},
+        {"Pool name": "Core manufacturing facility", "ID_vaccine": "VAC-002", "Weight": 0.5},
+    ]
+    return pd.DataFrame(data)
+
+
 def _next_vaccine_id(df: pd.DataFrame) -> str:
     """Return the next sequential vaccine identifier (VAC-XXX)."""
 
@@ -598,6 +629,78 @@ def _ensure_table_state(key: str, default_factory: Callable[[], pd.DataFrame]) -
     if key not in st.session_state or st.session_state[key] is None:
         st.session_state[key] = default_factory()
     return st.session_state[key]
+
+
+def _parse_pool_targets(raw_value: str, fallback_ids: List[str]) -> List[str]:
+    if not raw_value:
+        return fallback_ids
+    cleaned = str(raw_value).strip()
+    if not cleaned:
+        return fallback_ids
+    if cleaned.upper() == "ALL":
+        return fallback_ids
+    targets = [item.strip() for item in cleaned.split(",") if item.strip()]
+    return targets or fallback_ids
+
+
+def _build_shared_capex_allocations(
+    dev_df: pd.DataFrame,
+    pools_df: pd.DataFrame,
+    allocations_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if dev_df.empty or "ID_vaccine" not in dev_df.columns:
+        return pd.DataFrame()
+    vaccine_ids = (
+        dev_df["ID_vaccine"].astype(str).dropna().tolist()
+        if "ID_vaccine" in dev_df.columns
+        else []
+    )
+    if pools_df.empty:
+        return pd.DataFrame()
+
+    rows: List[Dict[str, Any]] = []
+    alloc_df = allocations_df.copy()
+    for _, pool in pools_df.iterrows():
+        pool_name = str(pool.get("Pool name", "")).strip() or "Shared pool"
+        method = str(pool.get("Allocation method", "Equal")).strip() or "Equal"
+        targets = _parse_pool_targets(pool.get("Applies to (IDs or ALL)", ""), vaccine_ids)
+        targets = [t for t in targets if t in vaccine_ids]
+        if not targets:
+            continue
+
+        if method.lower().startswith("by weight"):
+            weights_df = alloc_df.loc[
+                alloc_df.get("Pool name", "") == pool_name, ["ID_vaccine", "Weight"]
+            ].copy()
+            weights_df["ID_vaccine"] = weights_df["ID_vaccine"].astype(str)
+            weights_df = weights_df[weights_df["ID_vaccine"].isin(targets)]
+            weights = _coerce_numeric(weights_df.get("Weight", pd.Series(dtype=float)), 0.0)
+            weight_map = dict(zip(weights_df["ID_vaccine"], weights))
+            total_weight = sum(weight_map.values())
+            if total_weight <= 0:
+                weight_map = {vid: 1.0 for vid in targets}
+                total_weight = float(len(targets))
+        else:
+            weight_map = {vid: 1.0 for vid in targets}
+            total_weight = float(len(targets))
+
+        for vid in targets:
+            weight = weight_map.get(vid, 0.0)
+            if total_weight <= 0:
+                share = 0.0
+            else:
+                share = weight / total_weight
+            rows.append(
+                {
+                    "ID_vaccine": vid,
+                    "Pool name": pool_name,
+                    "Share": share,
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
 
 
 def _format_row_label(
@@ -1332,6 +1435,50 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
             pd.to_numeric, errors="coerce"
         )
         capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
+
+    pools_df = st.session_state.get("shared_capex_pools_table", pd.DataFrame()).copy()
+    allocations_df = st.session_state.get("shared_capex_allocations_table", pd.DataFrame()).copy()
+    shared_allocations = _build_shared_capex_allocations(dev_df, pools_df, allocations_df)
+    if not shared_allocations.empty:
+        pool_values = pools_df.copy()
+        pool_values["Pool name"] = pool_values.get("Pool name", "").astype(str)
+        pool_values["Pre-GTM total (USD)"] = pool_values.get(capex_pre_cols, pd.DataFrame()).apply(
+            pd.to_numeric, errors="coerce"
+        ).fillna(0.0).sum(axis=1)
+        pool_values["Post-GTM total (USD/year)"] = pool_values.get(
+            capex_post_cols, pd.DataFrame()
+        ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+        shared_totals = shared_allocations.merge(
+            pool_values[["Pool name", "Pre-GTM total (USD)", "Post-GTM total (USD/year)"]],
+            on="Pool name",
+            how="left",
+        )
+        shared_totals["Shared Pre-GTM capex (USD)"] = (
+            shared_totals["Share"] * shared_totals["Pre-GTM total (USD)"].fillna(0.0)
+        )
+        shared_totals["Shared Post-GTM capex (USD/year)"] = (
+            shared_totals["Share"] * shared_totals["Post-GTM total (USD/year)"].fillna(0.0)
+        )
+        shared_summary = (
+            shared_totals.groupby("ID_vaccine", as_index=False)[
+                ["Shared Pre-GTM capex (USD)", "Shared Post-GTM capex (USD/year)"]
+            ]
+            .sum()
+        )
+        capex_df = capex_df.merge(shared_summary, on="ID_vaccine", how="left")
+        capex_df["Shared Pre-GTM capex (USD)"] = capex_df[
+            "Shared Pre-GTM capex (USD)"
+        ].fillna(0.0)
+        capex_df["Shared Post-GTM capex (USD/year)"] = capex_df[
+            "Shared Post-GTM capex (USD/year)"
+        ].fillna(0.0)
+        capex_df["Total Pre-GTM capex (USD)"] = (
+            capex_df["Total Pre-GTM capex (USD)"] + capex_df["Shared Pre-GTM capex (USD)"]
+        )
+        capex_df["Total Post-GTM capex (USD/year)"] = (
+            capex_df["Total Post-GTM capex (USD/year)"]
+            + capex_df["Shared Post-GTM capex (USD/year)"]
+        )
 
     merged = dev_df.merge(revenue_df, on=["ID_vaccine", "Vaccine name"], how="left")
     merged = merged.merge(cost_df, on=["ID_vaccine", "Vaccine name"], how="left")
@@ -4772,6 +4919,34 @@ def main() -> None:
             st.dataframe(rd_display.style.format(rd_fmt))
 
         with st.expander("Vaccine CAPEX assumptions", expanded=True):
+            with st.expander("Shared CAPEX pools", expanded=False):
+                shared_pools_df = _render_product_assumption_table(
+                    session_key="shared_capex_pools_table",
+                    default_factory=_default_shared_capex_pools_table,
+                    blank_row_factory=lambda df: {
+                        "Pool name": "New shared pool",
+                        "Applies to (IDs or ALL)": "ALL",
+                        "Allocation method": "Equal",
+                    },
+                    column_config={
+                        "Allocation method": st.column_config.SelectboxColumn(
+                            "Allocation method", options=["Equal", "By Weight"]
+                        )
+                    },
+                )
+                st.session_state["shared_capex_pools_table"] = shared_pools_df
+            with st.expander("Shared CAPEX allocation weights", expanded=False):
+                shared_allocations_df = _render_product_assumption_table(
+                    session_key="shared_capex_allocations_table",
+                    default_factory=_default_shared_capex_allocations_table,
+                    blank_row_factory=lambda df: {
+                        "Pool name": "Core manufacturing facility",
+                        "ID_vaccine": _next_vaccine_id(df),
+                        "Weight": 1.0,
+                    },
+                )
+                st.session_state["shared_capex_allocations_table"] = shared_allocations_df
+
             capex_df = _render_product_assumption_table(
                 session_key="vaccine_capex_table",
                 default_factory=_default_vaccine_capex_table,
@@ -4801,6 +4976,57 @@ def main() -> None:
             )
             capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
             capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
+            if not shared_pools_df.empty:
+                shared_allocations = _build_shared_capex_allocations(
+                    st.session_state.get("vaccine_development_table", pd.DataFrame()),
+                    shared_pools_df,
+                    shared_allocations_df,
+                )
+                if not shared_allocations.empty:
+                    pool_values = shared_pools_df.copy()
+                    pool_values["Pool name"] = pool_values.get("Pool name", "").astype(str)
+                    pool_values["Pre-GTM total (USD)"] = pool_values.get(
+                        capex_pre_cols, pd.DataFrame()
+                    ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+                    pool_values["Post-GTM total (USD/year)"] = pool_values.get(
+                        capex_post_cols, pd.DataFrame()
+                    ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+                    shared_totals = shared_allocations.merge(
+                        pool_values[
+                            ["Pool name", "Pre-GTM total (USD)", "Post-GTM total (USD/year)"]
+                        ],
+                        on="Pool name",
+                        how="left",
+                    )
+                    shared_totals["Shared Pre-GTM capex (USD)"] = (
+                        shared_totals["Share"]
+                        * shared_totals["Pre-GTM total (USD)"].fillna(0.0)
+                    )
+                    shared_totals["Shared Post-GTM capex (USD/year)"] = (
+                        shared_totals["Share"]
+                        * shared_totals["Post-GTM total (USD/year)"].fillna(0.0)
+                    )
+                    shared_summary = (
+                        shared_totals.groupby("ID_vaccine", as_index=False)[
+                            ["Shared Pre-GTM capex (USD)", "Shared Post-GTM capex (USD/year)"]
+                        ]
+                        .sum()
+                    )
+                    capex_df = capex_df.merge(shared_summary, on="ID_vaccine", how="left")
+                    capex_df["Shared Pre-GTM capex (USD)"] = capex_df[
+                        "Shared Pre-GTM capex (USD)"
+                    ].fillna(0.0)
+                    capex_df["Shared Post-GTM capex (USD/year)"] = capex_df[
+                        "Shared Post-GTM capex (USD/year)"
+                    ].fillna(0.0)
+                    capex_df["Total Pre-GTM capex (USD)"] = (
+                        capex_df["Total Pre-GTM capex (USD)"]
+                        + capex_df["Shared Pre-GTM capex (USD)"]
+                    )
+                    capex_df["Total Post-GTM capex (USD/year)"] = (
+                        capex_df["Total Post-GTM capex (USD/year)"]
+                        + capex_df["Shared Post-GTM capex (USD/year)"]
+                    )
             st.session_state["vaccine_capex_table"] = capex_df
             capex_display = capex_df[
                 [
