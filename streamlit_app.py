@@ -4580,7 +4580,15 @@ def main() -> None:
                                     & (df["Year"] == year),
                                     target_col,
                                 ] = value
+                            doses = pd.to_numeric(
+                                df.get("Doses (M)", pd.Series(dtype=float)), errors="coerce"
+                            ).fillna(0.0)
+                            price = pd.to_numeric(
+                                df.get("Price per dose", pd.Series(dtype=float)), errors="coerce"
+                            ).fillna(0.0)
+                            df["Implied revenue"] = doses * 1e6 * price
                             st.session_state["vaccine_sales_table"] = df
+                            vaccine_df = df
                             st.success("Increment applied to selected vaccine/year range.")
                         else:
                             st.warning("No matching rows found for the selected vaccine/year range.")
