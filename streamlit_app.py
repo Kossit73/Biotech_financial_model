@@ -1127,6 +1127,8 @@ def _render_product_assumption_table(
         df = _apply_yearly_increment(session_key, df, selected_idx)
 
     df = st.session_state.get(session_key, df)
+    if session_key == "vaccine_sales_table":
+        df = _recompute_vaccine_sales_implied_revenue(df)
     edited_df = st.data_editor(
         df,
         num_rows="dynamic",
@@ -1134,6 +1136,8 @@ def _render_product_assumption_table(
         key=f"{session_key}_editor",
         column_config=column_config,
     )
+    if session_key == "vaccine_sales_table":
+        edited_df = _recompute_vaccine_sales_implied_revenue(edited_df)
     st.session_state[session_key] = edited_df
     _validate_selection(edited_df, select_key, id_column)
     return edited_df
@@ -1173,6 +1177,16 @@ def _blank_debt_schedule_row(df: pd.DataFrame, first_year: int, n_years: int) ->
 
 def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(default)
+
+
+def _recompute_vaccine_sales_implied_revenue(df: pd.DataFrame) -> pd.DataFrame:
+    if "Doses (M)" not in df.columns or "Price per dose" not in df.columns:
+        return df
+    doses = pd.to_numeric(df["Doses (M)"], errors="coerce").fillna(0.0)
+    price = pd.to_numeric(df["Price per dose"], errors="coerce").fillna(0.0)
+    df = df.copy()
+    df["Implied revenue"] = doses * 1e6 * price
+    return df
 
 
 def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
@@ -4496,9 +4510,7 @@ def main() -> None:
                     ),
                 },
             )
-            doses = pd.to_numeric(vaccine_df.get("Doses (M)", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
-            price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
-            vaccine_df["Implied revenue"] = doses * 1e6 * price
+            vaccine_df = _recompute_vaccine_sales_implied_revenue(vaccine_df)
             st.session_state["vaccine_sales_table"] = vaccine_df
             with st.expander("Yearly Increment Helper", expanded=False):
                 st.caption(
@@ -4580,13 +4592,7 @@ def main() -> None:
                                     & (df["Year"] == year),
                                     target_col,
                                 ] = value
-                            doses = pd.to_numeric(
-                                df.get("Doses (M)", pd.Series(dtype=float)), errors="coerce"
-                            ).fillna(0.0)
-                            price = pd.to_numeric(
-                                df.get("Price per dose", pd.Series(dtype=float)), errors="coerce"
-                            ).fillna(0.0)
-                            df["Implied revenue"] = doses * 1e6 * price
+                            df = _recompute_vaccine_sales_implied_revenue(df)
                             st.session_state["vaccine_sales_table"] = df
                             vaccine_df = df
                             st.success("Increment applied to selected vaccine/year range.")
