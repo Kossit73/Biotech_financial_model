@@ -888,6 +888,11 @@ def _apply_yearly_increment(
     selected_idx: Optional[int],
 ) -> pd.DataFrame:
     st.markdown("**Yearly Increment Helper**")
+    st.caption(
+        "Apply a fixed change or % growth from the selected row onward. "
+        "'Increment per year' is the step size (or growth rate when compounding). "
+        "'Years to apply' controls how many consecutive rows are updated."
+    )
     if df.empty or selected_idx is None:
         st.caption("Select a row to apply increments.")
         return df
@@ -1199,6 +1204,10 @@ def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
 
     with toolbar_cols[3]:
         with st.expander("Yearly Increment Helper"):
+            st.caption(
+                "Seed a ramp schedule from a starting point. 'Increment per year' is a fixed step, "
+                "and 'Number of periods' controls how many rows are generated."
+            )
             start_year = st.number_input(
                 "Start year offset", min_value=0, value=0, key=f"{session_key}_start"
             )
@@ -4492,6 +4501,11 @@ def main() -> None:
             vaccine_df["Implied revenue"] = doses * 1e6 * price
             st.session_state["vaccine_sales_table"] = vaccine_df
             with st.expander("Yearly Increment Helper", expanded=False):
+                st.caption(
+                    "Apply a fixed step or % growth to a vaccine's yearly doses/price. "
+                    "'Increment per year' is the step size (or growth rate when compounding). "
+                    "'Number of years' controls how many matching rows are updated from the start year."
+                )
                 if {"ID_vaccine", "Year"}.issubset(vaccine_df.columns):
                     vaccine_ids = (
                         vaccine_df["ID_vaccine"].dropna().astype(str).unique().tolist()
