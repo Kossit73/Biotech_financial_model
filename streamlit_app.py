@@ -4556,16 +4556,21 @@ def main() -> None:
                             >= int(start_year)
                         )
                         if mask.any():
-                            base_value = pd.to_numeric(
-                                df.loc[mask, target_col].iloc[0], errors="coerce"
+                            subset = df.loc[mask, ["Year", target_col]].copy()
+                            subset["Year"] = (
+                                pd.to_numeric(subset["Year"], errors="coerce")
+                                .fillna(int(start_year))
+                                .astype(int)
                             )
-                            if pd.isna(base_value):
-                                base_value = 0.0
-                            years = pd.to_numeric(
-                                df.loc[mask, "Year"], errors="coerce"
-                            ).astype(int)
-                            years_sorted = years.sort_values()
-                            for i, year in enumerate(years_sorted[: int(periods)]):
+                            subset[target_col] = pd.to_numeric(
+                                subset[target_col], errors="coerce"
+                            ).fillna(0.0)
+                            subset = subset.sort_values("Year")
+                            if subset.empty:
+                                st.warning("No matching rows found for the selected vaccine/year range.")
+                                st.stop()
+                            base_value = float(subset[target_col].iloc[0])
+                            for i, year in enumerate(subset["Year"].iloc[: int(periods)]):
                                 if use_compound:
                                     value = float(base_value) * ((1 + increment) ** i)
                                 else:
