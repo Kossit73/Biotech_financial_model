@@ -4616,7 +4616,14 @@ def main() -> None:
                     sales_by_vaccine = (
                         vaccine_df.groupby("ID_vaccine")["Implied revenue"].mean().to_dict()
                     )
-                    desired_targets = revenue_table["ID_vaccine"].map(sales_by_vaccine).fillna(0.0)
+                    desired_targets = revenue_table["ID_vaccine"].map(sales_by_vaccine)
+                    if "Vaccine name" in vaccine_df.columns and "Vaccine name" in revenue_table.columns:
+                        sales_by_name = (
+                            vaccine_df.groupby("Vaccine name")["Implied revenue"].mean().to_dict()
+                        )
+                        name_targets = revenue_table["Vaccine name"].map(sales_by_name)
+                        desired_targets = desired_targets.fillna(name_targets)
+                    desired_targets = desired_targets.fillna(0.0)
                     revenue_table["Patent customers per year"] = (
                         desired_targets / price_series
                     ).fillna(0.0)
