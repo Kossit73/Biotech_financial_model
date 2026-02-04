@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Iterable
 
 import numpy as np
 import pandas as pd
@@ -70,6 +70,32 @@ class ProductConfig:
     capex_dep_years: int = 10
 
 
+def _scale_product_config(
+    config: ProductConfig,
+    *,
+    revenue_multiplier: float = 1.0,
+    cost_multiplier: float = 1.0,
+    success_prob_multiplier: float = 1.0,
+) -> ProductConfig:
+    cfg_dict = asdict(config)
+    cfg_dict["patent_revenue_target"] *= revenue_multiplier
+    cfg_dict["post_patent_revenue_target"] *= revenue_multiplier
+    cfg_dict["cogs_patent"] *= cost_multiplier
+    cfg_dict["cogs_post"] *= cost_multiplier
+    cfg_dict["labor_pct"] *= cost_multiplier
+    cfg_dict["overhead_pct"] *= cost_multiplier
+    cfg_dict["material_pct"] *= cost_multiplier
+    cfg_dict["sales_marketing_pct"] *= cost_multiplier
+    cfg_dict["gna_pct"] *= cost_multiplier
+    cfg_dict["royalty_pct"] *= cost_multiplier
+    cfg_dict["rd_remaining_pre_launch"] *= cost_multiplier
+    cfg_dict["rd_annual_post_launch"] *= cost_multiplier
+    cfg_dict["capex_remaining_pre_launch"] *= cost_multiplier
+    cfg_dict["capex_annual_post_launch"] *= cost_multiplier
+    cfg_dict["success_prob"] = max(0.0, min(1.0, cfg_dict["success_prob"] * success_prob_multiplier))
+    return ProductConfig(**cfg_dict)
+
+
 # ===========================
 # 2. Core model classes
 # ===========================
@@ -89,6 +115,35 @@ class Product:
 
     def _patent_end_year(self) -> int:
         return self._launch_year() + self.config.patent_years - 1
+
+    @staticmethod
+    def _ramp_factors_array(years_since_launch: np.ndarray, ramp_factors: Iterable[float]) -> np.ndarray:
+        ramp_list = list(ramp_factors)
+        if not ramp_list:
+            ramp = np.ones_like(years_since_launch, dtype=float)
+            ramp[years_since_launch < 0] = 0.0
+            return ramp
+        ramp_values = np.array(ramp_list, dtype=float)
+        idx = np.clip(years_since_launch, 0, len(ramp_values) - 1)
+        ramp = ramp_values[idx]
+        ramp[years_since_launch < 0] = 0.0
+        return ramp
+
+    @staticmethod
+    def _growth_years(
+        years: np.ndarray,
+        years_since_launch: np.ndarray,
+        in_patent: np.ndarray,
+        ramp_length: int,
+        patent_end: int,
+    ) -> np.ndarray:
+        growth_years = np.zeros_like(years_since_launch, dtype=float)
+        if ramp_length > 0:
+            growth_years[in_patent] = np.maximum(0, years_since_launch[in_patent] - ramp_length)
+        else:
+            growth_years[in_patent] = np.maximum(0, years_since_launch[in_patent])
+        growth_years[~in_patent] = np.maximum(0, years[~in_patent] - (patent_end + 1))
+        return growth_years
 
     @staticmethod
     def _rolling_amortization(additions: pd.Series, life: int) -> pd.Series:
@@ -113,41 +168,29 @@ class Product:
     def build_revenue_series(self) -> pd.Series:
         years = self.model_config.years
         cfg = self.config
-        try:
-            ramp_factors = list(self.model_config.sales_ramp_factors or [])
-        except TypeError:
-            ramp_factors = []
+        ramp_factors = list(self.model_config.sales_ramp_factors or [])
         revenue = pd.Series(0.0, index=years, name=f"{cfg.name}_revenue")
         if not cfg.include_in_consolidation:
             return revenue
 
+        years_arr = np.asarray(years, dtype=int)
         launch_year = self._launch_year()
         patent_end = self._patent_end_year()
+        years_since_launch = years_arr - launch_year
+        in_patent = years_arr <= patent_end
 
-        for i, year in enumerate(years):
-            if year < launch_year:
-                continue
-            years_since_launch = year - launch_year
-            in_patent = year <= patent_end
-
-            if in_patent:
-                base_target = cfg.patent_revenue_target
-                growth_rate = cfg.market_growth_patent
-                years_since_growth_start = max(0, years_since_launch - len(ramp_factors))
-            else:
-                base_target = cfg.post_patent_revenue_target
-                growth_rate = cfg.market_growth_post
-                years_since_growth_start = max(0, year - (patent_end + 1))
-
-            if ramp_factors:
-                ramp_index = min(years_since_launch, len(ramp_factors) - 1)
-                ramp = ramp_factors[ramp_index]
-            else:
-                ramp = 1.0
-
-            target_with_growth = base_target * ((1 + growth_rate) ** years_since_growth_start)
-            revenue.iloc[i] = ramp * target_with_growth
-
+        ramp = self._ramp_factors_array(years_since_launch, ramp_factors)
+        base_target = np.where(in_patent, cfg.patent_revenue_target, cfg.post_patent_revenue_target)
+        growth_rate = np.where(in_patent, cfg.market_growth_patent, cfg.market_growth_post)
+        growth_years = self._growth_years(
+            years_arr,
+            years_since_launch,
+            in_patent,
+            len(ramp_factors),
+            patent_end,
+        )
+        target_with_growth = base_target * np.power(1.0 + growth_rate, growth_years)
+        revenue.values[:] = ramp * target_with_growth
         return revenue
 
     def build_cashflow_table(self) -> pd.DataFrame:
@@ -157,21 +200,20 @@ class Product:
         df["revenue"] = self.build_revenue_series()
 
         patent_end = self._patent_end_year()
-        cogs_vals: List[float] = []
-        for year, rev in df["revenue"].items():
-            if rev == 0:
-                cogs_vals.append(0.0)
-                continue
-            pct = cfg.cogs_patent if year <= patent_end else cfg.cogs_post
-            cogs_vals.append(-pct * rev)
-        df["cogs"] = cogs_vals
+        in_patent = df.index.values <= patent_end
+        cogs_pct = np.where(in_patent, cfg.cogs_patent, cfg.cogs_post)
+        df["cogs"] = -df["revenue"].values * cogs_pct
 
-        df["labor"] = -cfg.labor_pct * df["revenue"]
-        df["overhead"] = -cfg.overhead_pct * df["revenue"]
-        df["materials"] = -cfg.material_pct * df["revenue"]
-        df["sales_marketing"] = -cfg.sales_marketing_pct * df["revenue"]
-        df["gna"] = -cfg.gna_pct * df["revenue"]
-        df["royalty"] = -cfg.royalty_pct * df["revenue"]
+        pct_columns = {
+            "labor": cfg.labor_pct,
+            "overhead": cfg.overhead_pct,
+            "materials": cfg.material_pct,
+            "sales_marketing": cfg.sales_marketing_pct,
+            "gna": cfg.gna_pct,
+            "royalty": cfg.royalty_pct,
+        }
+        for col, pct in pct_columns.items():
+            df[col] = -pct * df["revenue"]
 
         rd_cash = pd.Series(0.0, index=years)
         if cfg.rd_remaining_pre_launch > 0 and not cfg.preexisting_market:
@@ -425,26 +467,12 @@ class ScenarioEngine:
 
         new_products: List[Product] = []
         for prod in self.base_portfolio.products:
-            cfg = prod.config
-            cfg_dict = asdict(cfg)
-            cfg_dict["patent_revenue_target"] *= scenario.revenue_multiplier
-            cfg_dict["post_patent_revenue_target"] *= scenario.revenue_multiplier
-            cfg_dict["cogs_patent"] *= scenario.cost_multiplier
-            cfg_dict["cogs_post"] *= scenario.cost_multiplier
-            cfg_dict["labor_pct"] *= scenario.cost_multiplier
-            cfg_dict["overhead_pct"] *= scenario.cost_multiplier
-            cfg_dict["material_pct"] *= scenario.cost_multiplier
-            cfg_dict["sales_marketing_pct"] *= scenario.cost_multiplier
-            cfg_dict["gna_pct"] *= scenario.cost_multiplier
-            cfg_dict["royalty_pct"] *= scenario.cost_multiplier
-            cfg_dict["rd_remaining_pre_launch"] *= scenario.cost_multiplier
-            cfg_dict["rd_annual_post_launch"] *= scenario.cost_multiplier
-            cfg_dict["capex_remaining_pre_launch"] *= scenario.cost_multiplier
-            cfg_dict["capex_annual_post_launch"] *= scenario.cost_multiplier
-            cfg_dict["success_prob"] = max(
-                0.0, min(1.0, cfg_dict["success_prob"] * scenario.success_prob_multiplier)
+            new_cfg = _scale_product_config(
+                prod.config,
+                revenue_multiplier=scenario.revenue_multiplier,
+                cost_multiplier=scenario.cost_multiplier,
+                success_prob_multiplier=scenario.success_prob_multiplier,
             )
-            new_cfg = ProductConfig(**cfg_dict)
             new_products.append(Product(new_cfg, new_model_cfg))
 
         return Portfolio(new_products, new_model_cfg)
@@ -526,15 +554,11 @@ class MonteCarloEngine:
             cogs_scale = _sample_scale(cost_dist, cost_sigma, cost_min, cost_max)
 
             for prod in self.base_portfolio.products:
-                cfg_dict = asdict(prod.config)
-                cfg_dict["patent_revenue_target"] *= rev_scale
-                cfg_dict["post_patent_revenue_target"] *= rev_scale
-                cfg_dict["cogs_patent"] *= cogs_scale
-                cfg_dict["cogs_post"] *= cogs_scale
-                cfg_dict["labor_pct"] *= cogs_scale
-                cfg_dict["overhead_pct"] *= cogs_scale
-                cfg_dict["material_pct"] *= cogs_scale
-                new_cfg = ProductConfig(**cfg_dict)
+                new_cfg = _scale_product_config(
+                    prod.config,
+                    revenue_multiplier=rev_scale,
+                    cost_multiplier=cogs_scale,
+                )
                 new_products.append(Product(new_cfg, model_cfg))
 
             sim_portfolio = Portfolio(new_products, model_cfg)
