@@ -4454,6 +4454,25 @@ def main() -> None:
     with config_tab:
         st.subheader("Model assumptions")
 
+        with st.expander("Pipeline stage template", expanded=True):
+            st.markdown(
+                "**Use Discovery → Preclinical → Phase I → Phase II → Phase III → Approval → Commercial**"
+            )
+            st.markdown(
+                "\n".join(
+                    [
+                        "- Discovery",
+                        "- Preclinical",
+                        "- Phase I",
+                        "- Phase II",
+                        "- Phase III",
+                        "- Approval",
+                        "- Commercial",
+                    ]
+                )
+            )
+            st.caption("Use this canonical sequence when defining assets or scenarios.")
+
         with st.expander("General assumptions", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
