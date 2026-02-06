@@ -114,6 +114,15 @@ STAGE_CAPEX_WEIGHT_COLUMNS = [
     "Approval CAPEX weight %",
 ]
 
+STAGE_MILESTONE_COLUMNS = [
+    "Discovery completion milestone (USD)",
+    "Preclinical completion milestone (USD)",
+    "Phase I completion milestone (USD)",
+    "Phase II completion milestone (USD)",
+    "Phase III completion milestone (USD)",
+    "Approval completion milestone (USD)",
+]
+
 SELECTOR_OPTIONS = [
     "Base case",
     "Upside",
@@ -1441,6 +1450,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II CAPEX weight %": 25.0,
             "Phase III CAPEX weight %": 35.0,
             "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
             "Discovery->Preclinical": 60.0,
             "Preclinical->Phase I": 70.0,
             "Phase I->Phase II": 65.0,
@@ -1481,6 +1496,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II CAPEX weight %": 25.0,
             "Phase III CAPEX weight %": 35.0,
             "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 70.0,
             "Phase I->Phase II": 65.0,
@@ -1521,6 +1542,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II CAPEX weight %": 25.0,
             "Phase III CAPEX weight %": 35.0,
             "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 65.0,
@@ -1561,6 +1588,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II CAPEX weight %": 25.0,
             "Phase III CAPEX weight %": 35.0,
             "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1601,6 +1634,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II CAPEX weight %": 25.0,
             "Phase III CAPEX weight %": 35.0,
             "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1641,6 +1680,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II CAPEX weight %": 25.0,
             "Phase III CAPEX weight %": 35.0,
             "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1681,6 +1726,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II CAPEX weight %": 25.0,
             "Phase III CAPEX weight %": 35.0,
             "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1798,6 +1849,41 @@ def _stage_transition_curve_from_row(
         prob = max(0.0, min(1.0, prob))
         curves[transition] = [prob] * duration
     return curves
+
+
+def _stage_milestones_from_row(
+    row: pd.Series,
+    durations: Dict[str, int],
+    transitions: Dict[str, float],
+) -> List[Milestone]:
+    milestones: List[Milestone] = []
+    if not durations:
+        return milestones
+    cumulative_years = 0
+    for stage in STAGE_SEQUENCE:
+        duration = int(durations.get(stage, 0))
+        cumulative_years += duration
+        col = f"{stage} completion milestone (USD)"
+        if col not in row:
+            continue
+        amount = row.get(col)
+        if pd.isna(amount) or float(amount) == 0.0:
+            continue
+        transition_key = None
+        if stage != "Commercial":
+            next_idx = STAGE_SEQUENCE.index(stage) + 1
+            if next_idx < len(STAGE_SEQUENCE):
+                transition_key = f"{stage}->{STAGE_SEQUENCE[next_idx]}"
+        probability = transitions.get(transition_key, 1.0) if transition_key else 1.0
+        milestone = Milestone(
+            name=f"{stage} completion milestone",
+            year_offset=cumulative_years,
+            amount=float(amount),
+            probability=float(probability),
+            timing="from_start",
+        )
+        milestones.append(milestone)
+    return milestones
 
 
 def _apply_stage_schedule_defaults(
@@ -2048,6 +2134,9 @@ def _sanitize_product_records(
             transitions = _stage_transition_probabilities_from_row(mapping_row)
             if transitions:
                 cleaned["stage_transition_probabilities"] = transitions
+            milestones = _stage_milestones_from_row(mapping_row, durations, transitions)
+            if milestones:
+                cleaned["milestones"] = [asdict(milestone) for milestone in milestones]
         records.append(cleaned)
     return records
 
@@ -5350,6 +5439,12 @@ def main() -> None:
                                 col, min_value=0.0, max_value=100.0, step=1.0
                             )
                             for col in STAGE_TRANSITION_ANNUAL_COLUMNS
+                        },
+                        **{
+                            col: st.column_config.NumberColumn(
+                                col, step=1_000_000.0
+                            )
+                            for col in STAGE_MILESTONE_COLUMNS
                         },
                     },
                 )

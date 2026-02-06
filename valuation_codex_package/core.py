@@ -477,6 +477,8 @@ class Product:
         for milestone in cfg.milestones:
             if milestone.timing == "from_launch":
                 milestone_year = self._launch_year() + milestone.year_offset
+            elif milestone.timing == "from_start":
+                milestone_year = self.model_config.first_year + milestone.year_offset
             else:
                 milestone_year = self.model_config.first_year + milestone.year_offset
             if milestone_year in df.index:
