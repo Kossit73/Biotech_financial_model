@@ -1097,7 +1097,16 @@ def validate_product_config(config: ProductConfig) -> List[str]:
     for factor in config.post_patent_erosion:
         if factor < 0:
             issues.append(f"{config.name}: post_patent_erosion values must be >= 0.")
+    normalized_milestones: List[Milestone] = []
     for milestone in config.milestones:
+        if isinstance(milestone, Milestone):
+            normalized_milestones.append(milestone)
+            continue
+        try:
+            normalized_milestones.append(Milestone(**milestone))
+        except (TypeError, ValueError, KeyError):
+            issues.append(f"{config.name}: milestone entries must include name, year_offset, and amount.")
+    for milestone in normalized_milestones:
         if milestone.amount < 0:
             issues.append(f"{config.name}: milestone '{milestone.name}' amount cannot be negative.")
         if not (0.0 <= milestone.probability <= 1.0):
