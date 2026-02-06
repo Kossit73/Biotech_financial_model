@@ -105,6 +105,15 @@ STAGE_COST_WEIGHT_COLUMNS = [
     "Approval R&D weight %",
 ]
 
+STAGE_CAPEX_WEIGHT_COLUMNS = [
+    "Discovery CAPEX weight %",
+    "Preclinical CAPEX weight %",
+    "Phase I CAPEX weight %",
+    "Phase II CAPEX weight %",
+    "Phase III CAPEX weight %",
+    "Approval CAPEX weight %",
+]
+
 SELECTOR_OPTIONS = [
     "Base case",
     "Upside",
@@ -1426,6 +1435,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II R&D weight %": 25.0,
             "Phase III R&D weight %": 25.0,
             "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
             "Discovery->Preclinical": 60.0,
             "Preclinical->Phase I": 70.0,
             "Phase I->Phase II": 65.0,
@@ -1460,6 +1475,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II R&D weight %": 25.0,
             "Phase III R&D weight %": 25.0,
             "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 70.0,
             "Phase I->Phase II": 65.0,
@@ -1494,6 +1515,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II R&D weight %": 25.0,
             "Phase III R&D weight %": 25.0,
             "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 65.0,
@@ -1528,6 +1555,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II R&D weight %": 25.0,
             "Phase III R&D weight %": 25.0,
             "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1562,6 +1595,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II R&D weight %": 25.0,
             "Phase III R&D weight %": 25.0,
             "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1596,6 +1635,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II R&D weight %": 25.0,
             "Phase III R&D weight %": 25.0,
             "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1630,6 +1675,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase II R&D weight %": 25.0,
             "Phase III R&D weight %": 25.0,
             "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1666,6 +1717,22 @@ def _stage_cost_weights_from_row(row: pd.Series) -> Dict[str, float]:
         if col not in row:
             continue
         stage = col.replace(" R&D weight %", "")
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        weight = float(value)
+        if weight > 1.0:
+            weight = weight / 100.0
+        weights[stage] = max(0.0, weight)
+    return weights
+
+
+def _stage_capex_weights_from_row(row: pd.Series) -> Dict[str, float]:
+    weights: Dict[str, float] = {}
+    for col in STAGE_CAPEX_WEIGHT_COLUMNS:
+        if col not in row:
+            continue
+        stage = col.replace(" CAPEX weight %", "")
         value = row.get(col)
         if pd.isna(value):
             continue
@@ -1939,6 +2006,7 @@ def _sanitize_product_records(
         if mapping_row is not None:
             durations = _stage_duration_years_from_row(mapping_row)
             cost_weights = _stage_cost_weights_from_row(mapping_row)
+            capex_weights = _stage_capex_weights_from_row(mapping_row)
             if overwrite_defaults or "success_prob" not in cleaned:
                 mapped_prob = mapping_row.get("Success Probability %")
                 if pd.notna(mapped_prob):
@@ -1972,6 +2040,8 @@ def _sanitize_product_records(
                 cleaned["stage_duration_years"] = durations
             if cost_weights:
                 cleaned["stage_cost_weights"] = cost_weights
+            if capex_weights:
+                cleaned["stage_capex_weights"] = capex_weights
             transition_curve = _stage_transition_curve_from_row(mapping_row, durations)
             if transition_curve:
                 cleaned["stage_transition_curve"] = transition_curve
@@ -5252,6 +5322,12 @@ def main() -> None:
                                 col, min_value=0.0, max_value=100.0, step=1.0
                             )
                             for col in STAGE_COST_WEIGHT_COLUMNS
+                        },
+                        **{
+                            col: st.column_config.NumberColumn(
+                                col, min_value=0.0, max_value=100.0, step=1.0
+                            )
+                            for col in STAGE_CAPEX_WEIGHT_COLUMNS
                         },
                         **{
                             col: st.column_config.NumberColumn(

@@ -73,6 +73,7 @@ class ProductConfig:
 
     stage_duration_years: Dict[str, int] = field(default_factory=dict)
     stage_cost_weights: Dict[str, float] = field(default_factory=dict)
+    stage_capex_weights: Dict[str, float] = field(default_factory=dict)
     stage_transition_probabilities: Dict[str, float] = field(default_factory=dict)
     stage_transition_curve: Dict[str, List[float]] = field(default_factory=dict)
     post_patent_erosion: List[float] = field(default_factory=lambda: [1.0, 0.85, 0.7, 0.55, 0.4])
@@ -294,7 +295,12 @@ class Product:
         values[:years] = -annual
         return pd.Series(values, index=index)
 
-    def _stage_costed_prelaunch_cashflow(self, total: float, index: np.ndarray) -> pd.Series:
+    def _stage_costed_prelaunch_cashflow(
+        self,
+        total: float,
+        index: np.ndarray,
+        stage_weights: Dict[str, float],
+    ) -> pd.Series:
         cfg = self.config
         values = np.zeros(len(index))
         if total <= 0 or cfg.preexisting_market:
@@ -311,7 +317,7 @@ class Product:
         if total_years <= 0:
             pre_years = max(1, int(cfg.time_to_market))
             return self._spread_prelaunch_cashflow(total, pre_years, index)
-        weights = {stage: float(cfg.stage_cost_weights.get(stage, 0.0)) for stage in stages}
+        weights = {stage: float(stage_weights.get(stage, 0.0)) for stage in stages}
         weight_total = sum(weight for stage, weight in weights.items() if cfg.stage_duration_years.get(stage, 0) > 0)
         per_year: List[float] = []
         if weight_total <= 0:
@@ -395,7 +401,11 @@ class Product:
 
         rd_cash = pd.Series(0.0, index=years)
         if cfg.rd_remaining_pre_launch > 0 and not cfg.preexisting_market:
-            rd_cash += self._stage_costed_prelaunch_cashflow(cfg.rd_remaining_pre_launch, years)
+            rd_cash += self._stage_costed_prelaunch_cashflow(
+                cfg.rd_remaining_pre_launch,
+                years,
+                cfg.stage_cost_weights,
+            )
 
         launch_year = self._launch_year()
         rd_cash.loc[years >= launch_year] -= cfg.rd_annual_post_launch
@@ -410,8 +420,11 @@ class Product:
 
         capex_cash = pd.Series(0.0, index=years)
         if cfg.capex_remaining_pre_launch > 0 and not cfg.preexisting_market:
-            pre_years = max(1, cfg.time_to_market)
-            capex_cash += self._spread_prelaunch_cashflow(cfg.capex_remaining_pre_launch, pre_years, years)
+            capex_cash += self._stage_costed_prelaunch_cashflow(
+                cfg.capex_remaining_pre_launch,
+                years,
+                cfg.stage_capex_weights,
+            )
 
         capex_cash.loc[years >= launch_year] -= cfg.capex_annual_post_launch
         df["capex_cash"] = capex_cash
@@ -1036,6 +1049,9 @@ def validate_product_config(config: ProductConfig) -> List[str]:
     for stage, weight in config.stage_cost_weights.items():
         if weight < 0:
             issues.append(f"{config.name}: stage cost weight '{stage}' must be >= 0.")
+    for stage, weight in config.stage_capex_weights.items():
+        if weight < 0:
+            issues.append(f"{config.name}: stage capex weight '{stage}' must be >= 0.")
     for key, curve in config.stage_transition_curve.items():
         for prob in curve:
             if not (0.0 <= prob <= 1.0):
