@@ -2177,7 +2177,7 @@ def _real_options_value(val_result, volatility: float = 0.35, years: int = 3) ->
         return None
     underlying = max(val_result.rnpv, 0.0)
     strike = val_result.consolidated["rd_cash"].abs().sum() / years if years else 1.0
-    if strike <= 0:
+    if underlying <= 0 or strike <= 0 or volatility <= 0 or years <= 0:
         return None
     # Black-Scholes call option approximation on project deferral
     from math import log, sqrt
