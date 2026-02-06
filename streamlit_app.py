@@ -1998,23 +1998,62 @@ def main() -> None:
                 name_column="Vaccine name",
                 column_config=sales_column_config,
             )
-            for year in sales_years:
-                doses = pd.to_numeric(
-                    vaccine_df.get(f"{year} Doses (M)", pd.Series(dtype=float)),
-                    errors="coerce",
-                ).fillna(0.0)
-                price = pd.to_numeric(
-                    vaccine_df.get(f"{year} Price per dose", pd.Series(dtype=float)),
-                    errors="coerce",
-                ).fillna(0.0)
-                vaccine_df[f"{year} Implied revenue"] = doses * 1e6 * price
-            implied_cols = [f"{year} Implied revenue" for year in sales_years]
-            vaccine_df["Total implied revenue"] = vaccine_df[implied_cols].sum(axis=1)
+
+            with st.expander("Yearly Increment Helper", expanded=False):
+                select_key = "vaccine_sales_table_row_select"
+                selected_id = st.session_state.get(select_key)
+                if selected_id is None and not vaccine_df.empty:
+                    selected_id = vaccine_df.loc[vaccine_df.index[0], "ID_vaccine"]
+                if selected_id in vaccine_df["ID_vaccine"].values:
+                    selected_idx = vaccine_df.index[vaccine_df["ID_vaccine"] == selected_id][0]
+                else:
+                    selected_idx = vaccine_df.index[0] if not vaccine_df.empty else None
+
+                base_year = st.selectbox(
+                    "Base year",
+                    options=sales_years,
+                    index=0,
+                    key="vaccine_sales_base_year",
+                )
+                doses_increment = st.number_input(
+                    "Doses increment per year (M)",
+                    value=1.0,
+                    step=0.5,
+                    key="vaccine_sales_dose_increment",
+                )
+                price_increment = st.number_input(
+                    "Price increment per year",
+                    value=1.0,
+                    step=1.0,
+                    key="vaccine_sales_price_increment",
+                )
+
+                if st.button("Apply increments", key="vaccine_sales_apply"):
+                    if selected_idx is None:
+                        st.warning("Select a vaccine row to apply increments.")
+                    else:
+                        start_idx = sales_years.index(base_year)
+                        base_doses = pd.to_numeric(
+                            vaccine_df.at[selected_idx, f"{base_year} Doses (M)"],
+                            errors="coerce",
+                        )
+                        base_price = pd.to_numeric(
+                            vaccine_df.at[selected_idx, f"{base_year} Price per dose"],
+                            errors="coerce",
+                        )
+                        base_doses = 0.0 if pd.isna(base_doses) else float(base_doses)
+                        base_price = 0.0 if pd.isna(base_price) else float(base_price)
+                        for offset, year in enumerate(sales_years[start_idx:], start=0):
+                            vaccine_df.at[selected_idx, f"{year} Doses (M)"] = (
+                                base_doses + doses_increment * offset
+                            )
+                            vaccine_df.at[selected_idx, f"{year} Price per dose"] = (
+                                base_price + price_increment * offset
+                            )
+                        st.session_state["vaccine_sales_table"] = vaccine_df
+                        st.success("Increments applied to doses and price.")
+
             st.session_state["vaccine_sales_table"] = vaccine_df
-            st.metric(
-                "Five-year vaccine sales (total)",
-                f"{vaccine_df['Total implied revenue'].sum():,.0f}",
-            )
 
         with st.expander("Uses and sources of funds"):
             uses_col, sources_col = st.columns(2)
