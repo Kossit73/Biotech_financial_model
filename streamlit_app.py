@@ -229,12 +229,12 @@ def _default_comps_table() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
-def _vaccine_sales_year_columns(first_year: int, years: int = 5) -> List[int]:
+def _vaccine_sales_year_columns(first_year: int, years: int) -> List[int]:
     return [first_year + i for i in range(years)]
 
 
-def _default_vaccine_sales_table(first_year: int = 2024) -> pd.DataFrame:
-    years = _vaccine_sales_year_columns(first_year)
+def _default_vaccine_sales_table(first_year: int = 2024, years: int = 5) -> pd.DataFrame:
+    years = _vaccine_sales_year_columns(first_year, years)
     rows = []
     for name, base_doses, base_price in [
         ("AgSeed-101", 5, 25),
@@ -251,9 +251,9 @@ def _default_vaccine_sales_table(first_year: int = 2024) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
+def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int, years: int) -> Dict:
     next_id = _next_vaccine_id(df)
-    years = _vaccine_sales_year_columns(first_year)
+    years = _vaccine_sales_year_columns(first_year, years)
     row = {"ID_vaccine": next_id, "Vaccine name": "New vaccine"}
     for year in years:
         row[f"{year} Doses (M)"] = 5.0
@@ -1978,7 +1978,7 @@ def main() -> None:
             st.caption("Ramp factors feed revenue build-ups across every product.")
 
         with st.expander("Vaccine sales"):
-            sales_years = _vaccine_sales_year_columns(int(first_year))
+            sales_years = _vaccine_sales_year_columns(int(first_year), int(n_years))
             sales_column_config = {
                 "ID_vaccine": st.column_config.TextColumn("ID_vaccine"),
                 "Vaccine name": st.column_config.TextColumn("Vaccine name"),
@@ -1992,8 +1992,8 @@ def main() -> None:
                 )
             vaccine_df = _render_product_assumption_table(
                 session_key="vaccine_sales_table",
-                default_factory=lambda: _default_vaccine_sales_table(int(first_year)),
-                blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
+                default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
+                blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year), int(n_years)),
                 id_column="ID_vaccine",
                 name_column="Vaccine name",
                 column_config=sales_column_config,
