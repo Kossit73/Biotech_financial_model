@@ -4353,11 +4353,23 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     def _safe_add_picture(document, image: Any) -> None:
         if image is None:
             return
-        if hasattr(image, "getvalue"):
-            image = BytesIO(image.getvalue())
-        elif hasattr(image, "seek"):
-            image.seek(0)
         try:
+            if isinstance(image, (bytes, bytearray)):
+                image = BytesIO(image)
+            elif hasattr(image, "getvalue"):
+                try:
+                    image_bytes = image.getvalue()
+                except ValueError:
+                    image.seek(0)
+                    image_bytes = image.read()
+                image = BytesIO(image_bytes)
+            elif hasattr(image, "save"):
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                buffer.seek(0)
+                image = buffer
+            elif hasattr(image, "seek"):
+                image.seek(0)
             document.add_picture(image)
         except Exception:
             return
