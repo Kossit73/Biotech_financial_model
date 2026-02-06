@@ -243,46 +243,6 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
     return asdict(cfg)
 
 
-def _build_assumption_audit_table(
-    *,
-    first_year: int,
-    n_years: int,
-    currency: str,
-    tax_rate: float,
-    wc_pct: float,
-    inflation: float,
-    base_fx: str,
-) -> pd.DataFrame:
-    defaults = ModelConfig()
-    baseline = {
-        "First forecast year": defaults.first_year,
-        "Number of years": defaults.n_years,
-        "Currency": defaults.currency,
-        "Tax rate": defaults.tax_rate,
-        "Working capital (% sales)": defaults.working_capital_pct_sales,
-        "Inflation assumption": 0.02,
-        "Reporting FX pair": "USD/EUR",
-    }
-    current = {
-        "First forecast year": first_year,
-        "Number of years": n_years,
-        "Currency": currency,
-        "Tax rate": tax_rate,
-        "Working capital (% sales)": wc_pct,
-        "Inflation assumption": inflation,
-        "Reporting FX pair": base_fx,
-    }
-    rows = []
-    for label, default in baseline.items():
-        value = current[label]
-        source = "default" if value == default else "user"
-        rows.append({"Assumption": label, "Value": value, "Default": default, "Source": source})
-    audit_df = pd.DataFrame(rows)
-    audit_df["Value"] = audit_df["Value"].astype(str)
-    audit_df["Default"] = audit_df["Default"].astype(str)
-    return audit_df
-
-
 def _default_vaccine_sales_table(first_year: int = 2024, horizon_years: int = 5) -> pd.DataFrame:
     years = [first_year + i for i in range(max(horizon_years, 1))]
     def _extend(values: List[float], target_len: int) -> List[float]:
@@ -4630,18 +4590,6 @@ def main() -> None:
                 value=True,
             )
             st.caption("Set the macro baseline for the consolidated forecast and disclosures.")
-
-        with st.expander("Assumption audit", expanded=False):
-            audit_df = _build_assumption_audit_table(
-                first_year=int(first_year),
-                n_years=int(n_years),
-                currency=currency,
-                tax_rate=float(tax_rate),
-                wc_pct=float(wc_pct),
-                inflation=float(inflation),
-                base_fx=base_fx,
-            )
-            st.dataframe(audit_df, hide_index=True)
 
         with st.expander("Forecast assumptions", expanded=True):
             ramp_df = _render_schedule_editor("Sales ramp schedule", "sales_ramp_schedule")
