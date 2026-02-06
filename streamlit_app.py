@@ -94,6 +94,8 @@ STAGE_TRANSITION_ANNUAL_COLUMNS = [
     "Approval->Commercial annual success %",
 ]
 
+RAMP_SHAPE_OPTIONS = ["Linear", "S-curve", "Step"]
+
 STAGE_COST_WEIGHT_COLUMNS = [
     "Discovery R&D weight %",
     "Preclinical R&D weight %",
@@ -121,6 +123,7 @@ def _default_products() -> pd.DataFrame:
             "stage": "Phase II",
             "success_prob": 0.35,
             "sales_ramp_length": 5,
+            "sales_ramp_shape": "Linear",
             "include_in_consolidation": True,
             "time_to_market": 4,
             "patent_years": 15,
@@ -145,6 +148,7 @@ def _default_products() -> pd.DataFrame:
             "stage": "Phase III",
             "success_prob": 0.55,
             "sales_ramp_length": 5,
+            "sales_ramp_shape": "Linear",
             "include_in_consolidation": True,
             "time_to_market": 2,
             "patent_years": 17,
@@ -1406,6 +1410,7 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Success Probability %": 10.0,
             "Time to market (years)": 7,
             "Sales ramp length (years)": 5,
+            "Ramp shape": "Linear",
             "R&D remaining pre-launch (USD)": 300_000_000,
             "R&D annual post-launch (USD/year)": 15_000_000,
             "Discovery duration (years)": 1,
@@ -1439,6 +1444,7 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Success Probability %": 20.0,
             "Time to market (years)": 6,
             "Sales ramp length (years)": 5,
+            "Ramp shape": "Linear",
             "R&D remaining pre-launch (USD)": 250_000_000,
             "R&D annual post-launch (USD/year)": 12_000_000,
             "Discovery duration (years)": 1,
@@ -1472,6 +1478,7 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Success Probability %": 35.0,
             "Time to market (years)": 5,
             "Sales ramp length (years)": 4,
+            "Ramp shape": "Linear",
             "R&D remaining pre-launch (USD)": 200_000_000,
             "R&D annual post-launch (USD/year)": 10_000_000,
             "Discovery duration (years)": 1,
@@ -1505,6 +1512,7 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Success Probability %": 45.0,
             "Time to market (years)": 4,
             "Sales ramp length (years)": 4,
+            "Ramp shape": "Linear",
             "R&D remaining pre-launch (USD)": 150_000_000,
             "R&D annual post-launch (USD/year)": 9_000_000,
             "Discovery duration (years)": 1,
@@ -1538,6 +1546,7 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Success Probability %": 60.0,
             "Time to market (years)": 3,
             "Sales ramp length (years)": 3,
+            "Ramp shape": "Linear",
             "R&D remaining pre-launch (USD)": 100_000_000,
             "R&D annual post-launch (USD/year)": 8_000_000,
             "Discovery duration (years)": 1,
@@ -1571,6 +1580,7 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Success Probability %": 80.0,
             "Time to market (years)": 1,
             "Sales ramp length (years)": 2,
+            "Ramp shape": "Linear",
             "R&D remaining pre-launch (USD)": 50_000_000,
             "R&D annual post-launch (USD/year)": 6_000_000,
             "Discovery duration (years)": 1,
@@ -1604,6 +1614,7 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Success Probability %": 100.0,
             "Time to market (years)": 0,
             "Sales ramp length (years)": 1,
+            "Ramp shape": "Step",
             "R&D remaining pre-launch (USD)": 0.0,
             "R&D annual post-launch (USD/year)": 5_000_000,
             "Discovery duration (years)": 1,
@@ -1745,6 +1756,7 @@ def _apply_stage_schedule_defaults(
             if derived_time_to_market is not None
             else mapping_row.get("Time to market (years)"),
             "sales_ramp_length": mapping_row.get("Sales ramp length (years)"),
+            "sales_ramp_shape": mapping_row.get("Ramp shape"),
             "rd_remaining_pre_launch": mapping_row.get("R&D remaining pre-launch (USD)"),
             "rd_annual_post_launch": mapping_row.get("R&D annual post-launch (USD/year)"),
         }
@@ -1944,6 +1956,10 @@ def _sanitize_product_records(
                 mapped_ramp = mapping_row.get("Sales ramp length (years)")
                 if pd.notna(mapped_ramp):
                     cleaned["sales_ramp_length"] = mapped_ramp
+            if overwrite_defaults or "sales_ramp_shape" not in cleaned:
+                mapped_shape = mapping_row.get("Ramp shape")
+                if pd.notna(mapped_shape):
+                    cleaned["sales_ramp_shape"] = mapped_shape
             if overwrite_defaults or "rd_remaining_pre_launch" not in cleaned:
                 mapped_rd = mapping_row.get("R&D remaining pre-launch (USD)")
                 if pd.notna(mapped_rd):
@@ -5216,6 +5232,9 @@ def main() -> None:
                         "Sales ramp length (years)": st.column_config.NumberColumn(
                             "Sales ramp length (years)", min_value=0, step=1
                         ),
+                        "Ramp shape": st.column_config.SelectboxColumn(
+                            "Ramp shape", options=RAMP_SHAPE_OPTIONS
+                        ),
                         "R&D remaining pre-launch (USD)": st.column_config.NumberColumn(
                             "R&D remaining pre-launch (USD)", step=1_000_000.0
                         ),
@@ -6116,6 +6135,9 @@ def main() -> None:
                     "stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
                     "sales_ramp_length": st.column_config.NumberColumn(
                         "Sales ramp length (years)", min_value=0, step=1
+                    ),
+                    "sales_ramp_shape": st.column_config.SelectboxColumn(
+                        "Ramp shape", options=RAMP_SHAPE_OPTIONS
                     ),
                     "include_in_consolidation": st.column_config.CheckboxColumn("Include", default=True),
                     "success_prob": st.column_config.NumberColumn(

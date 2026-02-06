@@ -43,6 +43,7 @@ class ProductConfig:
 
     time_to_market: int = 3
     sales_ramp_length: Optional[int] = None
+    sales_ramp_shape: Optional[str] = None
     patent_years: int = 20
     preexisting_market: bool = False
 
@@ -174,6 +175,22 @@ class Product:
         erosion = erosion_values[idx]
         erosion[years_since_patent_end < 0] = 1.0
         return erosion
+
+    @staticmethod
+    def _ramp_shape_values(shape: Optional[str], length: int) -> List[float]:
+        if length <= 0:
+            return []
+        normalized = (shape or "Linear").strip().lower()
+        if length == 1:
+            return [1.0]
+        if normalized in {"step", "step-up"}:
+            return [0.0] + [1.0] * (length - 1)
+        if normalized in {"s-curve", "s curve", "sigmoid"}:
+            x = np.linspace(-2.5, 2.5, length)
+            curve = 1.0 / (1.0 + np.exp(-x))
+            curve = (curve - curve.min()) / (curve.max() - curve.min())
+            return curve.tolist()
+        return np.linspace(0.2, 1.0, length).tolist()
 
     def _stage_success_probability(self) -> float:
         cfg = self.config
@@ -315,7 +332,10 @@ class Product:
         years = self.model_config.years
         cfg = self.config
         ramp_factors = list(self.model_config.sales_ramp_factors or [])
-        if cfg.sales_ramp_length is not None:
+        if cfg.sales_ramp_shape:
+            ramp_len = int(cfg.sales_ramp_length or len(ramp_factors) or 1)
+            ramp_factors = self._ramp_shape_values(cfg.sales_ramp_shape, ramp_len)
+        elif cfg.sales_ramp_length is not None:
             ramp_len = int(cfg.sales_ramp_length)
             if ramp_len <= 0:
                 ramp_factors = []
@@ -997,6 +1017,8 @@ def validate_product_config(config: ProductConfig) -> List[str]:
         issues.append(f"{config.name}: patent_years must be positive.")
     if config.time_to_market < 0 and not config.preexisting_market:
         issues.append(f"{config.name}: time_to_market must be >= 0 for non-preexisting products.")
+    if config.sales_ramp_shape and config.sales_ramp_shape not in {"Linear", "S-curve", "Step"}:
+        issues.append(f"{config.name}: sales_ramp_shape must be Linear, S-curve, or Step.")
     for label, value in {
         "rd_remaining_pre_launch": config.rd_remaining_pre_launch,
         "rd_annual_post_launch": config.rd_annual_post_launch,
