@@ -1058,6 +1058,8 @@ def validate_product_config(config: ProductConfig) -> List[str]:
     issues: List[str] = []
     if not (0.0 <= config.success_prob <= 1.0):
         issues.append(f"{config.name}: success_prob must be between 0 and 1.")
+    if config.stage == "Commercial" and config.time_to_market > 0:
+        issues.append(f"{config.name}: Commercial stage requires time_to_market of 0.")
     if config.patent_years <= 0:
         issues.append(f"{config.name}: patent_years must be positive.")
     if config.time_to_market < 0 and not config.preexisting_market:

@@ -5274,6 +5274,13 @@ def main() -> None:
                     "populate product assumptions when the stage changes. Stage durations are used to "
                     "derive time-to-market and to build annual transition probability curves."
                 )
+                audit_owner = st.text_input(
+                    "Mapping updated by",
+                    value=st.session_state.get("stage_mapping_audit_owner", "Finance"),
+                    key="stage_mapping_audit_owner",
+                )
+                if "stage_mapping_audit_log" not in st.session_state:
+                    st.session_state["stage_mapping_audit_log"] = []
                 auto_apply_defaults = st.checkbox(
                     "Auto-apply stage defaults to product assumptions",
                     value=st.session_state.get("stage_mapping_auto_apply", True),
@@ -5288,6 +5295,7 @@ def main() -> None:
                     "stage_schedule_mapping",
                     _default_stage_schedule_mapping,
                 )
+                previous_mapping = mapping_df.copy()
                 mapping_df = st.data_editor(
                     mapping_df,
                     num_rows="fixed",
@@ -5345,7 +5353,21 @@ def main() -> None:
                         },
                     },
                 )
+                if not mapping_df.equals(previous_mapping):
+                    st.session_state["stage_mapping_audit_log"].append(
+                        {
+                            "timestamp": pd.Timestamp.utcnow().isoformat(),
+                            "updated_by": audit_owner,
+                            "note": "Stage mapping updated",
+                        }
+                    )
                 st.session_state["stage_schedule_mapping"] = mapping_df
+                with st.expander("Mapping audit trail", expanded=False):
+                    audit_log = st.session_state.get("stage_mapping_audit_log", [])
+                    if audit_log:
+                        st.dataframe(pd.DataFrame(audit_log), use_container_width=True)
+                    else:
+                        st.caption("No mapping changes recorded yet.")
 
             with st.expander("General assumptions", expanded=True):
                 col1, col2, col3 = st.columns(3)
