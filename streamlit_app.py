@@ -4602,24 +4602,16 @@ def main() -> None:
             )
             st.caption("Use this checklist to keep inputs consistent and audit-ready.")
 
-        with st.expander("Pipeline stage template", expanded=True):
-            st.markdown(
-                f"**Use {' → '.join(STAGE_SEQUENCE)}**"
+        with st.expander("Pipeline stage templates", expanded=True):
+            st.markdown(f"**Use {' → '.join(STAGE_SEQUENCE)}**")
+            selected_stage = st.selectbox(
+                "Select a stage template to apply",
+                options=STAGE_SEQUENCE,
+                key="pipeline_stage_template_select",
             )
-            st.markdown(
-                "\n".join(
-                    [
-                        "- Discovery",
-                        "- Preclinical",
-                        "- Phase I",
-                        "- Phase II",
-                        "- Phase III",
-                        "- Approval",
-                        "- Commercial",
-                    ]
-                )
-            )
-            st.caption("Use this canonical sequence when defining assets or scenarios.")
+            st.markdown("**Selected template**")
+            st.markdown(f"- {selected_stage}")
+            st.caption("Select a stage to align asset setup and scenario inputs.")
 
         with st.expander("General assumptions", expanded=True):
             col1, col2, col3 = st.columns(3)
