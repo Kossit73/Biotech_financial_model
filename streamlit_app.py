@@ -47,6 +47,7 @@ from valuation_codex_package import (
     Scenario,
     ScenarioEngine,
     ForecastEngine,
+    Milestone,
     VCInputs,
     VCValuator,
     ValuationEngine,
