@@ -41,6 +41,10 @@ Combine configuration objects with the modelling helpers to build forecasts, run
 
 The accompanying `streamlit_app.py` surfaces these workflows in a browser-based UI featuring dedicated tabs for configuration, financial statements, dashboards, advanced analytics, scenarios, and VC valuation so that non-technical users can operate the model interactively.
 
+## Summary
+
+Replaced the static pipeline stage list with a dropdown selector that lets users choose a stage template and see the selected item in the Model configuration tab.
+
 ## Audit & recommendations (20-year biotech financial analyst perspective)
 
 Below is an audit of the current model design plus recommendations to make it enterprise-ready for biotech users.
