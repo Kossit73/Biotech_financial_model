@@ -66,6 +66,15 @@ STAGE_OPTIONS = [
     "Commercial",
 ]
 
+STAGE_TRANSITION_COLUMNS = [
+    "Discovery->Preclinical",
+    "Preclinical->Phase I",
+    "Phase I->Phase II",
+    "Phase II->Phase III",
+    "Phase III->Approval",
+    "Approval->Commercial",
+]
+
 SELECTOR_OPTIONS = [
     "Base case",
     "Upside",
@@ -83,6 +92,7 @@ def _default_products() -> pd.DataFrame:
             "name": "AgSeed-101",
             "stage": "Phase II",
             "success_prob": 0.35,
+            "sales_ramp_length": 5,
             "include_in_consolidation": True,
             "time_to_market": 4,
             "patent_years": 15,
@@ -106,6 +116,7 @@ def _default_products() -> pd.DataFrame:
             "name": "BioYield-Plus",
             "stage": "Phase III",
             "success_prob": 0.55,
+            "sales_ramp_length": 5,
             "include_in_consolidation": True,
             "time_to_market": 2,
             "patent_years": 17,
@@ -1358,6 +1369,170 @@ def _default_ramp_schedule() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _default_stage_schedule_mapping() -> pd.DataFrame:
+    """Default mapping from pipeline stage to schedule assumptions."""
+
+    data = [
+        {
+            "Stage": "Discovery",
+            "Success Probability %": 10.0,
+            "Time to market (years)": 7,
+            "Sales ramp length (years)": 5,
+            "R&D remaining pre-launch (USD)": 300_000_000,
+            "R&D annual post-launch (USD/year)": 15_000_000,
+            "Discovery->Preclinical": 60.0,
+            "Preclinical->Phase I": 70.0,
+            "Phase I->Phase II": 65.0,
+            "Phase II->Phase III": 55.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+        },
+        {
+            "Stage": "Preclinical",
+            "Success Probability %": 20.0,
+            "Time to market (years)": 6,
+            "Sales ramp length (years)": 5,
+            "R&D remaining pre-launch (USD)": 250_000_000,
+            "R&D annual post-launch (USD/year)": 12_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 70.0,
+            "Phase I->Phase II": 65.0,
+            "Phase II->Phase III": 55.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+        },
+        {
+            "Stage": "Phase I",
+            "Success Probability %": 35.0,
+            "Time to market (years)": 5,
+            "Sales ramp length (years)": 4,
+            "R&D remaining pre-launch (USD)": 200_000_000,
+            "R&D annual post-launch (USD/year)": 10_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 65.0,
+            "Phase II->Phase III": 55.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+        },
+        {
+            "Stage": "Phase II",
+            "Success Probability %": 45.0,
+            "Time to market (years)": 4,
+            "Sales ramp length (years)": 4,
+            "R&D remaining pre-launch (USD)": 150_000_000,
+            "R&D annual post-launch (USD/year)": 9_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 100.0,
+            "Phase II->Phase III": 55.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+        },
+        {
+            "Stage": "Phase III",
+            "Success Probability %": 60.0,
+            "Time to market (years)": 3,
+            "Sales ramp length (years)": 3,
+            "R&D remaining pre-launch (USD)": 100_000_000,
+            "R&D annual post-launch (USD/year)": 8_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 100.0,
+            "Phase II->Phase III": 100.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+        },
+        {
+            "Stage": "Approval",
+            "Success Probability %": 80.0,
+            "Time to market (years)": 1,
+            "Sales ramp length (years)": 2,
+            "R&D remaining pre-launch (USD)": 50_000_000,
+            "R&D annual post-launch (USD/year)": 6_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 100.0,
+            "Phase II->Phase III": 100.0,
+            "Phase III->Approval": 100.0,
+            "Approval->Commercial": 100.0,
+        },
+        {
+            "Stage": "Commercial",
+            "Success Probability %": 100.0,
+            "Time to market (years)": 0,
+            "Sales ramp length (years)": 1,
+            "R&D remaining pre-launch (USD)": 0.0,
+            "R&D annual post-launch (USD/year)": 5_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 100.0,
+            "Phase II->Phase III": 100.0,
+            "Phase III->Approval": 100.0,
+            "Approval->Commercial": 100.0,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
+def _stage_mapping_row(mapping_df: pd.DataFrame, stage: str) -> Optional[pd.Series]:
+    if mapping_df is None or mapping_df.empty or not stage:
+        return None
+    if "Stage" not in mapping_df.columns:
+        return None
+    matches = mapping_df[mapping_df["Stage"].astype(str) == str(stage)]
+    if matches.empty:
+        return None
+    return matches.iloc[0]
+
+
+def _stage_transition_probabilities_from_row(row: pd.Series) -> Dict[str, float]:
+    transitions: Dict[str, float] = {}
+    for col in STAGE_TRANSITION_COLUMNS:
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        prob = float(value)
+        if prob > 1.0:
+            prob = prob / 100.0
+        transitions[col] = max(0.0, min(1.0, prob))
+    return transitions
+
+
+def _apply_stage_schedule_defaults(
+    df: pd.DataFrame,
+    mapping_df: pd.DataFrame,
+    *,
+    stage_column: str,
+    overwrite: bool,
+) -> pd.DataFrame:
+    if df.empty or mapping_df is None or mapping_df.empty or stage_column not in df.columns:
+        return df
+    updated = df.copy()
+    for idx, row in updated.iterrows():
+        stage = row.get(stage_column)
+        mapping_row = _stage_mapping_row(mapping_df, stage)
+        if mapping_row is None:
+            continue
+        defaults = {
+            "success_prob": mapping_row.get("Success Probability %"),
+            "time_to_market": mapping_row.get("Time to market (years)"),
+            "sales_ramp_length": mapping_row.get("Sales ramp length (years)"),
+            "rd_remaining_pre_launch": mapping_row.get("R&D remaining pre-launch (USD)"),
+            "rd_annual_post_launch": mapping_row.get("R&D annual post-launch (USD/year)"),
+        }
+        for col, value in defaults.items():
+            if pd.isna(value):
+                continue
+            existing = row.get(col)
+            if overwrite or pd.isna(existing) or existing in (None, ""):
+                if col == "success_prob" and value > 1.0:
+                    updated.at[idx, col] = float(value) / 100.0
+                else:
+                    updated.at[idx, col] = value
+    return updated
+
+
 def _default_debt_schedule(first_year: int, n_years: int) -> pd.DataFrame:
     years = list(range(int(first_year), int(first_year) + int(n_years)))
     return pd.DataFrame(
@@ -1460,6 +1635,18 @@ def _validate_product_df(df: pd.DataFrame) -> pd.DataFrame:
         validated["success_prob"] = (
             validated["success_prob"].fillna(0.0).clip(0.0, 1.0)
         )
+    if "time_to_market" in validated.columns:
+        validated["time_to_market"] = (
+            pd.to_numeric(validated["time_to_market"], errors="coerce")
+            .fillna(0.0)
+            .clip(lower=0.0)
+        )
+    if "sales_ramp_length" in validated.columns:
+        validated["sales_ramp_length"] = (
+            pd.to_numeric(validated["sales_ramp_length"], errors="coerce")
+            .fillna(0.0)
+            .clip(lower=0.0)
+        )
 
     percent_cols = [
         "cogs_patent",
@@ -1489,7 +1676,11 @@ def _validate_product_df(df: pd.DataFrame) -> pd.DataFrame:
     return validated
 
 
-def _sanitize_product_records(df: pd.DataFrame) -> List[Dict]:
+def _sanitize_product_records(
+    df: pd.DataFrame,
+    stage_mapping: Optional[pd.DataFrame] = None,
+    overwrite_defaults: bool = False,
+) -> List[Dict]:
     records: List[Dict] = []
     cfg_fields = {f.name for f in fields(ProductConfig)}
     for raw in df.to_dict("records"):
@@ -1505,12 +1696,49 @@ def _sanitize_product_records(df: pd.DataFrame) -> List[Dict]:
         cleaned.setdefault("stage", "Unspecified")
         cleaned.setdefault("success_prob", 0.5)
         cleaned.setdefault("include_in_consolidation", True)
+        mapping_row = _stage_mapping_row(stage_mapping, cleaned.get("stage"))
+        if mapping_row is not None:
+            if overwrite_defaults or "success_prob" not in cleaned:
+                mapped_prob = mapping_row.get("Success Probability %")
+                if pd.notna(mapped_prob):
+                    mapped_prob = float(mapped_prob)
+                    if mapped_prob > 1.0:
+                        mapped_prob = mapped_prob / 100.0
+                    cleaned["success_prob"] = mapped_prob
+            if overwrite_defaults or "time_to_market" not in cleaned:
+                mapped_time = mapping_row.get("Time to market (years)")
+                if pd.notna(mapped_time):
+                    cleaned["time_to_market"] = mapped_time
+            if overwrite_defaults or "sales_ramp_length" not in cleaned:
+                mapped_ramp = mapping_row.get("Sales ramp length (years)")
+                if pd.notna(mapped_ramp):
+                    cleaned["sales_ramp_length"] = mapped_ramp
+            if overwrite_defaults or "rd_remaining_pre_launch" not in cleaned:
+                mapped_rd = mapping_row.get("R&D remaining pre-launch (USD)")
+                if pd.notna(mapped_rd):
+                    cleaned["rd_remaining_pre_launch"] = mapped_rd
+            if overwrite_defaults or "rd_annual_post_launch" not in cleaned:
+                mapped_rd_annual = mapping_row.get("R&D annual post-launch (USD/year)")
+                if pd.notna(mapped_rd_annual):
+                    cleaned["rd_annual_post_launch"] = mapped_rd_annual
+            transitions = _stage_transition_probabilities_from_row(mapping_row)
+            if transitions:
+                cleaned["stage_transition_probabilities"] = transitions
         records.append(cleaned)
     return records
 
 
-def _build_portfolio(product_df: pd.DataFrame, model_cfg: ModelConfig) -> Portfolio | None:
-    product_records = _sanitize_product_records(product_df)
+def _build_portfolio(
+    product_df: pd.DataFrame,
+    model_cfg: ModelConfig,
+    stage_mapping: Optional[pd.DataFrame] = None,
+    overwrite_defaults: bool = False,
+) -> Portfolio | None:
+    product_records = _sanitize_product_records(
+        product_df,
+        stage_mapping=stage_mapping,
+        overwrite_defaults=overwrite_defaults,
+    )
     if not product_records:
         return None
     products = [Product(ProductConfig(**record), model_cfg) for record in product_records]
@@ -4714,6 +4942,57 @@ def main() -> None:
                 show_rd = show_precommercial
                 show_capex = True
 
+            with st.expander("Stage-to-schedule mapping", expanded=False):
+                st.caption(
+                    "Define default schedule assumptions per stage. These defaults can automatically "
+                    "populate product assumptions when the stage changes."
+                )
+                auto_apply_defaults = st.checkbox(
+                    "Auto-apply stage defaults to product assumptions",
+                    value=st.session_state.get("stage_mapping_auto_apply", True),
+                    key="stage_mapping_auto_apply",
+                )
+                overwrite_defaults = st.checkbox(
+                    "Override existing values when applying defaults",
+                    value=st.session_state.get("stage_mapping_overwrite", False),
+                    key="stage_mapping_overwrite",
+                )
+                mapping_df = _ensure_table_state(
+                    "stage_schedule_mapping",
+                    _default_stage_schedule_mapping,
+                )
+                mapping_df = st.data_editor(
+                    mapping_df,
+                    num_rows="fixed",
+                    hide_index=True,
+                    key="stage_schedule_mapping_editor",
+                    column_config={
+                        "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
+                        "Success Probability %": st.column_config.NumberColumn(
+                            "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
+                        ),
+                        "Time to market (years)": st.column_config.NumberColumn(
+                            "Time to market (years)", min_value=0, step=1
+                        ),
+                        "Sales ramp length (years)": st.column_config.NumberColumn(
+                            "Sales ramp length (years)", min_value=0, step=1
+                        ),
+                        "R&D remaining pre-launch (USD)": st.column_config.NumberColumn(
+                            "R&D remaining pre-launch (USD)", step=1_000_000.0
+                        ),
+                        "R&D annual post-launch (USD/year)": st.column_config.NumberColumn(
+                            "R&D annual post-launch (USD/year)", step=1_000_000.0
+                        ),
+                        **{
+                            col: st.column_config.NumberColumn(
+                                col, min_value=0.0, max_value=100.0, step=1.0
+                            )
+                            for col in STAGE_TRANSITION_COLUMNS
+                        },
+                    },
+                )
+                st.session_state["stage_schedule_mapping"] = mapping_df
+
             with st.expander("General assumptions", expanded=True):
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -5578,6 +5857,9 @@ def main() -> None:
                 blank_row_factory=lambda df: _blank_product_row(f"Product {len(df) + 1}"),
                 column_config={
                     "stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
+                    "sales_ramp_length": st.column_config.NumberColumn(
+                        "Sales ramp length (years)", min_value=0, step=1
+                    ),
                     "include_in_consolidation": st.column_config.CheckboxColumn("Include", default=True),
                     "success_prob": st.column_config.NumberColumn(
                         "Success probability", min_value=0.0, max_value=1.0, step=0.05
@@ -5595,10 +5877,26 @@ def main() -> None:
                 id_column=None,
                 name_column="name",
             )
+            stage_mapping = st.session_state.get(
+                "stage_schedule_mapping",
+                _default_stage_schedule_mapping(),
+            )
+            if st.session_state.get("stage_mapping_auto_apply", True):
+                product_df = _apply_stage_schedule_defaults(
+                    product_df,
+                    stage_mapping,
+                    stage_column="stage",
+                    overwrite=st.session_state.get("stage_mapping_overwrite", False),
+                )
             product_df = _validate_product_df(product_df)
             st.session_state["product_table"] = product_df
 
-            portfolio = _build_portfolio(product_df, model_cfg)
+            portfolio = _build_portfolio(
+                product_df,
+                model_cfg,
+                stage_mapping=stage_mapping,
+                overwrite_defaults=st.session_state.get("stage_mapping_overwrite", False),
+            )
             if portfolio is None:
                 st.info("Add at least one product with a name to run valuations.")
             else:

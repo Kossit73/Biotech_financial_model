@@ -42,6 +42,7 @@ class ProductConfig:
     include_in_consolidation: bool = True
 
     time_to_market: int = 3
+    sales_ramp_length: Optional[int] = None
     patent_years: int = 20
     preexisting_market: bool = False
 
@@ -242,6 +243,16 @@ class Product:
         years = self.model_config.years
         cfg = self.config
         ramp_factors = list(self.model_config.sales_ramp_factors or [])
+        if cfg.sales_ramp_length is not None:
+            ramp_len = int(cfg.sales_ramp_length)
+            if ramp_len <= 0:
+                ramp_factors = []
+            elif not ramp_factors:
+                ramp_factors = [1.0] * ramp_len
+            elif ramp_len <= len(ramp_factors):
+                ramp_factors = ramp_factors[:ramp_len]
+            else:
+                ramp_factors = ramp_factors + [ramp_factors[-1]] * (ramp_len - len(ramp_factors))
         revenue = pd.Series(0.0, index=years, name=f"{cfg.name}_revenue")
         if not cfg.include_in_consolidation:
             return revenue
