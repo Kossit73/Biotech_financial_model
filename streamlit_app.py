@@ -55,6 +55,7 @@ STAGE_OPTIONS = [
     "Phase I",
     "Phase II",
     "Phase III",
+    "Approval",
     "Commercial",
 ]
 
@@ -113,6 +114,33 @@ def _default_products() -> pd.DataFrame:
         },
     ]
     return pd.DataFrame(data)
+
+
+def _stage_template(name: str, stage: str, success_prob: float, time_to_market: int) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "name": name,
+                "stage": stage,
+                "success_prob": success_prob,
+                "include_in_consolidation": True,
+                "time_to_market": time_to_market,
+                "patent_years": 15,
+                "patent_revenue_target": 120_000_000,
+                "post_patent_revenue_target": 60_000_000,
+                "market_growth_patent": 0.03,
+                "market_growth_post": 0.0,
+                "cogs_patent": 0.32,
+                "cogs_post": 0.5,
+                "sales_marketing_pct": 0.18,
+                "gna_pct": 0.12,
+                "rd_remaining_pre_launch": 150_000_000,
+                "rd_annual_post_launch": 10_000_000,
+                "capex_remaining_pre_launch": 50_000_000,
+                "capex_annual_post_launch": 6_000_000,
+            }
+        ]
+    )
 
 
 def _blank_product_row(name: str = "New vaccine") -> Dict:
@@ -1900,23 +1928,33 @@ def main() -> None:
         with st.expander("Template library", expanded=False):
             template_choice = st.selectbox(
                 "Choose a template",
-                ["Select template", "Phase II oncology asset", "Pre-clinical platform", "Commercial launch"],
+                [
+                    "Select template",
+                    "Discovery",
+                    "Preclinical",
+                    "Phase I",
+                    "Phase II",
+                    "Phase III",
+                    "Approval",
+                    "Commercial",
+                ],
             )
             if st.button("Load template") and template_choice != "Select template":
-                if template_choice == "Phase II oncology asset":
-                    st.session_state["product_table"] = _default_products().copy()
-                elif template_choice == "Pre-clinical platform":
-                    template_df = _default_products().copy()
-                    template_df["stage"] = "Preclinical"
-                    template_df["success_prob"] = 0.15
-                    template_df["time_to_market"] = 5
-                    st.session_state["product_table"] = template_df
+                if template_choice == "Discovery":
+                    template_df = _stage_template("Discovery asset", "Discovery", 0.1, 8)
+                elif template_choice == "Preclinical":
+                    template_df = _stage_template("Preclinical asset", "Preclinical", 0.2, 6)
+                elif template_choice == "Phase I":
+                    template_df = _stage_template("Phase I asset", "Phase I", 0.3, 5)
+                elif template_choice == "Phase II":
+                    template_df = _stage_template("Phase II asset", "Phase II", 0.45, 4)
+                elif template_choice == "Phase III":
+                    template_df = _stage_template("Phase III asset", "Phase III", 0.6, 3)
+                elif template_choice == "Approval":
+                    template_df = _stage_template("Approval-stage asset", "Approval", 0.8, 1)
                 else:
-                    template_df = _default_products().copy()
-                    template_df["stage"] = "Commercial"
-                    template_df["success_prob"] = 0.9
-                    template_df["time_to_market"] = 0
-                    st.session_state["product_table"] = template_df
+                    template_df = _stage_template("Commercial asset", "Commercial", 0.95, 0)
+                st.session_state["product_table"] = template_df
                 st.success("Template loaded. Review assumptions below.")
 
         with st.expander("General assumptions", expanded=True):
