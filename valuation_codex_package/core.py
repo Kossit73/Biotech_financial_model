@@ -474,7 +474,16 @@ class Product:
             + df["rd_expense_pnl"]
         )
         df["milestones"] = 0.0
+        normalized_milestones: List[Milestone] = []
         for milestone in cfg.milestones:
+            if isinstance(milestone, Milestone):
+                normalized_milestones.append(milestone)
+                continue
+            try:
+                normalized_milestones.append(Milestone(**milestone))
+            except (TypeError, ValueError, KeyError):
+                continue
+        for milestone in normalized_milestones:
             if milestone.timing == "from_launch":
                 milestone_year = self._launch_year() + milestone.year_offset
             elif milestone.timing == "from_start":
