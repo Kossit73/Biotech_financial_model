@@ -1979,11 +1979,12 @@ def main() -> None:
 
         with st.expander("Vaccine sales"):
             sales_years = _vaccine_sales_year_columns(int(first_year), int(n_years))
+            display_years = sales_years[:1]
             sales_column_config = {
                 "ID_vaccine": st.column_config.TextColumn("ID_vaccine"),
                 "Vaccine name": st.column_config.TextColumn("Vaccine name"),
             }
-            for year in sales_years:
+            for year in display_years:
                 sales_column_config[f"{year} Doses (M)"] = st.column_config.NumberColumn(
                     f"{year} Doses (M)", min_value=0.0, step=0.5
                 )
