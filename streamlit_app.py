@@ -974,23 +974,162 @@ def _render_row_selector(
     return selected
 
 
+def _render_yearly_increment_helper(
+    *,
+    section_key: str,
+    df: pd.DataFrame,
+    year_column: str,
+    target_columns: List[str],
+    filter_builder: Callable[[pd.DataFrame, Optional[str], int], pd.Series],
+    id_column: Optional[str] = None,
+    id_label: str = "ID",
+    start_year_label: str = "Start year",
+    start_year_default: int = 0,
+    periods_default: int = 5,
+    increment_default: float = 1.0,
+    allow_compound: bool = True,
+    create_missing_rows: bool = False,
+    base_value_mode: str = "first_row",
+    start_value_default: float = 0.0,
+) -> pd.DataFrame:
+    st.markdown("**Yearly Increment Helper**")
+    st.caption(
+        "Apply a fixed change or % growth from a start year onward. "
+        "'Increment per year' is the step size (or growth rate when compounding). "
+        "'Years to apply' controls how many consecutive rows are updated."
+    )
+    if df.empty:
+        st.caption("Add rows to apply increments.")
+        return df
+    if year_column not in df.columns:
+        st.caption(f"Missing '{year_column}' column.")
+        return df
+
+    selected_id: Optional[str] = None
+    if id_column and id_column in df.columns:
+        id_values = df[id_column].dropna().astype(str).unique().tolist()
+        if not id_values:
+            st.caption(f"Add {id_label} values to use the helper.")
+            return df
+        selected_id = st.selectbox(
+            id_label,
+            options=id_values,
+            key=f"{section_key}_inc_id",
+        )
+
+    available_cols = [col for col in target_columns if col in df.columns]
+    if not available_cols:
+        st.caption("No target columns available.")
+        return df
+
+    target_col = st.selectbox(
+        "Column",
+        options=available_cols,
+        key=f"{section_key}_inc_col",
+    )
+    start_year = st.number_input(
+        start_year_label,
+        value=int(start_year_default),
+        step=1,
+        key=f"{section_key}_inc_start",
+    )
+    years = st.number_input(
+        "Years to apply",
+        min_value=1,
+        max_value=50,
+        value=int(periods_default),
+        key=f"{section_key}_inc_years",
+    )
+    increment = st.number_input(
+        "Increment per year",
+        value=float(increment_default),
+        step=0.1,
+        key=f"{section_key}_inc_value",
+    )
+    compound = False
+    if allow_compound:
+        compound = st.checkbox(
+            "Compound annually (apply % growth)",
+            value=False,
+            key=f"{section_key}_inc_compound",
+        )
+
+    base_value = None
+    if base_value_mode == "input":
+        base_value = st.number_input(
+            "Starting value",
+            value=float(start_value_default),
+            step=0.1,
+            key=f"{section_key}_inc_start_value",
+        )
+
+    if st.button("Apply increment", key=f"{section_key}_inc_apply", use_container_width=True):
+        df = df.copy()
+        mask = filter_builder(df, selected_id, int(start_year))
+        subset = df.loc[mask, [year_column, target_col]].copy()
+        subset[year_column] = pd.to_numeric(subset[year_column], errors="coerce")
+        subset[target_col] = pd.to_numeric(subset[target_col], errors="coerce").fillna(0.0)
+        subset = subset.dropna(subset=[year_column]).sort_values(year_column)
+
+        if subset.empty and not create_missing_rows:
+            st.warning("No matching rows found for the selected filters.")
+            return df
+
+        if base_value_mode != "input":
+            base_value = float(subset[target_col].iloc[0]) if not subset.empty else 0.0
+
+        if create_missing_rows:
+            existing_years = (
+                pd.to_numeric(df[year_column], errors="coerce")
+                .fillna(-1)
+                .astype(int)
+                .tolist()
+            )
+            for offset in range(int(years)):
+                year_value = int(start_year + offset)
+                if year_value not in existing_years:
+                    new_row = {col: np.nan for col in df.columns}
+                    new_row[year_column] = year_value
+                    if id_column and selected_id is not None:
+                        new_row[id_column] = selected_id
+                    df.loc[len(df)] = new_row
+            mask = filter_builder(df, selected_id, int(start_year))
+            subset = df.loc[mask, [year_column, target_col]].copy()
+            subset[year_column] = pd.to_numeric(subset[year_column], errors="coerce")
+            subset = subset.dropna(subset=[year_column]).sort_values(year_column)
+
+        for i, year_value in enumerate(subset[year_column].iloc[: int(years)]):
+            if compound:
+                value = float(base_value) * ((1 + increment) ** i)
+            else:
+                value = float(base_value) + increment * i
+            row_mask = df[year_column].astype(int) == int(year_value)
+            if id_column and selected_id is not None:
+                row_mask &= df[id_column].astype(str) == str(selected_id)
+            df.loc[row_mask, target_col] = value
+
+        st.session_state[section_key] = df
+        st.success("Increment applied")
+
+    return st.session_state.get(section_key, df)
+
+
 def _apply_yearly_increment(
     section_key: str,
     df: pd.DataFrame,
     selected_idx: Optional[int],
 ) -> pd.DataFrame:
-    st.markdown("**Yearly Increment Helper**")
-    st.caption(
-        "Apply a fixed change or % growth from the selected row onward. "
-        "'Increment per year' is the step size (or growth rate when compounding). "
-        "'Years to apply' controls how many consecutive rows are updated."
-    )
-    if df.empty or selected_idx is None:
+    if df.empty or selected_idx is None or selected_idx not in df.index:
         st.caption("Select a row to apply increments.")
         return df
-    if selected_idx not in df.index:
-        st.caption("Selected row is no longer available.")
-        return df
+
+    temp_col = "__row_index__"
+    df = df.copy()
+    df[temp_col] = np.arange(len(df))
+    start_pos = int(df.at[selected_idx, temp_col])
+
+    def _filter(df: pd.DataFrame, _selected_id: Optional[str], start_year: int) -> pd.Series:
+        return df[temp_col] >= int(start_year)
 
     numeric_cols = [
         col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])
@@ -999,50 +1138,23 @@ def _apply_yearly_increment(
         st.caption("No numeric columns available.")
         return df
 
-    target_col = st.selectbox(
-        "Column",
-        options=numeric_cols,
-        key=f"{section_key}_inc_col",
+    updated = _render_yearly_increment_helper(
+        section_key=section_key,
+        df=df,
+        year_column=temp_col,
+        target_columns=numeric_cols,
+        filter_builder=_filter,
+        start_year_label="Start row",
+        start_year_default=start_pos,
+        periods_default=1,
+        increment_default=1.0,
+        allow_compound=True,
+        create_missing_rows=False,
+        base_value_mode="first_row",
     )
-    compound = st.checkbox(
-        "Compound annually (apply % growth)",
-        value=False,
-        key=f"{section_key}_inc_compound",
-    )
-    increment = st.number_input(
-        "Increment per year",
-        value=1.0,
-        step=0.1,
-        key=f"{section_key}_inc_value",
-    )
-    years = st.number_input(
-        "Years to apply",
-        min_value=1,
-        max_value=50,
-        value=1,
-        key=f"{section_key}_inc_years",
-    )
-
-    base_value = df.at[selected_idx, target_col]
-    if pd.isna(base_value):
-        base_value = 0.0
-    st.caption(f"Current value: {base_value:,.2f}")
-
-    if st.button("Apply increment", key=f"{section_key}_inc_apply", use_container_width=True):
-        start_pos = df.index.get_loc(selected_idx)
-        for offset in range(int(years)):
-            row_pos = start_pos + offset
-            if row_pos >= len(df.index):
-                break
-            row_idx = df.index[row_pos]
-            if compound:
-                next_value = float(base_value) * ((1 + increment) ** offset)
-            else:
-                next_value = float(base_value) + increment * offset
-            df.at[row_idx, target_col] = next_value
-        st.session_state[section_key] = df
-        st.success("Increment applied")
-    return st.session_state.get(section_key, df)
+    updated = updated.drop(columns=[temp_col], errors="ignore")
+    st.session_state[section_key] = updated
+    return updated
 
 
 def _widget_value(label: str, value, key: str):
@@ -1310,33 +1422,25 @@ def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
 
     with toolbar_cols[3]:
         with st.expander("Yearly Increment Helper"):
-            st.caption(
-                "Seed a ramp schedule from a starting point. 'Increment per year' is a fixed step, "
-                "and 'Number of periods' controls how many rows are generated."
+            def _filter(df: pd.DataFrame, _selected_id: Optional[str], start_year: int) -> pd.Series:
+                return pd.to_numeric(df["Year offset"], errors="coerce").fillna(0).astype(int) >= int(start_year)
+
+            schedule_df = _render_yearly_increment_helper(
+                section_key=session_key,
+                df=schedule_df,
+                year_column="Year offset",
+                target_columns=["Ramp factor"],
+                filter_builder=_filter,
+                start_year_label="Start year offset",
+                start_year_default=0,
+                periods_default=5,
+                increment_default=0.2,
+                allow_compound=False,
+                create_missing_rows=True,
+                base_value_mode="input",
+                start_value_default=0.2,
             )
-            start_year = st.number_input(
-                "Start year offset", min_value=0, value=0, key=f"{session_key}_start"
-            )
-            start_value = st.number_input(
-                "Starting value", min_value=0.0, value=0.2, step=0.05, key=f"{session_key}_value"
-            )
-            increment = st.number_input(
-                "Increment per year", value=0.2, step=0.05, key=f"{session_key}_increment"
-            )
-            n_periods = st.number_input(
-                "Number of periods", min_value=1, max_value=40, value=5, key=f"{session_key}_periods"
-            )
-            if st.button("Apply helper", key=f"{session_key}_apply"):
-                rows = []
-                for i in range(int(n_periods)):
-                    rows.append(
-                        {
-                            "Year offset": int(start_year + i),
-                            "Ramp factor": float(start_value + increment * i),
-                        }
-                    )
-                schedule_df = pd.DataFrame(rows)
-                st.session_state[session_key] = schedule_df
+            st.session_state[session_key] = schedule_df
 
     edited_df = st.data_editor(
         schedule_df,
@@ -4632,91 +4736,31 @@ def main() -> None:
             vaccine_df = _recompute_vaccine_sales_implied_revenue(vaccine_df)
             st.session_state["vaccine_sales_table"] = vaccine_df
             with st.expander("Yearly Increment Helper", expanded=False):
-                st.caption(
-                    "Apply a fixed step or % growth to a vaccine's yearly doses/price. "
-                    "'Increment per year' is the step size (or growth rate when compounding). "
-                    "'Number of years' controls how many matching rows are updated from the start year."
-                )
+                def _filter(df: pd.DataFrame, selected_id: Optional[str], start_year: int) -> pd.Series:
+                    if selected_id is None:
+                        return pd.Series([False] * len(df), index=df.index)
+                    year_values = pd.to_numeric(df["Year"], errors="coerce").fillna(0).astype(int)
+                    return (df["ID_vaccine"].astype(str) == str(selected_id)) & (year_values >= int(start_year))
+
                 if {"ID_vaccine", "Year"}.issubset(vaccine_df.columns):
-                    vaccine_ids = (
-                        vaccine_df["ID_vaccine"].dropna().astype(str).unique().tolist()
+                    vaccine_df = _render_yearly_increment_helper(
+                        section_key="vaccine_sales",
+                        df=vaccine_df,
+                        year_column="Year",
+                        target_columns=["Doses (M)", "Price per dose"],
+                        filter_builder=_filter,
+                        id_column="ID_vaccine",
+                        id_label="Vaccine ID",
+                        start_year_label="Start year",
+                        start_year_default=int(first_year),
+                        periods_default=5,
+                        increment_default=1.0,
+                        allow_compound=True,
+                        create_missing_rows=False,
+                        base_value_mode="first_row",
                     )
-                    selected_id = st.selectbox(
-                        "Vaccine ID",
-                        options=vaccine_ids,
-                        key="vaccine_sales_inc_id",
-                    )
-                    target_col = st.selectbox(
-                        "Column",
-                        options=["Doses (M)", "Price per dose"],
-                        key="vaccine_sales_inc_col",
-                    )
-                    start_year = st.number_input(
-                        "Start year",
-                        value=int(first_year),
-                        step=1,
-                        key="vaccine_sales_inc_start_year",
-                    )
-                    periods = st.number_input(
-                        "Number of years",
-                        min_value=1,
-                        max_value=50,
-                        value=5,
-                        step=1,
-                        key="vaccine_sales_inc_periods",
-                    )
-                    increment = st.number_input(
-                        "Increment per year",
-                        value=1.0,
-                        step=0.1,
-                        key="vaccine_sales_inc_value",
-                    )
-                    use_compound = st.checkbox(
-                        "Compound annually (apply % growth)",
-                        value=False,
-                        key="vaccine_sales_inc_compound",
-                    )
-                    if st.button(
-                        "Apply increment",
-                        key="vaccine_sales_inc_apply",
-                        use_container_width=True,
-                    ):
-                        df = st.session_state.get("vaccine_sales_table", vaccine_df).copy()
-                        mask = (df["ID_vaccine"].astype(str) == str(selected_id)) & (
-                            pd.to_numeric(df["Year"], errors="coerce")
-                            >= int(start_year)
-                        )
-                        if mask.any():
-                            subset = df.loc[mask, ["Year", target_col]].copy()
-                            subset["Year"] = (
-                                pd.to_numeric(subset["Year"], errors="coerce")
-                                .fillna(int(start_year))
-                                .astype(int)
-                            )
-                            subset[target_col] = pd.to_numeric(
-                                subset[target_col], errors="coerce"
-                            ).fillna(0.0)
-                            subset = subset.sort_values("Year")
-                            if subset.empty:
-                                st.warning("No matching rows found for the selected vaccine/year range.")
-                                st.stop()
-                            base_value = float(subset[target_col].iloc[0])
-                            for i, year in enumerate(subset["Year"].iloc[: int(periods)]):
-                                if use_compound:
-                                    value = float(base_value) * ((1 + increment) ** i)
-                                else:
-                                    value = float(base_value) + increment * i
-                                df.loc[
-                                    (df["ID_vaccine"].astype(str) == str(selected_id))
-                                    & (df["Year"] == year),
-                                    target_col,
-                                ] = value
-                            df = _recompute_vaccine_sales_implied_revenue(df)
-                            st.session_state["vaccine_sales_table"] = df
-                            vaccine_df = df
-                            st.success("Increment applied to selected vaccine/year range.")
-                        else:
-                            st.warning("No matching rows found for the selected vaccine/year range.")
+                    vaccine_df = _recompute_vaccine_sales_implied_revenue(vaccine_df)
+                    st.session_state["vaccine_sales_table"] = vaccine_df
                 else:
                     st.caption("Add vaccine IDs and years to use the helper.")
             sync_sales_to_revenue = st.checkbox(
