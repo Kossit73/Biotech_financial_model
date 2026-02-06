@@ -1312,9 +1312,9 @@ def _build_portfolio(
     erosion_df: pd.DataFrame | None = None,
     milestone_df: pd.DataFrame | None = None,
 ) -> Portfolio | None:
-    stage_map = _build_stage_probability_map(stage_df or pd.DataFrame())
-    erosion_map = _build_erosion_map(erosion_df or pd.DataFrame())
-    milestone_map = _build_milestone_map(milestone_df or pd.DataFrame())
+    stage_map = _build_stage_probability_map(stage_df if stage_df is not None else pd.DataFrame())
+    erosion_map = _build_erosion_map(erosion_df if erosion_df is not None else pd.DataFrame())
+    milestone_map = _build_milestone_map(milestone_df if milestone_df is not None else pd.DataFrame())
     product_records = _sanitize_product_records(product_df, stage_map, erosion_map, milestone_map)
     if not product_records:
         return None
