@@ -110,6 +110,15 @@ To keep stage-to-schedule defaults consistent across the organization while allo
 3. **Quarterly governance review**: toggle the “override existing values” control only during formal refresh cycles to push new company-wide assumptions.
 4. **Audit discipline**: record who changed mapping defaults and why (e.g., clinical benchmark updates), and export the mapping table as part of valuation packages.
 
+### How to edit the Stage-to-schedule mapping in the app
+
+1. Open the **Stage-to-schedule mapping** expander in the Streamlit sidebar.
+2. Update the **Mapping updated by** field to capture the owner for the audit trail.
+3. Edit the table directly (stage durations, success probabilities, R&D amounts, transition weights, and milestone amounts).
+4. Use **Auto-apply stage defaults to product assumptions** to push updates into product rows.
+5. Only enable **Override existing values** during formal refresh cycles when you want to overwrite any customized product values.
+6. Review the **Mapping audit trail** expander to confirm changes were logged.
+
 ### Pipeline stage templates (aligned workflow)
 
 Use the standardized biotech development sequence below when defining assets or scenarios to keep the model consistent across teams:
