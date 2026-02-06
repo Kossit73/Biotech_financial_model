@@ -229,40 +229,36 @@ def _default_comps_table() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _vaccine_sales_year_columns(first_year: int, years: int = 5) -> List[int]:
+    return [first_year + i for i in range(years)]
+
+
 def _default_vaccine_sales_table(first_year: int = 2024) -> pd.DataFrame:
-    years = [first_year + i for i in range(5)]
-    data = {
-        "Year": years,
-        "Doses (M)": [5, 7, 10, 12, 12],
-        "Price per dose": [25, 26, 27, 27, 28],
-        "Comments": ["", "", "", "", ""],
-    }
-    return pd.DataFrame(data)
+    years = _vaccine_sales_year_columns(first_year)
+    rows = []
+    for name, base_doses, base_price in [
+        ("AgSeed-101", 5, 25),
+        ("BioYield-Plus", 7, 30),
+    ]:
+        row = {
+            "ID_vaccine": f"VAC-{len(rows) + 1:03d}",
+            "Vaccine name": name,
+        }
+        for idx, year in enumerate(years, start=1):
+            row[f"{year} Doses (M)"] = base_doses + idx
+            row[f"{year} Price per dose"] = base_price + idx
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
-    next_year = first_year
-    if "Year" in df.columns and not df.empty:
-        with pd.option_context("mode.use_inf_as_na", True):
-            existing_years = pd.to_numeric(df["Year"], errors="coerce").dropna()
-        if not existing_years.empty:
-            next_year = int(existing_years.max()) + 1
-    doses = 5.0
-    price = 25.0
-    if "Doses (M)" in df.columns and not df.empty:
-        last_doses = pd.to_numeric(df["Doses (M)"], errors="coerce").dropna()
-        if not last_doses.empty:
-            doses = float(last_doses.iloc[-1])
-    if "Price per dose" in df.columns and not df.empty:
-        last_price = pd.to_numeric(df["Price per dose"], errors="coerce").dropna()
-        if not last_price.empty:
-            price = float(last_price.iloc[-1])
-    return {
-        "Year": next_year,
-        "Doses (M)": doses,
-        "Price per dose": price,
-        "Comments": "",
-    }
+    next_id = _next_vaccine_id(df)
+    years = _vaccine_sales_year_columns(first_year)
+    row = {"ID_vaccine": next_id, "Vaccine name": "New vaccine"}
+    for year in years:
+        row[f"{year} Doses (M)"] = 5.0
+        row[f"{year} Price per dose"] = 25.0
+    return row
 
 
 def _default_uses_table() -> pd.DataFrame:
@@ -1982,25 +1978,43 @@ def main() -> None:
             st.caption("Ramp factors feed revenue build-ups across every product.")
 
         with st.expander("Vaccine sales"):
+            sales_years = _vaccine_sales_year_columns(int(first_year))
+            sales_column_config = {
+                "ID_vaccine": st.column_config.TextColumn("ID_vaccine"),
+                "Vaccine name": st.column_config.TextColumn("Vaccine name"),
+            }
+            for year in sales_years:
+                sales_column_config[f"{year} Doses (M)"] = st.column_config.NumberColumn(
+                    f"{year} Doses (M)", min_value=0.0, step=0.5
+                )
+                sales_column_config[f"{year} Price per dose"] = st.column_config.NumberColumn(
+                    f"{year} Price per dose", min_value=0.0, step=1.0
+                )
             vaccine_df = _render_product_assumption_table(
                 session_key="vaccine_sales_table",
                 default_factory=lambda: _default_vaccine_sales_table(int(first_year)),
                 blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
-                id_column=None,
-                name_column="Year",
-                column_config={
-                    "Year": st.column_config.NumberColumn("Year", step=1),
-                    "Doses (M)": st.column_config.NumberColumn("Doses (M)", min_value=0.0, step=0.5),
-                    "Price per dose": st.column_config.NumberColumn(
-                        "Price per dose", min_value=0.0, step=1.0
-                    ),
-                },
+                id_column="ID_vaccine",
+                name_column="Vaccine name",
+                column_config=sales_column_config,
             )
-            doses = pd.to_numeric(vaccine_df.get("Doses (M)", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
-            price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
-            vaccine_df["Implied revenue"] = doses * 1e6 * price
+            for year in sales_years:
+                doses = pd.to_numeric(
+                    vaccine_df.get(f"{year} Doses (M)", pd.Series(dtype=float)),
+                    errors="coerce",
+                ).fillna(0.0)
+                price = pd.to_numeric(
+                    vaccine_df.get(f"{year} Price per dose", pd.Series(dtype=float)),
+                    errors="coerce",
+                ).fillna(0.0)
+                vaccine_df[f"{year} Implied revenue"] = doses * 1e6 * price
+            implied_cols = [f"{year} Implied revenue" for year in sales_years]
+            vaccine_df["Total implied revenue"] = vaccine_df[implied_cols].sum(axis=1)
             st.session_state["vaccine_sales_table"] = vaccine_df
-            st.metric("Five-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
+            st.metric(
+                "Five-year vaccine sales (total)",
+                f"{vaccine_df['Total implied revenue'].sum():,.0f}",
+            )
 
         with st.expander("Uses and sources of funds"):
             uses_col, sources_col = st.columns(2)
