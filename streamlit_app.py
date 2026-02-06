@@ -94,6 +94,15 @@ STAGE_TRANSITION_ANNUAL_COLUMNS = [
     "Approval->Commercial annual success %",
 ]
 
+STAGE_COST_WEIGHT_COLUMNS = [
+    "Discovery R&D weight %",
+    "Preclinical R&D weight %",
+    "Phase I R&D weight %",
+    "Phase II R&D weight %",
+    "Phase III R&D weight %",
+    "Approval R&D weight %",
+]
+
 SELECTOR_OPTIONS = [
     "Base case",
     "Upside",
@@ -1406,6 +1415,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase III duration (years)": 1,
             "Approval duration (years)": 1,
             "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
             "Discovery->Preclinical": 60.0,
             "Preclinical->Phase I": 70.0,
             "Phase I->Phase II": 65.0,
@@ -1433,6 +1448,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase III duration (years)": 1,
             "Approval duration (years)": 1,
             "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 70.0,
             "Phase I->Phase II": 65.0,
@@ -1460,6 +1481,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase III duration (years)": 1,
             "Approval duration (years)": 1,
             "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 65.0,
@@ -1487,6 +1514,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase III duration (years)": 1,
             "Approval duration (years)": 1,
             "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1514,6 +1547,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase III duration (years)": 1,
             "Approval duration (years)": 1,
             "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1541,6 +1580,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase III duration (years)": 1,
             "Approval duration (years)": 1,
             "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1568,6 +1613,12 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Phase III duration (years)": 1,
             "Approval duration (years)": 1,
             "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
@@ -1596,6 +1647,22 @@ def _stage_duration_years_from_row(row: pd.Series) -> Dict[str, int]:
             continue
         durations[stage] = max(0, int(value))
     return durations
+
+
+def _stage_cost_weights_from_row(row: pd.Series) -> Dict[str, float]:
+    weights: Dict[str, float] = {}
+    for col in STAGE_COST_WEIGHT_COLUMNS:
+        if col not in row:
+            continue
+        stage = col.replace(" R&D weight %", "")
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        weight = float(value)
+        if weight > 1.0:
+            weight = weight / 100.0
+        weights[stage] = max(0.0, weight)
+    return weights
 
 
 def _compute_time_to_market_from_durations(stage: str, durations: Dict[str, int]) -> Optional[int]:
@@ -1859,6 +1926,7 @@ def _sanitize_product_records(
         mapping_row = _stage_mapping_row(stage_mapping, cleaned.get("stage"))
         if mapping_row is not None:
             durations = _stage_duration_years_from_row(mapping_row)
+            cost_weights = _stage_cost_weights_from_row(mapping_row)
             if overwrite_defaults or "success_prob" not in cleaned:
                 mapped_prob = mapping_row.get("Success Probability %")
                 if pd.notna(mapped_prob):
@@ -1886,6 +1954,8 @@ def _sanitize_product_records(
                     cleaned["rd_annual_post_launch"] = mapped_rd_annual
             if durations:
                 cleaned["stage_duration_years"] = durations
+            if cost_weights:
+                cleaned["stage_cost_weights"] = cost_weights
             transition_curve = _stage_transition_curve_from_row(mapping_row, durations)
             if transition_curve:
                 cleaned["stage_transition_curve"] = transition_curve
@@ -5162,6 +5232,12 @@ def main() -> None:
                             col: st.column_config.NumberColumn(
                                 col, min_value=0.0, max_value=100.0, step=1.0
                             )
+                            for col in STAGE_COST_WEIGHT_COLUMNS
+                        },
+                        **{
+                            col: st.column_config.NumberColumn(
+                                col, min_value=0.0, max_value=100.0, step=1.0
+                            )
                             for col in STAGE_TRANSITION_COLUMNS
                         },
                         **{
@@ -6422,6 +6498,52 @@ def main() -> None:
             ratios = _build_ratio_table(cons)
             st.markdown("**Margin & intensity analysis**")
             st.dataframe(ratios.style.format("{:.1%}"))
+
+            with st.expander("Probability-weighted cost burden", expanded=False):
+                per_product_prob = valuation_result.per_product_prob
+                cost_rows: List[Dict[str, float]] = []
+                cost_columns = [
+                    "cogs",
+                    "labor",
+                    "overhead",
+                    "materials",
+                    "sales_marketing",
+                    "gna",
+                    "royalty",
+                ]
+                for name, df in per_product_prob.items():
+                    opex = df[cost_columns].sum().sum() if all(col in df.columns for col in cost_columns) else 0.0
+                    rd_cash = df["rd_cash"].sum() if "rd_cash" in df.columns else 0.0
+                    capex_cash = df["capex_cash"].sum() if "capex_cash" in df.columns else 0.0
+                    total_cost = -(opex + rd_cash + capex_cash)
+                    cost_rows.append(
+                        {
+                            "Product": name,
+                            "Probability-weighted opex": -opex,
+                            "Probability-weighted R&D cash": -rd_cash,
+                            "Probability-weighted CAPEX": -capex_cash,
+                            "Total cost burden": total_cost,
+                        }
+                    )
+                if cost_rows:
+                    cost_df = pd.DataFrame(cost_rows).sort_values("Total cost burden", ascending=False)
+                    st.dataframe(
+                        cost_df.style.format(
+                            {
+                                "Probability-weighted opex": "{:,.0f}",
+                                "Probability-weighted R&D cash": "{:,.0f}",
+                                "Probability-weighted CAPEX": "{:,.0f}",
+                                "Total cost burden": "{:,.0f}",
+                            }
+                        ),
+                        use_container_width=True,
+                    )
+                    st.caption(
+                        "Costs are weighted by the annual success schedule so early-stage programs show "
+                        "risk-adjusted cash burn rather than raw spend."
+                    )
+                else:
+                    st.info("Run the model to view probability-weighted cost burdens.")
             st.markdown("**Vaccine break-even analysis (interactive)**")
             base_inputs = _build_vaccine_break_even_inputs(model_cfg)
             if base_inputs.empty:

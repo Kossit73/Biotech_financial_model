@@ -71,6 +71,7 @@ class ProductConfig:
     capex_dep_years: int = 10
 
     stage_duration_years: Dict[str, int] = field(default_factory=dict)
+    stage_cost_weights: Dict[str, float] = field(default_factory=dict)
     stage_transition_probabilities: Dict[str, float] = field(default_factory=dict)
     stage_transition_curve: Dict[str, List[float]] = field(default_factory=dict)
     post_patent_erosion: List[float] = field(default_factory=lambda: [1.0, 0.85, 0.7, 0.55, 0.4])
@@ -276,6 +277,40 @@ class Product:
         values[:years] = -annual
         return pd.Series(values, index=index)
 
+    def _stage_costed_prelaunch_cashflow(self, total: float, index: np.ndarray) -> pd.Series:
+        cfg = self.config
+        values = np.zeros(len(index))
+        if total <= 0 or cfg.preexisting_market:
+            return pd.Series(values, index=index)
+        if not cfg.stage_duration_years:
+            pre_years = max(1, int(cfg.time_to_market))
+            return self._spread_prelaunch_cashflow(total, pre_years, index)
+        if cfg.stage not in STAGE_SEQUENCE:
+            pre_years = max(1, int(cfg.time_to_market))
+            return self._spread_prelaunch_cashflow(total, pre_years, index)
+        stage_idx = STAGE_SEQUENCE.index(cfg.stage)
+        stages = STAGE_SEQUENCE[stage_idx : -1]
+        total_years = sum(int(cfg.stage_duration_years.get(stage, 0)) for stage in stages)
+        if total_years <= 0:
+            pre_years = max(1, int(cfg.time_to_market))
+            return self._spread_prelaunch_cashflow(total, pre_years, index)
+        weights = {stage: float(cfg.stage_cost_weights.get(stage, 0.0)) for stage in stages}
+        weight_total = sum(weight for stage, weight in weights.items() if cfg.stage_duration_years.get(stage, 0) > 0)
+        per_year: List[float] = []
+        if weight_total <= 0:
+            per_year = [total / total_years] * total_years
+        else:
+            for stage in stages:
+                duration = int(cfg.stage_duration_years.get(stage, 0))
+                if duration <= 0:
+                    continue
+                stage_weight = weights.get(stage, 0.0) / weight_total
+                stage_total = total * stage_weight
+                per_year.extend([stage_total / duration] * duration)
+        pre_years = min(len(per_year), len(index))
+        values[:pre_years] = -np.array(per_year[:pre_years])
+        return pd.Series(values, index=index)
+
     def build_revenue_series(self) -> pd.Series:
         years = self.model_config.years
         cfg = self.config
@@ -340,8 +375,7 @@ class Product:
 
         rd_cash = pd.Series(0.0, index=years)
         if cfg.rd_remaining_pre_launch > 0 and not cfg.preexisting_market:
-            pre_years = max(1, cfg.time_to_market)
-            rd_cash += self._spread_prelaunch_cashflow(cfg.rd_remaining_pre_launch, pre_years, years)
+            rd_cash += self._stage_costed_prelaunch_cashflow(cfg.rd_remaining_pre_launch, years)
 
         launch_year = self._launch_year()
         rd_cash.loc[years >= launch_year] -= cfg.rd_annual_post_launch
@@ -977,10 +1011,15 @@ def validate_product_config(config: ProductConfig) -> List[str]:
     for stage, duration in config.stage_duration_years.items():
         if duration < 0:
             issues.append(f"{config.name}: stage duration '{stage}' must be >= 0.")
+    for stage, weight in config.stage_cost_weights.items():
+        if weight < 0:
+            issues.append(f"{config.name}: stage cost weight '{stage}' must be >= 0.")
     for key, curve in config.stage_transition_curve.items():
         for prob in curve:
             if not (0.0 <= prob <= 1.0):
-                issues.append(f\"{config.name}: stage transition '{key}' curve values must be between 0 and 1.\")
+                issues.append(
+                    f"{config.name}: stage transition '{key}' curve values must be between 0 and 1."
+                )
     for factor in config.post_patent_erosion:
         if factor < 0:
             issues.append(f"{config.name}: post_patent_erosion values must be >= 0.")
