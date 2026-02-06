@@ -14,6 +14,7 @@ from .core import (
     MonteCarloEngine,
     ForecastEngine,
     ForecastScenarioBridge,
+    validate_portfolio,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "MonteCarloEngine",
     "ForecastEngine",
     "ForecastScenarioBridge",
+    "validate_portfolio",
 ]
