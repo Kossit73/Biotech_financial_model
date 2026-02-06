@@ -1674,7 +1674,11 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         "Interest & amortization (USD)",
     ]
     if "G&A total (USD)" not in cost_df.columns:
-        cost_df["G&A total (USD)"] = cost_df[gna_cols].sum(axis=1)
+        available_gna = [col for col in gna_cols if col in cost_df.columns]
+        if available_gna:
+            cost_df["G&A total (USD)"] = cost_df[available_gna].sum(axis=1)
+        else:
+            cost_df["G&A total (USD)"] = 0.0
     if "Patent operating cost %" not in cost_df.columns:
         cost_df["Patent operating cost %"] = (
             _coerce_numeric(cost_df.get("COGS patent % of sales", pd.Series(dtype=float)))
