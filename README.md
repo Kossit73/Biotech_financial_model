@@ -101,6 +101,15 @@ Below is an audit of the current model design plus recommendations to make it en
 - Add assumption provenance (date, source, owner) for each input.
 - Provide exportable audit reports to meet institutional diligence requirements.
 
+### Governance workflow for stage defaults
+
+To keep stage-to-schedule defaults consistent across the organization while allowing product-specific overrides:
+
+1. **Central finance owns the stage mapping table** (company-wide defaults for durations, success curves, and R&D timing).
+2. **Product teams adjust only the product row overrides** (e.g., unique ramp length or R&D spend) when justified.
+3. **Quarterly governance review**: toggle the “override existing values” control only during formal refresh cycles to push new company-wide assumptions.
+4. **Audit discipline**: record who changed mapping defaults and why (e.g., clinical benchmark updates), and export the mapping table as part of valuation packages.
+
 ### Pipeline stage templates (aligned workflow)
 
 Use the standardized biotech development sequence below when defining assets or scenarios to keep the model consistent across teams:

@@ -70,7 +70,9 @@ class ProductConfig:
     rd_amort_years: int = 10
     capex_dep_years: int = 10
 
+    stage_duration_years: Dict[str, int] = field(default_factory=dict)
     stage_transition_probabilities: Dict[str, float] = field(default_factory=dict)
+    stage_transition_curve: Dict[str, List[float]] = field(default_factory=dict)
     post_patent_erosion: List[float] = field(default_factory=lambda: [1.0, 0.85, 0.7, 0.55, 0.4])
     milestones: List["Milestone"] = field(default_factory=list)
 
@@ -174,7 +176,7 @@ class Product:
 
     def _stage_success_probability(self) -> float:
         cfg = self.config
-        if not cfg.stage_transition_probabilities:
+        if not cfg.stage_transition_probabilities and not cfg.stage_transition_curve:
             return max(0.0, min(1.0, cfg.success_prob))
         if cfg.stage not in STAGE_SEQUENCE:
             return max(0.0, min(1.0, cfg.success_prob))
@@ -186,7 +188,11 @@ class Product:
             from_stage = STAGE_SEQUENCE[idx]
             to_stage = STAGE_SEQUENCE[idx + 1]
             key = f"{from_stage}->{to_stage}"
-            transitions.append(cfg.stage_transition_probabilities.get(key, 1.0))
+            if cfg.stage_transition_curve and key in cfg.stage_transition_curve:
+                curve = cfg.stage_transition_curve.get(key, [])
+                transitions.extend(curve if curve else [1.0])
+            else:
+                transitions.append(cfg.stage_transition_probabilities.get(key, 1.0))
         prob = float(np.prod(transitions)) if transitions else 1.0
         return max(0.0, min(1.0, prob))
 
@@ -196,6 +202,37 @@ class Product:
         cumulative_prob = self._stage_success_probability()
         if cfg.preexisting_market or cfg.time_to_market <= 0:
             return pd.Series(cumulative_prob, index=years)
+        if cfg.stage_transition_curve or cfg.stage_duration_years:
+            annual_probs: List[float] = []
+            if cfg.stage in STAGE_SEQUENCE:
+                stage_idx = STAGE_SEQUENCE.index(cfg.stage)
+                for idx in range(stage_idx, len(STAGE_SEQUENCE) - 1):
+                    from_stage = STAGE_SEQUENCE[idx]
+                    to_stage = STAGE_SEQUENCE[idx + 1]
+                    key = f"{from_stage}->{to_stage}"
+                    duration = int(cfg.stage_duration_years.get(from_stage, 0))
+                    if duration <= 0:
+                        continue
+                    curve = cfg.stage_transition_curve.get(key)
+                    if curve:
+                        curve_list = [float(value) for value in curve]
+                        if len(curve_list) < duration:
+                            curve_list = curve_list + [curve_list[-1]] * (duration - len(curve_list))
+                        else:
+                            curve_list = curve_list[:duration]
+                        annual_probs.extend(curve_list)
+                    else:
+                        annual_prob = cfg.stage_transition_probabilities.get(key, 1.0)
+                        annual_probs.extend([annual_prob] * duration)
+            if annual_probs:
+                schedule = np.ones(len(years), dtype=float)
+                cumulative = 1.0
+                max_years = min(len(annual_probs), len(years))
+                for idx in range(max_years):
+                    cumulative *= annual_probs[idx]
+                    schedule[idx] = cumulative
+                schedule[max_years:] = cumulative
+                return pd.Series(schedule, index=years)
         pre_years = max(1, int(cfg.time_to_market))
         schedule = np.ones(len(years), dtype=float)
         ramp = np.linspace(1.0, cumulative_prob, num=pre_years + 1)
@@ -937,6 +974,13 @@ def validate_product_config(config: ProductConfig) -> List[str]:
     for key, prob in config.stage_transition_probabilities.items():
         if not (0.0 <= prob <= 1.0):
             issues.append(f"{config.name}: stage transition '{key}' must be between 0 and 1.")
+    for stage, duration in config.stage_duration_years.items():
+        if duration < 0:
+            issues.append(f"{config.name}: stage duration '{stage}' must be >= 0.")
+    for key, curve in config.stage_transition_curve.items():
+        for prob in curve:
+            if not (0.0 <= prob <= 1.0):
+                issues.append(f\"{config.name}: stage transition '{key}' curve values must be between 0 and 1.\")
     for factor in config.post_patent_erosion:
         if factor < 0:
             issues.append(f"{config.name}: post_patent_erosion values must be >= 0.")

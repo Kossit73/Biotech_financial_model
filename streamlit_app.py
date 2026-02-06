@@ -75,6 +75,25 @@ STAGE_TRANSITION_COLUMNS = [
     "Approval->Commercial",
 ]
 
+STAGE_DURATION_COLUMNS = [
+    "Discovery duration (years)",
+    "Preclinical duration (years)",
+    "Phase I duration (years)",
+    "Phase II duration (years)",
+    "Phase III duration (years)",
+    "Approval duration (years)",
+    "Commercial duration (years)",
+]
+
+STAGE_TRANSITION_ANNUAL_COLUMNS = [
+    "Discovery->Preclinical annual success %",
+    "Preclinical->Phase I annual success %",
+    "Phase I->Phase II annual success %",
+    "Phase II->Phase III annual success %",
+    "Phase III->Approval annual success %",
+    "Approval->Commercial annual success %",
+]
+
 SELECTOR_OPTIONS = [
     "Base case",
     "Upside",
@@ -1380,12 +1399,25 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Sales ramp length (years)": 5,
             "R&D remaining pre-launch (USD)": 300_000_000,
             "R&D annual post-launch (USD/year)": 15_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
             "Discovery->Preclinical": 60.0,
             "Preclinical->Phase I": 70.0,
             "Phase I->Phase II": 65.0,
             "Phase II->Phase III": 55.0,
             "Phase III->Approval": 65.0,
             "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 60.0,
+            "Preclinical->Phase I annual success %": 70.0,
+            "Phase I->Phase II annual success %": 65.0,
+            "Phase II->Phase III annual success %": 55.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
         },
         {
             "Stage": "Preclinical",
@@ -1394,12 +1426,25 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Sales ramp length (years)": 5,
             "R&D remaining pre-launch (USD)": 250_000_000,
             "R&D annual post-launch (USD/year)": 12_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 70.0,
             "Phase I->Phase II": 65.0,
             "Phase II->Phase III": 55.0,
             "Phase III->Approval": 65.0,
             "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 70.0,
+            "Phase I->Phase II annual success %": 65.0,
+            "Phase II->Phase III annual success %": 55.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
         },
         {
             "Stage": "Phase I",
@@ -1408,12 +1453,25 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Sales ramp length (years)": 4,
             "R&D remaining pre-launch (USD)": 200_000_000,
             "R&D annual post-launch (USD/year)": 10_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 65.0,
             "Phase II->Phase III": 55.0,
             "Phase III->Approval": 65.0,
             "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 65.0,
+            "Phase II->Phase III annual success %": 55.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
         },
         {
             "Stage": "Phase II",
@@ -1422,12 +1480,25 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Sales ramp length (years)": 4,
             "R&D remaining pre-launch (USD)": 150_000_000,
             "R&D annual post-launch (USD/year)": 9_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
             "Phase II->Phase III": 55.0,
             "Phase III->Approval": 65.0,
             "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 100.0,
+            "Phase II->Phase III annual success %": 55.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
         },
         {
             "Stage": "Phase III",
@@ -1436,12 +1507,25 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Sales ramp length (years)": 3,
             "R&D remaining pre-launch (USD)": 100_000_000,
             "R&D annual post-launch (USD/year)": 8_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
             "Phase II->Phase III": 100.0,
             "Phase III->Approval": 65.0,
             "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 100.0,
+            "Phase II->Phase III annual success %": 100.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
         },
         {
             "Stage": "Approval",
@@ -1450,12 +1534,25 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Sales ramp length (years)": 2,
             "R&D remaining pre-launch (USD)": 50_000_000,
             "R&D annual post-launch (USD/year)": 6_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
             "Phase II->Phase III": 100.0,
             "Phase III->Approval": 100.0,
             "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 100.0,
+            "Phase II->Phase III annual success %": 100.0,
+            "Phase III->Approval annual success %": 100.0,
+            "Approval->Commercial annual success %": 100.0,
         },
         {
             "Stage": "Commercial",
@@ -1464,15 +1561,52 @@ def _default_stage_schedule_mapping() -> pd.DataFrame:
             "Sales ramp length (years)": 1,
             "R&D remaining pre-launch (USD)": 0.0,
             "R&D annual post-launch (USD/year)": 5_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
             "Discovery->Preclinical": 100.0,
             "Preclinical->Phase I": 100.0,
             "Phase I->Phase II": 100.0,
             "Phase II->Phase III": 100.0,
             "Phase III->Approval": 100.0,
             "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 100.0,
+            "Phase II->Phase III annual success %": 100.0,
+            "Phase III->Approval annual success %": 100.0,
+            "Approval->Commercial annual success %": 100.0,
         },
     ]
     return pd.DataFrame(data)
+
+
+def _stage_duration_years_from_row(row: pd.Series) -> Dict[str, int]:
+    durations: Dict[str, int] = {}
+    for col in STAGE_DURATION_COLUMNS:
+        if col not in row:
+            continue
+        stage = col.replace(" duration (years)", "")
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        durations[stage] = max(0, int(value))
+    return durations
+
+
+def _compute_time_to_market_from_durations(stage: str, durations: Dict[str, int]) -> Optional[int]:
+    if stage not in STAGE_SEQUENCE or not durations:
+        return None
+    stage_idx = STAGE_SEQUENCE.index(stage)
+    total = 0
+    for idx in range(stage_idx, len(STAGE_SEQUENCE) - 1):
+        from_stage = STAGE_SEQUENCE[idx]
+        total += int(durations.get(from_stage, 0))
+    return total if total > 0 else 0
 
 
 def _stage_mapping_row(mapping_df: pd.DataFrame, stage: str) -> Optional[pd.Series]:
@@ -1499,6 +1633,28 @@ def _stage_transition_probabilities_from_row(row: pd.Series) -> Dict[str, float]
     return transitions
 
 
+def _stage_transition_curve_from_row(
+    row: pd.Series,
+    durations: Dict[str, int],
+) -> Dict[str, List[float]]:
+    curves: Dict[str, List[float]] = {}
+    for col in STAGE_TRANSITION_ANNUAL_COLUMNS:
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        transition = col.replace(" annual success %", "")
+        from_stage = transition.split("->")[0]
+        duration = int(durations.get(from_stage, 0))
+        if duration <= 0:
+            continue
+        prob = float(value)
+        if prob > 1.0:
+            prob = prob / 100.0
+        prob = max(0.0, min(1.0, prob))
+        curves[transition] = [prob] * duration
+    return curves
+
+
 def _apply_stage_schedule_defaults(
     df: pd.DataFrame,
     mapping_df: pd.DataFrame,
@@ -1514,9 +1670,13 @@ def _apply_stage_schedule_defaults(
         mapping_row = _stage_mapping_row(mapping_df, stage)
         if mapping_row is None:
             continue
+        durations = _stage_duration_years_from_row(mapping_row)
+        derived_time_to_market = _compute_time_to_market_from_durations(stage, durations)
         defaults = {
             "success_prob": mapping_row.get("Success Probability %"),
-            "time_to_market": mapping_row.get("Time to market (years)"),
+            "time_to_market": derived_time_to_market
+            if derived_time_to_market is not None
+            else mapping_row.get("Time to market (years)"),
             "sales_ramp_length": mapping_row.get("Sales ramp length (years)"),
             "rd_remaining_pre_launch": mapping_row.get("R&D remaining pre-launch (USD)"),
             "rd_annual_post_launch": mapping_row.get("R&D annual post-launch (USD/year)"),
@@ -1698,6 +1858,7 @@ def _sanitize_product_records(
         cleaned.setdefault("include_in_consolidation", True)
         mapping_row = _stage_mapping_row(stage_mapping, cleaned.get("stage"))
         if mapping_row is not None:
+            durations = _stage_duration_years_from_row(mapping_row)
             if overwrite_defaults or "success_prob" not in cleaned:
                 mapped_prob = mapping_row.get("Success Probability %")
                 if pd.notna(mapped_prob):
@@ -1706,7 +1867,9 @@ def _sanitize_product_records(
                         mapped_prob = mapped_prob / 100.0
                     cleaned["success_prob"] = mapped_prob
             if overwrite_defaults or "time_to_market" not in cleaned:
-                mapped_time = mapping_row.get("Time to market (years)")
+                mapped_time = _compute_time_to_market_from_durations(cleaned.get("stage"), durations)
+                if mapped_time is None:
+                    mapped_time = mapping_row.get("Time to market (years)")
                 if pd.notna(mapped_time):
                     cleaned["time_to_market"] = mapped_time
             if overwrite_defaults or "sales_ramp_length" not in cleaned:
@@ -1721,6 +1884,11 @@ def _sanitize_product_records(
                 mapped_rd_annual = mapping_row.get("R&D annual post-launch (USD/year)")
                 if pd.notna(mapped_rd_annual):
                     cleaned["rd_annual_post_launch"] = mapped_rd_annual
+            if durations:
+                cleaned["stage_duration_years"] = durations
+            transition_curve = _stage_transition_curve_from_row(mapping_row, durations)
+            if transition_curve:
+                cleaned["stage_transition_curve"] = transition_curve
             transitions = _stage_transition_probabilities_from_row(mapping_row)
             if transitions:
                 cleaned["stage_transition_probabilities"] = transitions
@@ -4945,7 +5113,8 @@ def main() -> None:
             with st.expander("Stage-to-schedule mapping", expanded=False):
                 st.caption(
                     "Define default schedule assumptions per stage. These defaults can automatically "
-                    "populate product assumptions when the stage changes."
+                    "populate product assumptions when the stage changes. Stage durations are used to "
+                    "derive time-to-market and to build annual transition probability curves."
                 )
                 auto_apply_defaults = st.checkbox(
                     "Auto-apply stage defaults to product assumptions",
@@ -4985,9 +5154,21 @@ def main() -> None:
                         ),
                         **{
                             col: st.column_config.NumberColumn(
+                                col, min_value=0, step=1
+                            )
+                            for col in STAGE_DURATION_COLUMNS
+                        },
+                        **{
+                            col: st.column_config.NumberColumn(
                                 col, min_value=0.0, max_value=100.0, step=1.0
                             )
                             for col in STAGE_TRANSITION_COLUMNS
+                        },
+                        **{
+                            col: st.column_config.NumberColumn(
+                                col, min_value=0.0, max_value=100.0, step=1.0
+                            )
+                            for col in STAGE_TRANSITION_ANNUAL_COLUMNS
                         },
                     },
                 )
