@@ -2448,6 +2448,7 @@ def _evaluate_portfolio_shock(
     discount_shift: float = 0.0,
     success_prob_multiplier: float = 1.0,
     launch_delay_years: int = 0,
+    stage_slippage_years: Optional[Dict[str, int]] = None,
 ) -> Optional[ValuationResult]:
     """Run a valuation after applying a Scenario-style shock."""
 
@@ -2460,6 +2461,7 @@ def _evaluate_portfolio_shock(
         discount_rate_shift=discount_shift,
         success_prob_multiplier=success_prob_multiplier,
         launch_delay_years=launch_delay_years,
+        stage_slippage_years=stage_slippage_years or {},
     )
     scen_engine = ScenarioEngine(portfolio)
     shocked_portfolio = scen_engine._apply_scenario(scenario)
@@ -6420,12 +6422,14 @@ def main() -> None:
                     dr: float,
                     prob: float,
                     delay: int = 0,
+                    stage_slippage: Optional[Dict[str, int]] = None,
                 ) -> None:
                     st.session_state["scenario_rev_mult"] = rev
                     st.session_state["scenario_cost_mult"] = cost
                     st.session_state["scenario_dr_shift"] = dr
                     st.session_state["scenario_prob_mult"] = prob
                     st.session_state["scenario_delay"] = delay
+                    st.session_state["scenario_stage_slippage"] = stage_slippage or {}
 
                 if preset_buttons[0].button("Base", key="scenario_preset_base"):
                     _apply_preset(rev=1.0, cost=1.0, dr=0.0, prob=1.0, delay=0)
@@ -6475,6 +6479,26 @@ def main() -> None:
                 int(st.session_state.get("scenario_delay", 0)),
                 key="scenario_delay",
             )
+            st.markdown("**Stage slippage (years)**")
+            slip_col1, slip_col2 = st.columns(2)
+            slip_phase_ii = slip_col1.slider(
+                "Phase II delay",
+                0,
+                3,
+                int(st.session_state.get("scenario_slip_phase_ii", 0)),
+                key="scenario_slip_phase_ii",
+            )
+            slip_phase_iii = slip_col2.slider(
+                "Phase III delay",
+                0,
+                3,
+                int(st.session_state.get("scenario_slip_phase_iii", 0)),
+                key="scenario_slip_phase_iii",
+            )
+            stage_slippage = {
+                "Phase II": int(slip_phase_ii),
+                "Phase III": int(slip_phase_iii),
+            }
             scenario = Scenario(
                 name=scenario_name or "Custom scenario",
                 revenue_multiplier=float(rev_mult),
@@ -6482,6 +6506,7 @@ def main() -> None:
                 discount_rate_shift=float(dr_shift),
                 success_prob_multiplier=float(prob_mult),
                 launch_delay_years=int(launch_delay),
+                stage_slippage_years=stage_slippage,
             )
             scen_results = ScenarioEngine(portfolio).run_scenarios([scenario])
 
@@ -6492,6 +6517,7 @@ def main() -> None:
                 discount_shift=float(dr_shift),
                 success_prob_multiplier=float(prob_mult),
                 launch_delay_years=int(launch_delay),
+                stage_slippage_years=stage_slippage,
             )
             if scenario_result is not None and valuation_result is not None:
                 base_cons = valuation_result.consolidated
@@ -6516,6 +6542,48 @@ def main() -> None:
                     "FCFF delta",
                     f"{scen_cons['fcff_after_wc'].sum():,.0f}",
                     f"{scen_cons['fcff_after_wc'].sum() - base_cons['fcff_after_wc'].sum():+,.0f}",
+                )
+
+                def _funding_required_from_cons(cons_df: pd.DataFrame) -> float:
+                    uses_total = float(st.session_state.get("uses_total", 0.0))
+                    burn_total = 0.0
+                    wc_total = 0.0
+                    if "fcff_after_wc" in cons_df.columns:
+                        burn_total = float((-cons_df["fcff_after_wc"].clip(upper=0)).sum())
+                    if "delta_wc" in cons_df.columns:
+                        wc_total = float((-cons_df["delta_wc"].clip(upper=0)).sum())
+                    return uses_total + burn_total + wc_total
+
+                component_rows = [
+                    {
+                        "Component": "Revenue",
+                        "Base": float(base_cons["revenue"].sum()),
+                        "Scenario": float(scen_cons["revenue"].sum()),
+                    },
+                    {
+                        "Component": "R&D cash burn",
+                        "Base": float((-base_cons.get("rd_cash", pd.Series(0.0, index=base_cons.index))).sum()),
+                        "Scenario": float((-scen_cons.get("rd_cash", pd.Series(0.0, index=scen_cons.index))).sum()),
+                    },
+                    {
+                        "Component": "CAPEX cash",
+                        "Base": float((-base_cons.get("capex_cash", pd.Series(0.0, index=base_cons.index))).sum()),
+                        "Scenario": float((-scen_cons.get("capex_cash", pd.Series(0.0, index=scen_cons.index))).sum()),
+                    },
+                    {
+                        "Component": "Equity required (uses + burn + WC)",
+                        "Base": _funding_required_from_cons(base_cons),
+                        "Scenario": _funding_required_from_cons(scen_cons),
+                    },
+                ]
+                component_df = pd.DataFrame(component_rows)
+                component_df["Delta"] = component_df["Scenario"] - component_df["Base"]
+                st.markdown("**Scenario deltas by component**")
+                st.dataframe(
+                    component_df.style.format(
+                        {"Base": "{:,.0f}", "Scenario": "{:,.0f}", "Delta": "{:+,.0f}"}
+                    ),
+                    use_container_width=True,
                 )
 
                 overlay_df = pd.DataFrame(

@@ -133,6 +133,36 @@ def _scale_product_config(
     return ProductConfig(**cfg_dict)
 
 
+def _apply_stage_slippage(config: ProductConfig, slippage: Dict[str, int]) -> ProductConfig:
+    if not slippage or config.preexisting_market:
+        return config
+    cfg_dict = asdict(config)
+    stage_durations = cfg_dict.get("stage_duration_years") or {}
+    updated_durations = dict(stage_durations) if stage_durations else {}
+    for stage, years in slippage.items():
+        try:
+            delay = int(years)
+        except (TypeError, ValueError):
+            continue
+        if delay == 0:
+            continue
+        if updated_durations:
+            updated_durations[stage] = max(0, int(updated_durations.get(stage, 0)) + delay)
+        else:
+            if stage == config.stage:
+                cfg_dict["time_to_market"] = max(0, int(cfg_dict.get("time_to_market", 0)) + delay)
+    if updated_durations:
+        cfg_dict["stage_duration_years"] = updated_durations
+        if config.stage in STAGE_SEQUENCE:
+            stage_idx = STAGE_SEQUENCE.index(config.stage)
+            total = 0
+            for idx in range(stage_idx, len(STAGE_SEQUENCE) - 1):
+                from_stage = STAGE_SEQUENCE[idx]
+                total += int(updated_durations.get(from_stage, 0))
+            cfg_dict["time_to_market"] = max(0, total)
+    return ProductConfig(**cfg_dict)
+
+
 # ===========================
 # 2. Core model classes
 # ===========================
@@ -655,6 +685,7 @@ class Scenario:
     discount_rate_shift: float = 0.0
     success_prob_multiplier: float = 1.0
     launch_delay_years: int = 0
+    stage_slippage_years: Dict[str, int] = field(default_factory=dict)
 
 
 class ScenarioEngine:
@@ -675,6 +706,7 @@ class ScenarioEngine:
                 success_prob_multiplier=scenario.success_prob_multiplier,
                 launch_delay_years=scenario.launch_delay_years,
             )
+            new_cfg = _apply_stage_slippage(new_cfg, scenario.stage_slippage_years)
             new_products.append(Product(new_cfg, new_model_cfg))
 
         return Portfolio(new_products, new_model_cfg)
