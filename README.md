@@ -11,9 +11,10 @@ The package exposes an object-oriented modelling toolkit that covers:
 - `ValuationEngine`: Deterministic discounted cash flow engine with terminal value support.
 - `VCInputs` / `VCValuator`: Back-of-the-envelope venture capital method helper.
 - `ScenarioEngine`, `Scenario`: Deterministic stress testing via revenue, cost, discount-rate, or probability shocks.
-- `MonteCarloEngine`: Randomized revenue/cost shocks to approximate risk via VaR and CVaR.
+- `MonteCarloEngine`: Randomized, correlated revenue/cost shocks to approximate risk via VaR and CVaR.
 - `ForecastEngine`: ARIMA, Prophet, and LSTM helpers for forward price/metric projections.
 - `ForecastScenarioBridge`: Translates Prophet forecasts into `Scenario` objects for quick stress testing.
+- Phase-specific success probabilities, post-patent erosion curves, milestone cash flows, and assumption validation.
 
 ## Usage
 
@@ -40,3 +41,4 @@ Combine configuration objects with the modelling helpers to build forecasts, run
 8. **Incorporate forecasts** with `ForecastEngine` (ARIMA/Prophet/LSTM) and convert those views into scenario inputs through `ForecastScenarioBridge`, enabling Prophet-derived base/pessimistic/optimistic paths to feed directly into the scenario engine.
 
 The accompanying `streamlit_app.py` surfaces these workflows in a browser-based UI featuring dedicated tabs for configuration, financial statements, dashboards, advanced analytics, scenarios, and VC valuation so that non-technical users can operate the model interactively.
+The UI now includes phase-by-phase probability inputs, erosion curves, milestone tracking, comparable multiples, validation warnings, and an exportable investor packet.

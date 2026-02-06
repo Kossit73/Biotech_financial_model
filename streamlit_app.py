@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, fields
 from typing import Callable, Dict, List, Optional, Tuple
+import io
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -43,6 +45,7 @@ from valuation_codex_package import (
     ValuationEngine,
     ValuationResult,
     MonteCarloEngine,
+    validate_portfolio,
 )
 
 
@@ -52,6 +55,7 @@ STAGE_OPTIONS = [
     "Phase I",
     "Phase II",
     "Phase III",
+    "Approval",
     "Commercial",
 ]
 
@@ -112,6 +116,33 @@ def _default_products() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _stage_template(name: str, stage: str, success_prob: float, time_to_market: int) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "name": name,
+                "stage": stage,
+                "success_prob": success_prob,
+                "include_in_consolidation": True,
+                "time_to_market": time_to_market,
+                "patent_years": 15,
+                "patent_revenue_target": 120_000_000,
+                "post_patent_revenue_target": 60_000_000,
+                "market_growth_patent": 0.03,
+                "market_growth_post": 0.0,
+                "cogs_patent": 0.32,
+                "cogs_post": 0.5,
+                "sales_marketing_pct": 0.18,
+                "gna_pct": 0.12,
+                "rd_remaining_pre_launch": 150_000_000,
+                "rd_annual_post_launch": 10_000_000,
+                "capex_remaining_pre_launch": 50_000_000,
+                "capex_annual_post_launch": 6_000_000,
+            }
+        ]
+    )
+
+
 def _blank_product_row(name: str = "New vaccine") -> Dict:
     """Return a ProductConfig-like dict for initializing new rows."""
 
@@ -134,40 +165,100 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
     return asdict(cfg)
 
 
-def _default_vaccine_sales_table(first_year: int = 2024) -> pd.DataFrame:
-    years = [first_year + i for i in range(5)]
-    data = {
-        "Year": years,
-        "Doses (M)": [5, 7, 10, 12, 12],
-        "Price per dose": [25, 26, 27, 27, 28],
-        "Comments": ["", "", "", "", ""],
-    }
+def _default_phase_probabilities_table() -> pd.DataFrame:
+    data = [
+        {
+            "name": "AgSeed-101",
+            "stage": "Phase II",
+            "Discovery→Preclinical": 0.7,
+            "Preclinical→Phase I": 0.65,
+            "Phase I→Phase II": 0.55,
+            "Phase II→Phase III": 0.4,
+            "Phase III→Approval": 0.6,
+        },
+        {
+            "name": "BioYield-Plus",
+            "stage": "Phase III",
+            "Discovery→Preclinical": 0.75,
+            "Preclinical→Phase I": 0.7,
+            "Phase I→Phase II": 0.6,
+            "Phase II→Phase III": 0.45,
+            "Phase III→Approval": 0.65,
+        },
+    ]
     return pd.DataFrame(data)
 
 
-def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int) -> Dict:
-    next_year = first_year
-    if "Year" in df.columns and not df.empty:
-        with pd.option_context("mode.use_inf_as_na", True):
-            existing_years = pd.to_numeric(df["Year"], errors="coerce").dropna()
-        if not existing_years.empty:
-            next_year = int(existing_years.max()) + 1
-    doses = 5.0
-    price = 25.0
-    if "Doses (M)" in df.columns and not df.empty:
-        last_doses = pd.to_numeric(df["Doses (M)"], errors="coerce").dropna()
-        if not last_doses.empty:
-            doses = float(last_doses.iloc[-1])
-    if "Price per dose" in df.columns and not df.empty:
-        last_price = pd.to_numeric(df["Price per dose"], errors="coerce").dropna()
-        if not last_price.empty:
-            price = float(last_price.iloc[-1])
-    return {
-        "Year": next_year,
-        "Doses (M)": doses,
-        "Price per dose": price,
-        "Comments": "",
-    }
+def _default_erosion_table() -> pd.DataFrame:
+    data = [
+        {
+            "name": "AgSeed-101",
+            "Year 1": 1.0,
+            "Year 2": 0.8,
+            "Year 3": 0.6,
+            "Year 4": 0.4,
+            "Year 5": 0.3,
+        },
+        {
+            "name": "BioYield-Plus",
+            "Year 1": 1.0,
+            "Year 2": 0.85,
+            "Year 3": 0.7,
+            "Year 4": 0.55,
+            "Year 5": 0.4,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_milestones_table() -> pd.DataFrame:
+    data = [
+        {"name": "AgSeed-101", "Label": "Phase III start", "Year offset": 2, "Amount": 15_000_000, "Probability": 0.4},
+        {"name": "AgSeed-101", "Label": "Approval", "Year offset": 5, "Amount": 35_000_000, "Probability": 0.6},
+        {"name": "BioYield-Plus", "Label": "Approval", "Year offset": 3, "Amount": 40_000_000, "Probability": 0.65},
+    ]
+    return pd.DataFrame(data)
+
+
+def _default_comps_table() -> pd.DataFrame:
+    data = [
+        {"Company": "PeerCo A", "EV/EBITDA": 9.5, "EV/Sales": 4.2, "Notes": "Mid-cap biologics"},
+        {"Company": "PeerCo B", "EV/EBITDA": 11.2, "EV/Sales": 5.0, "Notes": "Late-stage vaccines"},
+        {"Company": "PeerCo C", "EV/EBITDA": 8.0, "EV/Sales": 3.6, "Notes": "Specialty pharma"},
+    ]
+    return pd.DataFrame(data)
+
+
+def _vaccine_sales_year_columns(first_year: int, years: int) -> List[int]:
+    return [first_year + i for i in range(years)]
+
+
+def _default_vaccine_sales_table(first_year: int = 2024, years: int = 5) -> pd.DataFrame:
+    years = _vaccine_sales_year_columns(first_year, years)
+    rows = []
+    for name, base_doses, base_price in [
+        ("AgSeed-101", 5, 25),
+        ("BioYield-Plus", 7, 30),
+    ]:
+        row = {
+            "ID_vaccine": f"VAC-{len(rows) + 1:03d}",
+            "Vaccine name": name,
+        }
+        for idx, year in enumerate(years, start=1):
+            row[f"{year} Doses (M)"] = base_doses + idx
+            row[f"{year} Price per dose"] = base_price + idx
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _blank_vaccine_sales_row(df: pd.DataFrame, first_year: int, years: int) -> Dict:
+    next_id = _next_vaccine_id(df)
+    years = _vaccine_sales_year_columns(first_year, years)
+    row = {"ID_vaccine": next_id, "Vaccine name": "New vaccine"}
+    for year in years:
+        row[f"{year} Doses (M)"] = 5.0
+        row[f"{year} Price per dose"] = 25.0
+    return row
 
 
 def _default_uses_table() -> pd.DataFrame:
@@ -930,6 +1021,108 @@ def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(default)
 
 
+def _build_assumption_audit(model_cfg: ModelConfig, product_df: pd.DataFrame) -> pd.DataFrame:
+    model_defaults = ModelConfig()
+    audit_rows = []
+    for field_name, value in asdict(model_cfg).items():
+        default_value = getattr(model_defaults, field_name)
+        if value != default_value:
+            audit_rows.append(
+                {
+                    "Scope": "Model",
+                    "Item": field_name,
+                    "Current": value,
+                    "Default": default_value,
+                }
+            )
+    product_defaults = ProductConfig(
+        name="Default",
+        stage="Discovery",
+        success_prob=0.2,
+    )
+    for _, row in product_df.iterrows():
+        name = row.get("name", "Unnamed")
+        for field_name in [f.name for f in fields(ProductConfig) if f.name in row]:
+            current_value = row.get(field_name)
+            default_value = getattr(product_defaults, field_name, None)
+            if pd.isna(current_value):
+                continue
+            if current_value != default_value:
+                audit_rows.append(
+                    {
+                        "Scope": f"Product: {name}",
+                        "Item": field_name,
+                        "Current": current_value,
+                        "Default": default_value,
+                    }
+                )
+    return pd.DataFrame(audit_rows)
+
+
+def _build_dashboard_summary(cons: pd.DataFrame) -> Dict[str, float | int]:
+    peak_sales = float(cons["revenue"].max())
+    peak_year = int(cons["revenue"].idxmax())
+    ebitda_margin = float(cons["ebitda"].sum() / cons["revenue"].sum()) if cons["revenue"].sum() != 0 else 0.0
+    cumulative_fcff = cons["fcff_after_wc"].cumsum()
+    break_even_year = int(cumulative_fcff[cumulative_fcff > 0].index.min()) if (cumulative_fcff > 0).any() else -1
+    return {
+        "peak_sales": peak_sales,
+        "peak_year": peak_year,
+        "ebitda_margin": ebitda_margin,
+        "break_even_year": break_even_year,
+    }
+
+
+def _build_sensitivity_table(portfolio: Portfolio, base_rnpv: float) -> pd.DataFrame:
+    scenarios = [
+        ("Discount rate +1%", {"discount_rate_shift": 0.01}),
+        ("Discount rate -1%", {"discount_rate_shift": -0.01}),
+        ("Revenue +10%", {"revenue_multiplier": 1.1}),
+        ("Revenue -10%", {"revenue_multiplier": 0.9}),
+        ("COGS +5%", {"cost_multiplier": 1.05}),
+        ("COGS -5%", {"cost_multiplier": 0.95}),
+        ("Success prob +10%", {"success_prob_multiplier": 1.1}),
+        ("Success prob -10%", {"success_prob_multiplier": 0.9}),
+        ("Delay launch +1y", {"time_to_market_shift": 1}),
+        ("Accelerate launch -1y", {"time_to_market_shift": -1}),
+    ]
+    rows = []
+    scen_engine = ScenarioEngine(portfolio)
+    for label, kwargs in scenarios:
+        scenario = Scenario(name=label, **kwargs)
+        port = scen_engine._apply_scenario(scenario)
+        val = ValuationEngine(port).run(validate=False)
+        rows.append(
+            {
+                "Driver": label,
+                "rNPV": val.rnpv,
+                "Delta vs base": val.rnpv - base_rnpv,
+            }
+        )
+    return pd.DataFrame(rows).sort_values("Delta vs base")
+
+
+def _assemble_investor_packet(
+    model_cfg: ModelConfig,
+    valuation_result: ValuationResult,
+    audit_df: pd.DataFrame,
+    scenario_df: pd.DataFrame | None,
+) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("summary.json", json.dumps(asdict(model_cfg), indent=2))
+        zf.writestr("rnpv.json", json.dumps({"rnpv": valuation_result.rnpv}, indent=2))
+        zf.writestr("consolidated.csv", valuation_result.consolidated.to_csv())
+        if scenario_df is not None:
+            zf.writestr("scenarios.csv", scenario_df.to_csv(index=False))
+        if not audit_df.empty:
+            zf.writestr("assumption_audit.csv", audit_df.to_csv(index=False))
+        for name, df in valuation_result.per_product.items():
+            zf.writestr(f"product_{name}.csv", df.to_csv())
+    buffer.seek(0)
+    return buffer.read()
+
+
 def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
     """Render a reusable schedule editor with manual controls.
 
@@ -1024,10 +1217,68 @@ def _validate_product_df(df: pd.DataFrame) -> pd.DataFrame:
             "include_in_consolidation"
         ].fillna(True)
 
+    for col in ["time_to_market", "patent_years"]:
+        if col in validated.columns:
+            validated[col] = validated[col].fillna(0).clip(lower=0)
+
     return validated
 
 
-def _sanitize_product_records(df: pd.DataFrame) -> List[Dict]:
+def _build_stage_probability_map(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+    stage_map: Dict[str, Dict[str, float]] = {}
+    if df.empty:
+        return stage_map
+    for _, row in df.iterrows():
+        name = row.get("name")
+        if not name:
+            continue
+        stage_map[name] = {
+            "Discovery": float(row.get("Discovery→Preclinical", 0.0)),
+            "Preclinical": float(row.get("Preclinical→Phase I", 0.0)),
+            "Phase I": float(row.get("Phase I→Phase II", 0.0)),
+            "Phase II": float(row.get("Phase II→Phase III", 0.0)),
+            "Phase III": float(row.get("Phase III→Approval", 0.0)),
+        }
+    return stage_map
+
+
+def _build_erosion_map(df: pd.DataFrame) -> Dict[str, List[float]]:
+    erosion_map: Dict[str, List[float]] = {}
+    if df.empty:
+        return erosion_map
+    for _, row in df.iterrows():
+        name = row.get("name")
+        if not name:
+            continue
+        factors = [float(row.get(f"Year {i}", 1.0)) for i in range(1, 6)]
+        erosion_map[name] = factors
+    return erosion_map
+
+
+def _build_milestone_map(df: pd.DataFrame) -> Dict[str, List[Dict[str, float | int | str]]]:
+    milestone_map: Dict[str, List[Dict[str, float | int | str]]] = {}
+    if df.empty:
+        return milestone_map
+    for _, row in df.iterrows():
+        name = row.get("name")
+        if not name:
+            continue
+        milestone = {
+            "label": row.get("Label", "Milestone"),
+            "year_offset": int(row.get("Year offset", 0)),
+            "amount": float(row.get("Amount", 0.0)),
+            "probability": None if pd.isna(row.get("Probability")) else float(row.get("Probability")),
+        }
+        milestone_map.setdefault(name, []).append(milestone)
+    return milestone_map
+
+
+def _sanitize_product_records(
+    df: pd.DataFrame,
+    stage_map: Dict[str, Dict[str, float]] | None = None,
+    erosion_map: Dict[str, List[float]] | None = None,
+    milestone_map: Dict[str, List[Dict[str, float | int | str]]] | None = None,
+) -> List[Dict]:
     records: List[Dict] = []
     cfg_fields = {f.name for f in fields(ProductConfig)}
     for raw in df.to_dict("records"):
@@ -1043,12 +1294,28 @@ def _sanitize_product_records(df: pd.DataFrame) -> List[Dict]:
         cleaned.setdefault("stage", "Unspecified")
         cleaned.setdefault("success_prob", 0.5)
         cleaned.setdefault("include_in_consolidation", True)
+        name = cleaned.get("name")
+        if stage_map and name in stage_map:
+            cleaned["stage_probabilities"] = stage_map[name]
+        if erosion_map and name in erosion_map:
+            cleaned["post_patent_erosion"] = erosion_map[name]
+        if milestone_map and name in milestone_map:
+            cleaned["milestone_cashflows"] = milestone_map[name]
         records.append(cleaned)
     return records
 
 
-def _build_portfolio(product_df: pd.DataFrame, model_cfg: ModelConfig) -> Portfolio | None:
-    product_records = _sanitize_product_records(product_df)
+def _build_portfolio(
+    product_df: pd.DataFrame,
+    model_cfg: ModelConfig,
+    stage_df: pd.DataFrame | None = None,
+    erosion_df: pd.DataFrame | None = None,
+    milestone_df: pd.DataFrame | None = None,
+) -> Portfolio | None:
+    stage_map = _build_stage_probability_map(stage_df if stage_df is not None else pd.DataFrame())
+    erosion_map = _build_erosion_map(erosion_df if erosion_df is not None else pd.DataFrame())
+    milestone_map = _build_milestone_map(milestone_df if milestone_df is not None else pd.DataFrame())
+    product_records = _sanitize_product_records(product_df, stage_map, erosion_map, milestone_map)
     if not product_records:
         return None
     products = [Product(ProductConfig(**record), model_cfg) for record in product_records]
@@ -1642,6 +1909,50 @@ def main() -> None:
     with config_tab:
         st.subheader("Model assumptions")
 
+        with st.expander("Start here: guided setup", expanded=False):
+            st.markdown(
+                "1) **Define the portfolio** with stages, timelines, and probability profiles.\n"
+                "2) **Calibrate revenue and cost assumptions** (market size, pricing, COGS).\n"
+                "3) **Review scenario and sensitivity outputs** for investor-facing insights.\n"
+                "4) **Export the investor packet** for sharing."
+            )
+            st.info(
+                "Tip: start with a template from the library below, then refine probabilities, milestones, "
+                "and erosion curves to match your asset."
+            )
+
+        with st.expander("Template library", expanded=False):
+            template_choice = st.selectbox(
+                "Choose a template",
+                [
+                    "Select template",
+                    "Discovery",
+                    "Preclinical",
+                    "Phase I",
+                    "Phase II",
+                    "Phase III",
+                    "Approval",
+                    "Commercial",
+                ],
+            )
+            if st.button("Load template") and template_choice != "Select template":
+                if template_choice == "Discovery":
+                    template_df = _stage_template("Discovery asset", "Discovery", 0.1, 8)
+                elif template_choice == "Preclinical":
+                    template_df = _stage_template("Preclinical asset", "Preclinical", 0.2, 6)
+                elif template_choice == "Phase I":
+                    template_df = _stage_template("Phase I asset", "Phase I", 0.3, 5)
+                elif template_choice == "Phase II":
+                    template_df = _stage_template("Phase II asset", "Phase II", 0.45, 4)
+                elif template_choice == "Phase III":
+                    template_df = _stage_template("Phase III asset", "Phase III", 0.6, 3)
+                elif template_choice == "Approval":
+                    template_df = _stage_template("Approval-stage asset", "Approval", 0.8, 1)
+                else:
+                    template_df = _stage_template("Commercial asset", "Commercial", 0.95, 0)
+                st.session_state["product_table"] = template_df
+                st.success("Template loaded. Review assumptions below.")
+
         with st.expander("General assumptions", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -1667,25 +1978,83 @@ def main() -> None:
             st.caption("Ramp factors feed revenue build-ups across every product.")
 
         with st.expander("Vaccine sales"):
+            sales_years = _vaccine_sales_year_columns(int(first_year), int(n_years))
+            display_years = sales_years[:1]
+            sales_column_config = {
+                "ID_vaccine": st.column_config.TextColumn("ID_vaccine"),
+                "Vaccine name": st.column_config.TextColumn("Vaccine name"),
+            }
+            for year in display_years:
+                sales_column_config[f"{year} Doses (M)"] = st.column_config.NumberColumn(
+                    f"{year} Doses (M)", min_value=0.0, step=0.5
+                )
+                sales_column_config[f"{year} Price per dose"] = st.column_config.NumberColumn(
+                    f"{year} Price per dose", min_value=0.0, step=1.0
+                )
             vaccine_df = _render_product_assumption_table(
                 session_key="vaccine_sales_table",
-                default_factory=lambda: _default_vaccine_sales_table(int(first_year)),
-                blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
-                id_column=None,
-                name_column="Year",
-                column_config={
-                    "Year": st.column_config.NumberColumn("Year", step=1),
-                    "Doses (M)": st.column_config.NumberColumn("Doses (M)", min_value=0.0, step=0.5),
-                    "Price per dose": st.column_config.NumberColumn(
-                        "Price per dose", min_value=0.0, step=1.0
-                    ),
-                },
+                default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
+                blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year), int(n_years)),
+                id_column="ID_vaccine",
+                name_column="Vaccine name",
+                column_config=sales_column_config,
             )
-            doses = pd.to_numeric(vaccine_df.get("Doses (M)", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
-            price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
-            vaccine_df["Implied revenue"] = doses * 1e6 * price
+
+            with st.expander("Yearly Increment Helper", expanded=False):
+                select_key = "vaccine_sales_table_row_select"
+                selected_id = st.session_state.get(select_key)
+                if selected_id is None and not vaccine_df.empty:
+                    selected_id = vaccine_df.loc[vaccine_df.index[0], "ID_vaccine"]
+                if selected_id in vaccine_df["ID_vaccine"].values:
+                    selected_idx = vaccine_df.index[vaccine_df["ID_vaccine"] == selected_id][0]
+                else:
+                    selected_idx = vaccine_df.index[0] if not vaccine_df.empty else None
+
+                base_year = st.selectbox(
+                    "Base year",
+                    options=sales_years,
+                    index=0,
+                    key="vaccine_sales_base_year",
+                )
+                doses_increment = st.number_input(
+                    "Doses increment per year (M)",
+                    value=1.0,
+                    step=0.5,
+                    key="vaccine_sales_dose_increment",
+                )
+                price_increment = st.number_input(
+                    "Price increment per year",
+                    value=1.0,
+                    step=1.0,
+                    key="vaccine_sales_price_increment",
+                )
+
+                if st.button("Apply increments", key="vaccine_sales_apply"):
+                    if selected_idx is None:
+                        st.warning("Select a vaccine row to apply increments.")
+                    else:
+                        start_idx = sales_years.index(base_year)
+                        base_doses = pd.to_numeric(
+                            vaccine_df.at[selected_idx, f"{base_year} Doses (M)"],
+                            errors="coerce",
+                        )
+                        base_price = pd.to_numeric(
+                            vaccine_df.at[selected_idx, f"{base_year} Price per dose"],
+                            errors="coerce",
+                        )
+                        base_doses = 0.0 if pd.isna(base_doses) else float(base_doses)
+                        base_price = 0.0 if pd.isna(base_price) else float(base_price)
+                        for offset, year in enumerate(sales_years[start_idx:], start=0):
+                            vaccine_df.at[selected_idx, f"{year} Doses (M)"] = (
+                                base_doses + doses_increment * offset
+                            )
+                            vaccine_df.at[selected_idx, f"{year} Price per dose"] = (
+                                base_price + price_increment * offset
+                            )
+                        st.session_state["vaccine_sales_table"] = vaccine_df
+                        st.success("Increments applied to doses and price.")
+
             st.session_state["vaccine_sales_table"] = vaccine_df
-            st.metric("Five-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
 
         with st.expander("Uses and sources of funds"):
             uses_col, sources_col = st.columns(2)
@@ -1826,6 +2195,73 @@ def main() -> None:
             )
         st.session_state["vaccine_development_table"] = dev_df
         st.caption("Track each vaccine's readiness, probability of success, and patent end year.")
+
+        with st.expander("Phase-by-phase success probabilities", expanded=True):
+            stage_df = _render_product_assumption_table(
+                session_key="phase_probability_table",
+                default_factory=_default_phase_probabilities_table,
+                blank_row_factory=lambda df: {
+                    "name": f"Asset {len(df) + 1}",
+                    "stage": "Phase I",
+                    "Discovery→Preclinical": 0.7,
+                    "Preclinical→Phase I": 0.6,
+                    "Phase I→Phase II": 0.5,
+                    "Phase II→Phase III": 0.4,
+                    "Phase III→Approval": 0.6,
+                },
+                column_config={
+                    "stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
+                    "Discovery→Preclinical": st.column_config.NumberColumn("Discovery→Preclinical", min_value=0.0, max_value=1.0, step=0.05),
+                    "Preclinical→Phase I": st.column_config.NumberColumn("Preclinical→Phase I", min_value=0.0, max_value=1.0, step=0.05),
+                    "Phase I→Phase II": st.column_config.NumberColumn("Phase I→Phase II", min_value=0.0, max_value=1.0, step=0.05),
+                    "Phase II→Phase III": st.column_config.NumberColumn("Phase II→Phase III", min_value=0.0, max_value=1.0, step=0.05),
+                    "Phase III→Approval": st.column_config.NumberColumn("Phase III→Approval", min_value=0.0, max_value=1.0, step=0.05),
+                },
+            )
+            st.session_state["phase_probability_table"] = stage_df
+            st.caption("Probabilities compound from the current stage through approval.")
+
+        with st.expander("Post-patent erosion curves", expanded=True):
+            erosion_df = _render_product_assumption_table(
+                session_key="erosion_table",
+                default_factory=_default_erosion_table,
+                blank_row_factory=lambda df: {
+                    "name": f"Asset {len(df) + 1}",
+                    "Year 1": 1.0,
+                    "Year 2": 0.8,
+                    "Year 3": 0.6,
+                    "Year 4": 0.4,
+                    "Year 5": 0.3,
+                },
+                column_config={
+                    "Year 1": st.column_config.NumberColumn("Year 1", min_value=0.0, max_value=1.0, step=0.05),
+                    "Year 2": st.column_config.NumberColumn("Year 2", min_value=0.0, max_value=1.0, step=0.05),
+                    "Year 3": st.column_config.NumberColumn("Year 3", min_value=0.0, max_value=1.0, step=0.05),
+                    "Year 4": st.column_config.NumberColumn("Year 4", min_value=0.0, max_value=1.0, step=0.05),
+                    "Year 5": st.column_config.NumberColumn("Year 5", min_value=0.0, max_value=1.0, step=0.05),
+                },
+            )
+            st.session_state["erosion_table"] = erosion_df
+            st.caption("Erosion factors apply post-patent to reflect competitive entry.")
+
+        with st.expander("Milestone-based cash flows", expanded=True):
+            milestone_df = _render_product_assumption_table(
+                session_key="milestone_table",
+                default_factory=_default_milestones_table,
+                blank_row_factory=lambda df: {
+                    "name": f"Asset {len(df) + 1}",
+                    "Label": "Milestone",
+                    "Year offset": 1,
+                    "Amount": 10_000_000,
+                    "Probability": 0.5,
+                },
+                column_config={
+                    "Year offset": st.column_config.NumberColumn("Year offset", min_value=0, max_value=40, step=1),
+                    "Amount": st.column_config.NumberColumn("Amount", min_value=0.0, step=1_000_000.0),
+                    "Probability": st.column_config.NumberColumn("Probability", min_value=0.0, max_value=1.0, step=0.05),
+                },
+            )
+            st.session_state["milestone_table"] = milestone_df
 
         with st.expander("Vaccine market size estimation", expanded=True):
             market_size_df = _render_product_assumption_table(
@@ -2120,14 +2556,27 @@ def main() -> None:
         product_df = _validate_product_df(product_df)
         st.session_state["product_table"] = product_df
 
-        portfolio = _build_portfolio(product_df, model_cfg)
+        stage_df = st.session_state.get("phase_probability_table", pd.DataFrame())
+        erosion_df = st.session_state.get("erosion_table", pd.DataFrame())
+        milestone_df = st.session_state.get("milestone_table", pd.DataFrame())
+
+        portfolio = _build_portfolio(product_df, model_cfg, stage_df, erosion_df, milestone_df)
         if portfolio is None:
             st.info("Add at least one product with a name to run valuations.")
         else:
-            valuation_result = ValuationEngine(portfolio).run()
+            issues = validate_portfolio(portfolio)
+            if issues:
+                st.warning("Validation checks flagged issues:\n- " + "\n- ".join(issues))
+            valuation_result = ValuationEngine(portfolio).run(validate=False)
             st.success(
                 f"Run complete: portfolio rNPV = {valuation_result.rnpv:,.0f} {model_cfg.currency}."
             )
+            with st.expander("Assumption audit trail", expanded=False):
+                audit_df = _build_assumption_audit(model_cfg, product_df)
+                if audit_df.empty:
+                    st.info("No deviations from defaults detected.")
+                else:
+                    st.dataframe(audit_df)
 
     with financial_tab:
         st.subheader("Financial statements")
@@ -2168,16 +2617,57 @@ def main() -> None:
             st.info("Configure and run the model to see dashboard metrics.")
         else:
             cons = valuation_result.consolidated
+            summary = _build_dashboard_summary(cons)
             kpi_cols = st.columns(4)
             kpi_cols[0].metric("Portfolio rNPV", f"{valuation_result.rnpv:,.0f} {model_cfg.currency}")
-            kpi_cols[1].metric("Peak revenue", f"{cons['revenue'].max():,.0f}")
-            avg_margin = cons["ebitda"].sum() / cons["revenue"].sum() if cons["revenue"].sum() else 0.0
-            kpi_cols[2].metric("Avg EBITDA margin", f"{avg_margin:.1%}")
-            kpi_cols[3].metric("Total FCFF after WC", f"{cons['fcff_after_wc'].sum():,.0f}")
+            kpi_cols[1].metric("Peak revenue", f"{summary['peak_sales']:,.0f} ({summary['peak_year']})")
+            kpi_cols[2].metric("Avg EBITDA margin", f"{summary['ebitda_margin']:.1%}")
+            break_even_label = (
+                str(summary["break_even_year"]) if summary["break_even_year"] > 0 else "Not reached"
+            )
+            kpi_cols[3].metric("Break-even year", break_even_label)
 
             chart_data = cons[["revenue", "ebitda", "fcff_after_wc"]]
             st.area_chart(chart_data)
             st.bar_chart(cons["fcff_after_wc"], use_container_width=True)
+
+            with st.expander("Comparable multiples", expanded=True):
+                comps_df = _render_product_assumption_table(
+                    session_key="comps_table",
+                    default_factory=_default_comps_table,
+                    blank_row_factory=lambda df: {
+                        "Company": f"Peer {len(df) + 1}",
+                        "EV/EBITDA": 9.0,
+                        "EV/Sales": 4.0,
+                        "Notes": "",
+                    },
+                    id_column=None,
+                    name_column="Company",
+                )
+                ev_ebitda = pd.to_numeric(comps_df["EV/EBITDA"], errors="coerce").dropna()
+                ev_sales = pd.to_numeric(comps_df["EV/Sales"], errors="coerce").dropna()
+                last_year = cons.index[-1]
+                last_ebitda = cons.loc[last_year, "ebitda"]
+                last_sales = cons.loc[last_year, "revenue"]
+                if not ev_ebitda.empty:
+                    implied_ev_ebitda = last_ebitda * ev_ebitda.median()
+                    st.metric("Median EV/EBITDA multiple", f"{ev_ebitda.median():.1f}x")
+                    st.write(f"Implied EV (EBITDA): {implied_ev_ebitda:,.0f} {model_cfg.currency}")
+                if not ev_sales.empty:
+                    implied_ev_sales = last_sales * ev_sales.median()
+                    st.metric("Median EV/Sales multiple", f"{ev_sales.median():.1f}x")
+                    st.write(f"Implied EV (Sales): {implied_ev_sales:,.0f} {model_cfg.currency}")
+
+            with st.expander("Investor-ready export", expanded=False):
+                audit_df = _build_assumption_audit(model_cfg, st.session_state.get("product_table", pd.DataFrame()))
+                packet = _assemble_investor_packet(model_cfg, valuation_result, audit_df, None)
+                st.download_button(
+                    "Download investor packet (ZIP)",
+                    data=packet,
+                    file_name="investor_packet.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
 
     with analytics_tab:
         st.subheader("Advanced financial analytics")
@@ -2189,6 +2679,14 @@ def main() -> None:
             ratios = _build_ratio_table(cons)
             st.markdown("**Margin & intensity analysis**")
             st.dataframe(ratios.style.format("{:.1%}"))
+
+            with st.expander("Key driver sensitivity (tornado)", expanded=True):
+                sensitivity_df = _build_sensitivity_table(portfolio, base_rnpv)
+                st.dataframe(sensitivity_df.style.format({"rNPV": "{:.0f}", "Delta vs base": "{:+,.0f}"}))
+                st.bar_chart(
+                    sensitivity_df.set_index("Driver")["Delta vs base"],
+                    use_container_width=True,
+                )
 
             with st.expander("Sensitivity & stress testing", expanded=True):
                 sens_cols = st.columns(3)
@@ -2263,17 +2761,19 @@ def main() -> None:
                     st.info("Add probability-weighted products to see segmentation insights.")
 
             with st.expander("Monte Carlo & probabilistic valuation", expanded=False):
-                mc_cols = st.columns(4)
+                mc_cols = st.columns(5)
                 n_sims = mc_cols[0].number_input("Simulations", min_value=100, max_value=5000, value=1000, step=100)
                 rev_sigma = mc_cols[1].number_input("Revenue sigma", min_value=0.01, max_value=0.5, value=0.15, step=0.01)
                 cost_sigma = mc_cols[2].number_input("Cost sigma", min_value=0.01, max_value=0.5, value=0.1, step=0.01)
-                seed = mc_cols[3].number_input("Random seed", min_value=0, value=42)
+                corr = mc_cols[3].number_input("Rev/Cost corr", min_value=-0.9, max_value=0.9, value=0.3, step=0.05)
+                seed = mc_cols[4].number_input("Random seed", min_value=0, value=42)
 
                 if st.button("Run Monte Carlo simulation"):
                     sims = MonteCarloEngine(portfolio).simulate(
                         n_sims=int(n_sims),
                         revenue_sigma=float(rev_sigma),
                         cost_sigma=float(cost_sigma),
+                        corr_rev_cost=float(corr),
                         random_seed=int(seed),
                     )
                     st.session_state["mc_results"] = sims
@@ -2462,17 +2962,61 @@ def main() -> None:
         if portfolio is None:
             st.info("Configure the model in the first tab to enable scenarios.")
         else:
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             rev_mult = col1.slider("Revenue multiplier", 0.25, 2.5, 1.0)
             cost_mult = col2.slider("Cost multiplier", 0.5, 2.0, 1.0)
             dr_shift = col3.slider("Discount rate shift", -0.05, 0.1, 0.0)
             prob_mult = col4.slider("Success prob multiplier", 0.5, 1.5, 1.0)
+            ttm_shift = col5.slider("Launch delay (years)", -2, 5, 0)
+
+            override_map: Dict[str, Dict[str, float | int]] = {}
+            with st.expander("Product-specific overrides", expanded=False):
+                override_df = _render_product_assumption_table(
+                    session_key="scenario_override_table",
+                    default_factory=lambda: pd.DataFrame(
+                        {
+                            "name": [prod.config.name for prod in portfolio.products],
+                            "revenue_multiplier": 1.0,
+                            "cost_multiplier": 1.0,
+                            "success_prob_multiplier": 1.0,
+                            "time_to_market_shift": 0,
+                            "rd_cost_multiplier": 1.0,
+                            "capex_cost_multiplier": 1.0,
+                        }
+                    ),
+                    blank_row_factory=lambda df: {
+                        "name": f"Asset {len(df) + 1}",
+                        "revenue_multiplier": 1.0,
+                        "cost_multiplier": 1.0,
+                        "success_prob_multiplier": 1.0,
+                        "time_to_market_shift": 0,
+                        "rd_cost_multiplier": 1.0,
+                        "capex_cost_multiplier": 1.0,
+                    },
+                    id_column=None,
+                    name_column="name",
+                )
+                override_map = {
+                    row["name"]: {
+                        "revenue_multiplier": float(row.get("revenue_multiplier", 1.0)),
+                        "cost_multiplier": float(row.get("cost_multiplier", 1.0)),
+                        "success_prob_multiplier": float(row.get("success_prob_multiplier", 1.0)),
+                        "time_to_market_shift": int(row.get("time_to_market_shift", 0)),
+                        "rd_cost_multiplier": float(row.get("rd_cost_multiplier", 1.0)),
+                        "capex_cost_multiplier": float(row.get("capex_cost_multiplier", 1.0)),
+                    }
+                    for row in override_df.to_dict("records")
+                    if row.get("name")
+                }
+
             scenario = Scenario(
                 name="Custom scenario",
                 revenue_multiplier=float(rev_mult),
                 cost_multiplier=float(cost_mult),
                 discount_rate_shift=float(dr_shift),
                 success_prob_multiplier=float(prob_mult),
+                time_to_market_shift=int(ttm_shift),
+                product_overrides=override_map,
             )
             scen_results = ScenarioEngine(portfolio).run_scenarios([scenario])
             st.dataframe(
