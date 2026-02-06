@@ -43,6 +43,7 @@ from valuation_codex_package import (
     Portfolio,
     Product,
     ProductConfig,
+    STAGE_SEQUENCE,
     Scenario,
     ScenarioEngine,
     ForecastEngine,
@@ -51,6 +52,7 @@ from valuation_codex_package import (
     ValuationEngine,
     ValuationResult,
     MonteCarloEngine,
+    validate_portfolio,
 )
 
 
@@ -60,6 +62,7 @@ STAGE_OPTIONS = [
     "Phase I",
     "Phase II",
     "Phase III",
+    "Approval",
     "Commercial",
 ]
 
@@ -126,6 +129,95 @@ def _default_products() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _template_library() -> Dict[str, pd.DataFrame]:
+    """Pre-built product templates for quick setup."""
+
+    templates = {
+        "Phase II oncology asset": pd.DataFrame(
+            [
+                {
+                    "name": "Onco-Phase2",
+                    "stage": "Phase II",
+                    "success_prob": 0.35,
+                    "include_in_consolidation": True,
+                    "time_to_market": 4,
+                    "patent_years": 12,
+                    "patent_revenue_target": 250_000_000,
+                    "post_patent_revenue_target": 120_000_000,
+                    "market_growth_patent": 0.03,
+                    "market_growth_post": -0.02,
+                    "cogs_patent": 0.28,
+                    "cogs_post": 0.5,
+                    "labor_pct": 0.12,
+                    "overhead_pct": 0.08,
+                    "material_pct": 0.1,
+                    "sales_marketing_pct": 0.18,
+                    "gna_pct": 0.12,
+                    "rd_remaining_pre_launch": 220_000_000,
+                    "rd_annual_post_launch": 15_000_000,
+                    "capex_remaining_pre_launch": 70_000_000,
+                    "capex_annual_post_launch": 7_500_000,
+                }
+            ]
+        ),
+        "Pre-clinical platform": pd.DataFrame(
+            [
+                {
+                    "name": "Platform-Preclinical",
+                    "stage": "Preclinical",
+                    "success_prob": 0.2,
+                    "include_in_consolidation": True,
+                    "time_to_market": 6,
+                    "patent_years": 15,
+                    "patent_revenue_target": 150_000_000,
+                    "post_patent_revenue_target": 80_000_000,
+                    "market_growth_patent": 0.04,
+                    "market_growth_post": 0.0,
+                    "cogs_patent": 0.3,
+                    "cogs_post": 0.55,
+                    "labor_pct": 0.14,
+                    "overhead_pct": 0.1,
+                    "material_pct": 0.12,
+                    "sales_marketing_pct": 0.16,
+                    "gna_pct": 0.12,
+                    "rd_remaining_pre_launch": 280_000_000,
+                    "rd_annual_post_launch": 10_000_000,
+                    "capex_remaining_pre_launch": 40_000_000,
+                    "capex_annual_post_launch": 5_000_000,
+                }
+            ]
+        ),
+        "Commercial asset": pd.DataFrame(
+            [
+                {
+                    "name": "Commercial-Asset",
+                    "stage": "Commercial",
+                    "success_prob": 1.0,
+                    "include_in_consolidation": True,
+                    "time_to_market": 0,
+                    "patent_years": 8,
+                    "patent_revenue_target": 300_000_000,
+                    "post_patent_revenue_target": 140_000_000,
+                    "market_growth_patent": 0.02,
+                    "market_growth_post": -0.03,
+                    "cogs_patent": 0.25,
+                    "cogs_post": 0.45,
+                    "labor_pct": 0.1,
+                    "overhead_pct": 0.08,
+                    "material_pct": 0.08,
+                    "sales_marketing_pct": 0.14,
+                    "gna_pct": 0.1,
+                    "rd_remaining_pre_launch": 0.0,
+                    "rd_annual_post_launch": 8_000_000,
+                    "capex_remaining_pre_launch": 0.0,
+                    "capex_annual_post_launch": 6_000_000,
+                }
+            ]
+        ),
+    }
+    return templates
+
+
 def _blank_product_row(name: str = "New vaccine") -> Dict:
     """Return a ProductConfig-like dict for initializing new rows."""
 
@@ -149,6 +241,46 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
         capex_annual_post_launch=2_000_000,
     )
     return asdict(cfg)
+
+
+def _build_assumption_audit_table(
+    *,
+    first_year: int,
+    n_years: int,
+    currency: str,
+    tax_rate: float,
+    wc_pct: float,
+    inflation: float,
+    base_fx: str,
+) -> pd.DataFrame:
+    defaults = ModelConfig()
+    baseline = {
+        "First forecast year": defaults.first_year,
+        "Number of years": defaults.n_years,
+        "Currency": defaults.currency,
+        "Tax rate": defaults.tax_rate,
+        "Working capital (% sales)": defaults.working_capital_pct_sales,
+        "Inflation assumption": 0.02,
+        "Reporting FX pair": "USD/EUR",
+    }
+    current = {
+        "First forecast year": first_year,
+        "Number of years": n_years,
+        "Currency": currency,
+        "Tax rate": tax_rate,
+        "Working capital (% sales)": wc_pct,
+        "Inflation assumption": inflation,
+        "Reporting FX pair": base_fx,
+    }
+    rows = []
+    for label, default in baseline.items():
+        value = current[label]
+        source = "default" if value == default else "user"
+        rows.append({"Assumption": label, "Value": value, "Default": default, "Source": source})
+    audit_df = pd.DataFrame(rows)
+    audit_df["Value"] = audit_df["Value"].astype(str)
+    audit_df["Default"] = audit_df["Default"].astype(str)
+    return audit_df
 
 
 def _default_vaccine_sales_table(first_year: int = 2024, horizon_years: int = 5) -> pd.DataFrame:
@@ -1338,6 +1470,7 @@ def _compute_financial_statements(
             "G&A": cons["gna"],
             "Royalty": cons["royalty"],
             "R&D expense": cons["rd_expense_pnl"],
+            "Milestones": cons.get("milestones", pd.Series(0.0, index=years)),
             "EBITDA": cons["ebitda"],
             "EBIT": cons["ebit"],
             "Tax": cons["tax"],
@@ -1682,6 +1815,7 @@ def _evaluate_portfolio_shock(
     cost_multiplier: float = 1.0,
     discount_shift: float = 0.0,
     success_prob_multiplier: float = 1.0,
+    launch_delay_years: int = 0,
 ) -> Optional[ValuationResult]:
     """Run a valuation after applying a Scenario-style shock."""
 
@@ -1693,6 +1827,7 @@ def _evaluate_portfolio_shock(
         cost_multiplier=cost_multiplier,
         discount_rate_shift=discount_shift,
         success_prob_multiplier=success_prob_multiplier,
+        launch_delay_years=launch_delay_years,
     )
     scen_engine = ScenarioEngine(portfolio)
     shocked_portfolio = scen_engine._apply_scenario(scenario)
@@ -4454,9 +4589,22 @@ def main() -> None:
     with config_tab:
         st.subheader("Model assumptions")
 
+        with st.expander("Start here: guided setup", expanded=True):
+            st.markdown(
+                "\n".join(
+                    [
+                        "1. Confirm the pipeline stage taxonomy.",
+                        "2. Set general assumptions (years, tax, working capital).",
+                        "3. Load a template or enter product assumptions.",
+                        "4. Run the model and review dashboard + scenarios.",
+                    ]
+                )
+            )
+            st.caption("Use this checklist to keep inputs consistent and audit-ready.")
+
         with st.expander("Pipeline stage template", expanded=True):
             st.markdown(
-                "**Use Discovery → Preclinical → Phase I → Phase II → Phase III → Approval → Commercial**"
+                f"**Use {' → '.join(STAGE_SEQUENCE)}**"
             )
             st.markdown(
                 "\n".join(
@@ -4490,6 +4638,18 @@ def main() -> None:
                 value=True,
             )
             st.caption("Set the macro baseline for the consolidated forecast and disclosures.")
+
+        with st.expander("Assumption audit", expanded=False):
+            audit_df = _build_assumption_audit_table(
+                first_year=int(first_year),
+                n_years=int(n_years),
+                currency=currency,
+                tax_rate=float(tax_rate),
+                wc_pct=float(wc_pct),
+                inflation=float(inflation),
+                base_fx=base_fx,
+            )
+            st.dataframe(audit_df, hide_index=True)
 
         with st.expander("Forecast assumptions", expanded=True):
             ramp_df = _render_schedule_editor("Sales ramp schedule", "sales_ramp_schedule")
@@ -5346,6 +5506,14 @@ def main() -> None:
                 })
             )
 
+        with st.expander("Template library", expanded=False):
+            templates = _template_library()
+            template_name = st.selectbox("Choose a template", options=list(templates.keys()))
+            if st.button("Load template into product table"):
+                st.session_state["product_table"] = templates[template_name].copy()
+                st.success(f"Loaded template: {template_name}")
+            st.caption("Templates provide starting points for common biotech asset profiles.")
+
         product_df = _render_product_assumption_table(
             session_key="product_table",
             default_factory=_default_products,
@@ -5376,6 +5544,12 @@ def main() -> None:
         if portfolio is None:
             st.info("Add at least one product with a name to run valuations.")
         else:
+            validation_issues = validate_portfolio(portfolio)
+            if validation_issues:
+                st.error("Validation issues detected:")
+                for issue in validation_issues:
+                    st.write(f"- {issue}")
+                st.stop()
             valuation_result = ValuationEngine(portfolio).run()
             st.session_state["model_config"] = model_cfg
             st.session_state["portfolio"] = portfolio
@@ -5476,16 +5650,48 @@ def main() -> None:
         else:
             st.markdown("**Dashboard snapshot**")
             cons = valuation_result.consolidated
-            kpi_cols = st.columns(4)
+            kpi_cols = st.columns(5)
             kpi_cols[0].metric("Portfolio rNPV", f"{valuation_result.rnpv:,.0f} {model_cfg.currency}")
-            kpi_cols[1].metric("Peak revenue", f"{cons['revenue'].max():,.0f}")
+            peak_year = int(cons["revenue"].idxmax())
+            kpi_cols[1].metric("Peak revenue year", f"{peak_year}")
+            kpi_cols[2].metric("Peak revenue", f"{cons['revenue'].max():,.0f}")
             avg_margin = cons["ebitda"].sum() / cons["revenue"].sum() if cons["revenue"].sum() else 0.0
-            kpi_cols[2].metric("Avg EBITDA margin", f"{avg_margin:.1%}")
-            kpi_cols[3].metric("Total FCFF after WC", f"{cons['fcff_after_wc'].sum():,.0f}")
+            kpi_cols[3].metric("Avg EBITDA margin", f"{avg_margin:.1%}")
+            break_even_candidates = cons.index[cons["fcff_after_wc"] > 0]
+            break_even_year = int(break_even_candidates[0]) if len(break_even_candidates) else None
+            kpi_cols[4].metric("Break-even year", f"{break_even_year}" if break_even_year else "N/A")
 
             chart_data = cons[["revenue", "ebitda", "fcff_after_wc"]]
             st.area_chart(chart_data)
             st.bar_chart(cons["fcff_after_wc"], use_container_width=True)
+
+            with st.expander("Comparable multiples (EV/EBITDA or EV/Sales)", expanded=False):
+                comps_df = st.session_state.get(
+                    "comps_table",
+                    pd.DataFrame(
+                        [
+                            {"Peer": "Peer A", "Multiple": 8.0, "Metric": "EV/EBITDA"},
+                            {"Peer": "Peer B", "Multiple": 10.0, "Metric": "EV/EBITDA"},
+                            {"Peer": "Peer C", "Multiple": 12.0, "Metric": "EV/EBITDA"},
+                        ]
+                    ),
+                )
+                comps_df = st.data_editor(comps_df, num_rows="dynamic", key="comps_table_editor")
+                st.session_state["comps_table"] = comps_df
+                valid_mult = pd.to_numeric(comps_df.get("Multiple"), errors="coerce").dropna()
+                if not valid_mult.empty:
+                    min_mult = float(valid_mult.min())
+                    med_mult = float(valid_mult.median())
+                    max_mult = float(valid_mult.max())
+                    last_year = cons.index.max()
+                    base_ebitda = float(cons.loc[last_year, "ebitda"])
+                    st.markdown(
+                        f"Implied EV range (using last-year EBITDA {base_ebitda:,.0f}): "
+                        f"{min_mult * base_ebitda:,.0f} - {max_mult * base_ebitda:,.0f}"
+                    )
+                    st.caption(f"Median multiple: {med_mult:.1f}x")
+                else:
+                    st.info("Add comparable multiples to see implied valuation ranges.")
 
         st.markdown("**Scenario analysis**")
         if portfolio is None:
@@ -5502,25 +5708,27 @@ def main() -> None:
                     cost: float,
                     dr: float,
                     prob: float,
+                    delay: int = 0,
                 ) -> None:
                     st.session_state["scenario_rev_mult"] = rev
                     st.session_state["scenario_cost_mult"] = cost
                     st.session_state["scenario_dr_shift"] = dr
                     st.session_state["scenario_prob_mult"] = prob
+                    st.session_state["scenario_delay"] = delay
 
                 if preset_buttons[0].button("Base", key="scenario_preset_base"):
-                    _apply_preset(rev=1.0, cost=1.0, dr=0.0, prob=1.0)
+                    _apply_preset(rev=1.0, cost=1.0, dr=0.0, prob=1.0, delay=0)
                 if preset_buttons[1].button("Upside", key="scenario_preset_upside"):
-                    _apply_preset(rev=1.2, cost=0.9, dr=-0.01, prob=1.1)
+                    _apply_preset(rev=1.2, cost=0.9, dr=-0.01, prob=1.1, delay=0)
                 if preset_buttons[2].button("Downside", key="scenario_preset_downside"):
-                    _apply_preset(rev=0.8, cost=1.1, dr=0.01, prob=0.9)
+                    _apply_preset(rev=0.8, cost=1.1, dr=0.01, prob=0.9, delay=1)
                 if preset_buttons[3].button("Trial failure", key="scenario_preset_failure"):
-                    _apply_preset(rev=0.6, cost=1.3, dr=0.03, prob=0.75)
+                    _apply_preset(rev=0.6, cost=1.3, dr=0.03, prob=0.75, delay=2)
 
             with name_col:
                 scenario_name = st.text_input("Scenario name", value="Custom scenario", key="scenario_name")
 
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             rev_mult = col1.slider(
                 "Revenue multiplier",
                 0.25,
@@ -5549,12 +5757,20 @@ def main() -> None:
                 st.session_state.get("scenario_prob_mult", 1.0),
                 key="scenario_prob_mult",
             )
+            launch_delay = col5.slider(
+                "Launch delay (years)",
+                0,
+                5,
+                int(st.session_state.get("scenario_delay", 0)),
+                key="scenario_delay",
+            )
             scenario = Scenario(
                 name=scenario_name or "Custom scenario",
                 revenue_multiplier=float(rev_mult),
                 cost_multiplier=float(cost_mult),
                 discount_rate_shift=float(dr_shift),
                 success_prob_multiplier=float(prob_mult),
+                launch_delay_years=int(launch_delay),
             )
             scen_results = ScenarioEngine(portfolio).run_scenarios([scenario])
 
@@ -5564,6 +5780,7 @@ def main() -> None:
                 cost_multiplier=float(cost_mult),
                 discount_shift=float(dr_shift),
                 success_prob_multiplier=float(prob_mult),
+                launch_delay_years=int(launch_delay),
             )
             if scenario_result is not None and valuation_result is not None:
                 base_cons = valuation_result.consolidated
