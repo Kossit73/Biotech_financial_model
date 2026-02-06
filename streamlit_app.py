@@ -1657,6 +1657,9 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         return pd.DataFrame()
 
     revenue_df = st.session_state.get("vaccine_revenue_table", pd.DataFrame()).copy()
+    for col in ["ID_vaccine", "Vaccine name"]:
+        if col not in revenue_df.columns:
+            revenue_df[col] = dev_df.get(col, pd.Series(dtype=str))
     if "Patent revenue target (USD)" not in revenue_df.columns:
         revenue_df["Patent revenue target (USD)"] = _coerce_numeric(
             revenue_df.get("Patent customers per year", pd.Series(dtype=float))
@@ -1667,6 +1670,9 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         ) * _coerce_numeric(revenue_df.get("Post patent price (USD/customer)", pd.Series(dtype=float)))
 
     cost_df = st.session_state.get("vaccine_cost_table", pd.DataFrame()).copy()
+    for col in ["ID_vaccine", "Vaccine name"]:
+        if col not in cost_df.columns:
+            cost_df[col] = dev_df.get(col, pd.Series(dtype=str))
     gna_cols = [
         "Indirect staff cost (USD)",
         "Electricity (USD)",
@@ -1687,12 +1693,18 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         )
 
     rd_df = st.session_state.get("vaccine_rd_table", pd.DataFrame()).copy()
+    for col in ["ID_vaccine", "Vaccine name"]:
+        if col not in rd_df.columns:
+            rd_df[col] = dev_df.get(col, pd.Series(dtype=str))
     if "Pre-GTM total (USD)" not in rd_df.columns:
         rd_df["Pre-GTM total (USD)"] = _coerce_numeric(
             rd_df.get("Pre-GTM spent to date (USD)", pd.Series(dtype=float))
         ) + _coerce_numeric(rd_df.get("Pre-GTM remaining (USD)", pd.Series(dtype=float)))
 
     capex_df = st.session_state.get("vaccine_capex_table", pd.DataFrame()).copy()
+    for col in ["ID_vaccine", "Vaccine name"]:
+        if col not in capex_df.columns:
+            capex_df[col] = dev_df.get(col, pd.Series(dtype=str))
     capex_pre_cols = [
         "Manufacturing & Scale-up Assets (Pre-GTM, USD)",
         "Quality & Compliance Infrastructure (Pre-GTM, USD)",
