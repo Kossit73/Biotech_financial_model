@@ -5385,78 +5385,89 @@ def main() -> None:
                     "stage_schedule_mapping",
                     _default_stage_schedule_mapping,
                 )
-                previous_mapping = mapping_df.copy()
-                mapping_df = st.data_editor(
-                    mapping_df,
-                    num_rows="fixed",
-                    hide_index=True,
-                    key="stage_schedule_mapping_editor",
-                    column_config={
-                        "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
-                        "Success Probability %": st.column_config.NumberColumn(
-                            "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
-                        ),
-                        "Time to market (years)": st.column_config.NumberColumn(
-                            "Time to market (years)", min_value=0, step=1
-                        ),
-                        "Sales ramp length (years)": st.column_config.NumberColumn(
-                            "Sales ramp length (years)", min_value=0, step=1
-                        ),
-                        "Ramp shape": st.column_config.SelectboxColumn(
-                            "Ramp shape", options=RAMP_SHAPE_OPTIONS
-                        ),
-                        "R&D remaining pre-launch (USD)": st.column_config.NumberColumn(
-                            "R&D remaining pre-launch (USD)", step=1_000_000.0
-                        ),
-                        "R&D annual post-launch (USD/year)": st.column_config.NumberColumn(
-                            "R&D annual post-launch (USD/year)", step=1_000_000.0
-                        ),
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0, step=1
-                            )
-                            for col in STAGE_DURATION_COLUMNS
+                if "stage_mapping_edit" not in st.session_state:
+                    st.session_state["stage_mapping_edit"] = False
+                if st.session_state["stage_mapping_edit"]:
+                    if st.button("Done", key="stage_mapping_done_btn"):
+                        st.session_state["stage_mapping_edit"] = False
+                else:
+                    if st.button("Edit", key="stage_mapping_edit_btn"):
+                        st.session_state["stage_mapping_edit"] = True
+                if st.session_state["stage_mapping_edit"]:
+                    previous_mapping = mapping_df.copy()
+                    mapping_df = st.data_editor(
+                        mapping_df,
+                        num_rows="fixed",
+                        hide_index=True,
+                        key="stage_schedule_mapping_editor",
+                        column_config={
+                            "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
+                            "Success Probability %": st.column_config.NumberColumn(
+                                "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
+                            ),
+                            "Time to market (years)": st.column_config.NumberColumn(
+                                "Time to market (years)", min_value=0, step=1
+                            ),
+                            "Sales ramp length (years)": st.column_config.NumberColumn(
+                                "Sales ramp length (years)", min_value=0, step=1
+                            ),
+                            "Ramp shape": st.column_config.SelectboxColumn(
+                                "Ramp shape", options=RAMP_SHAPE_OPTIONS
+                            ),
+                            "R&D remaining pre-launch (USD)": st.column_config.NumberColumn(
+                                "R&D remaining pre-launch (USD)", step=1_000_000.0
+                            ),
+                            "R&D annual post-launch (USD/year)": st.column_config.NumberColumn(
+                                "R&D annual post-launch (USD/year)", step=1_000_000.0
+                            ),
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0, step=1
+                                )
+                                for col in STAGE_DURATION_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_COST_WEIGHT_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_CAPEX_WEIGHT_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_TRANSITION_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_TRANSITION_ANNUAL_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, step=1_000_000.0
+                                )
+                                for col in STAGE_MILESTONE_COLUMNS
+                            },
                         },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0.0, max_value=100.0, step=1.0
-                            )
-                            for col in STAGE_COST_WEIGHT_COLUMNS
-                        },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0.0, max_value=100.0, step=1.0
-                            )
-                            for col in STAGE_CAPEX_WEIGHT_COLUMNS
-                        },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0.0, max_value=100.0, step=1.0
-                            )
-                            for col in STAGE_TRANSITION_COLUMNS
-                        },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0.0, max_value=100.0, step=1.0
-                            )
-                            for col in STAGE_TRANSITION_ANNUAL_COLUMNS
-                        },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, step=1_000_000.0
-                            )
-                            for col in STAGE_MILESTONE_COLUMNS
-                        },
-                    },
-                )
-                if not mapping_df.equals(previous_mapping):
-                    st.session_state["stage_mapping_audit_log"].append(
-                        {
-                            "timestamp": pd.Timestamp.utcnow().isoformat(),
-                            "updated_by": audit_owner,
-                            "note": "Stage mapping updated",
-                        }
                     )
+                    if not mapping_df.equals(previous_mapping):
+                        st.session_state["stage_mapping_audit_log"].append(
+                            {
+                                "timestamp": pd.Timestamp.utcnow().isoformat(),
+                                "updated_by": audit_owner,
+                                "note": "Stage mapping updated",
+                            }
+                        )
+                else:
+                    st.dataframe(mapping_df, use_container_width=True, hide_index=True)
                 st.session_state["stage_schedule_mapping"] = mapping_df
                 with st.expander("Mapping audit trail", expanded=False):
                     audit_log = st.session_state.get("stage_mapping_audit_log", [])
