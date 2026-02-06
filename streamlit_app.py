@@ -4806,6 +4806,25 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             image = chart_images.get(image_key)
             if not image:
                 return
+            try:
+                if isinstance(image, (bytes, bytearray)):
+                    image = BytesIO(image)
+                elif hasattr(image, "getvalue"):
+                    try:
+                        image_bytes = image.getvalue()
+                    except ValueError:
+                        image.seek(0)
+                        image_bytes = image.read()
+                    image = BytesIO(image_bytes)
+                elif hasattr(image, "save"):
+                    buffer = BytesIO()
+                    image.save(buffer, format="PNG")
+                    buffer.seek(0)
+                    image = buffer
+                elif hasattr(image, "seek"):
+                    image.seek(0)
+            except Exception:
+                return
             if y_position <= 180:
                 pdf_canvas.showPage()
                 _reset_page(portrait_size)
