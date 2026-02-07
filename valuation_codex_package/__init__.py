@@ -3,6 +3,8 @@
 from .core import (
     ModelConfig,
     ProductConfig,
+    Milestone,
+    STAGE_SEQUENCE,
     Product,
     Portfolio,
     ValuationEngine,
@@ -14,11 +16,15 @@ from .core import (
     MonteCarloEngine,
     ForecastEngine,
     ForecastScenarioBridge,
+    validate_product_config,
+    validate_portfolio,
 )
 
 __all__ = [
     "ModelConfig",
     "ProductConfig",
+    "Milestone",
+    "STAGE_SEQUENCE",
     "Product",
     "Portfolio",
     "ValuationEngine",
@@ -30,4 +36,6 @@ __all__ = [
     "MonteCarloEngine",
     "ForecastEngine",
     "ForecastScenarioBridge",
+    "validate_product_config",
+    "validate_portfolio",
 ]

@@ -43,14 +43,17 @@ from valuation_codex_package import (
     Portfolio,
     Product,
     ProductConfig,
+    STAGE_SEQUENCE,
     Scenario,
     ScenarioEngine,
     ForecastEngine,
+    Milestone,
     VCInputs,
     VCValuator,
     ValuationEngine,
     ValuationResult,
     MonteCarloEngine,
+    validate_portfolio,
 )
 
 
@@ -60,7 +63,65 @@ STAGE_OPTIONS = [
     "Phase I",
     "Phase II",
     "Phase III",
+    "Approval",
     "Commercial",
+]
+
+STAGE_TRANSITION_COLUMNS = [
+    "Discovery->Preclinical",
+    "Preclinical->Phase I",
+    "Phase I->Phase II",
+    "Phase II->Phase III",
+    "Phase III->Approval",
+    "Approval->Commercial",
+]
+
+STAGE_DURATION_COLUMNS = [
+    "Discovery duration (years)",
+    "Preclinical duration (years)",
+    "Phase I duration (years)",
+    "Phase II duration (years)",
+    "Phase III duration (years)",
+    "Approval duration (years)",
+    "Commercial duration (years)",
+]
+
+STAGE_TRANSITION_ANNUAL_COLUMNS = [
+    "Discovery->Preclinical annual success %",
+    "Preclinical->Phase I annual success %",
+    "Phase I->Phase II annual success %",
+    "Phase II->Phase III annual success %",
+    "Phase III->Approval annual success %",
+    "Approval->Commercial annual success %",
+]
+
+RAMP_SHAPE_OPTIONS = ["Linear", "S-curve", "Step"]
+
+STAGE_COST_WEIGHT_COLUMNS = [
+    "Discovery R&D weight %",
+    "Preclinical R&D weight %",
+    "Phase I R&D weight %",
+    "Phase II R&D weight %",
+    "Phase III R&D weight %",
+    "Approval R&D weight %",
+]
+
+STAGE_CAPEX_WEIGHT_COLUMNS = [
+    "Discovery CAPEX weight %",
+    "Preclinical CAPEX weight %",
+    "Phase I CAPEX weight %",
+    "Phase II CAPEX weight %",
+    "Phase III CAPEX weight %",
+    "Approval CAPEX weight %",
+]
+
+STAGE_MILESTONE_COLUMNS = [
+    "Discovery completion milestone (USD)",
+    "Preclinical completion milestone (USD)",
+    "Phase I completion milestone (USD)",
+    "Phase II completion milestone (USD)",
+    "Phase III completion milestone (USD)",
+    "Approval completion milestone (USD)",
 ]
 
 SELECTOR_OPTIONS = [
@@ -80,6 +141,8 @@ def _default_products() -> pd.DataFrame:
             "name": "AgSeed-101",
             "stage": "Phase II",
             "success_prob": 0.35,
+            "sales_ramp_length": 5,
+            "sales_ramp_shape": "Linear",
             "include_in_consolidation": True,
             "time_to_market": 4,
             "patent_years": 15,
@@ -103,6 +166,8 @@ def _default_products() -> pd.DataFrame:
             "name": "BioYield-Plus",
             "stage": "Phase III",
             "success_prob": 0.55,
+            "sales_ramp_length": 5,
+            "sales_ramp_shape": "Linear",
             "include_in_consolidation": True,
             "time_to_market": 2,
             "patent_years": 17,
@@ -124,6 +189,95 @@ def _default_products() -> pd.DataFrame:
         },
     ]
     return pd.DataFrame(data)
+
+
+def _template_library() -> Dict[str, pd.DataFrame]:
+    """Pre-built product templates for quick setup."""
+
+    templates = {
+        "Phase II oncology asset": pd.DataFrame(
+            [
+                {
+                    "name": "Onco-Phase2",
+                    "stage": "Phase II",
+                    "success_prob": 0.35,
+                    "include_in_consolidation": True,
+                    "time_to_market": 4,
+                    "patent_years": 12,
+                    "patent_revenue_target": 250_000_000,
+                    "post_patent_revenue_target": 120_000_000,
+                    "market_growth_patent": 0.03,
+                    "market_growth_post": -0.02,
+                    "cogs_patent": 0.28,
+                    "cogs_post": 0.5,
+                    "labor_pct": 0.12,
+                    "overhead_pct": 0.08,
+                    "material_pct": 0.1,
+                    "sales_marketing_pct": 0.18,
+                    "gna_pct": 0.12,
+                    "rd_remaining_pre_launch": 220_000_000,
+                    "rd_annual_post_launch": 15_000_000,
+                    "capex_remaining_pre_launch": 70_000_000,
+                    "capex_annual_post_launch": 7_500_000,
+                }
+            ]
+        ),
+        "Pre-clinical platform": pd.DataFrame(
+            [
+                {
+                    "name": "Platform-Preclinical",
+                    "stage": "Preclinical",
+                    "success_prob": 0.2,
+                    "include_in_consolidation": True,
+                    "time_to_market": 6,
+                    "patent_years": 15,
+                    "patent_revenue_target": 150_000_000,
+                    "post_patent_revenue_target": 80_000_000,
+                    "market_growth_patent": 0.04,
+                    "market_growth_post": 0.0,
+                    "cogs_patent": 0.3,
+                    "cogs_post": 0.55,
+                    "labor_pct": 0.14,
+                    "overhead_pct": 0.1,
+                    "material_pct": 0.12,
+                    "sales_marketing_pct": 0.16,
+                    "gna_pct": 0.12,
+                    "rd_remaining_pre_launch": 280_000_000,
+                    "rd_annual_post_launch": 10_000_000,
+                    "capex_remaining_pre_launch": 40_000_000,
+                    "capex_annual_post_launch": 5_000_000,
+                }
+            ]
+        ),
+        "Commercial asset": pd.DataFrame(
+            [
+                {
+                    "name": "Commercial-Asset",
+                    "stage": "Commercial",
+                    "success_prob": 1.0,
+                    "include_in_consolidation": True,
+                    "time_to_market": 0,
+                    "patent_years": 8,
+                    "patent_revenue_target": 300_000_000,
+                    "post_patent_revenue_target": 140_000_000,
+                    "market_growth_patent": 0.02,
+                    "market_growth_post": -0.03,
+                    "cogs_patent": 0.25,
+                    "cogs_post": 0.45,
+                    "labor_pct": 0.1,
+                    "overhead_pct": 0.08,
+                    "material_pct": 0.08,
+                    "sales_marketing_pct": 0.14,
+                    "gna_pct": 0.1,
+                    "rd_remaining_pre_launch": 0.0,
+                    "rd_annual_post_launch": 8_000_000,
+                    "capex_remaining_pre_launch": 0.0,
+                    "capex_annual_post_launch": 6_000_000,
+                }
+            ]
+        ),
+    }
+    return templates
 
 
 def _blank_product_row(name: str = "New vaccine") -> Dict:
@@ -882,23 +1036,162 @@ def _render_row_selector(
     return selected
 
 
+def _render_yearly_increment_helper(
+    *,
+    section_key: str,
+    df: pd.DataFrame,
+    year_column: str,
+    target_columns: List[str],
+    filter_builder: Callable[[pd.DataFrame, Optional[str], int], pd.Series],
+    id_column: Optional[str] = None,
+    id_label: str = "ID",
+    start_year_label: str = "Start year",
+    start_year_default: int = 0,
+    periods_default: int = 5,
+    increment_default: float = 1.0,
+    allow_compound: bool = True,
+    create_missing_rows: bool = False,
+    base_value_mode: str = "first_row",
+    start_value_default: float = 0.0,
+) -> pd.DataFrame:
+    st.markdown("**Yearly Increment Helper**")
+    st.caption(
+        "Apply a fixed change or % growth from a start year onward. "
+        "'Increment per year' is the step size (or growth rate when compounding). "
+        "'Years to apply' controls how many consecutive rows are updated."
+    )
+    if df.empty:
+        st.caption("Add rows to apply increments.")
+        return df
+    if year_column not in df.columns:
+        st.caption(f"Missing '{year_column}' column.")
+        return df
+
+    selected_id: Optional[str] = None
+    if id_column and id_column in df.columns:
+        id_values = df[id_column].dropna().astype(str).unique().tolist()
+        if not id_values:
+            st.caption(f"Add {id_label} values to use the helper.")
+            return df
+        selected_id = st.selectbox(
+            id_label,
+            options=id_values,
+            key=f"{section_key}_inc_id",
+        )
+
+    available_cols = [col for col in target_columns if col in df.columns]
+    if not available_cols:
+        st.caption("No target columns available.")
+        return df
+
+    target_col = st.selectbox(
+        "Column",
+        options=available_cols,
+        key=f"{section_key}_inc_col",
+    )
+    start_year = st.number_input(
+        start_year_label,
+        value=int(start_year_default),
+        step=1,
+        key=f"{section_key}_inc_start",
+    )
+    years = st.number_input(
+        "Years to apply",
+        min_value=1,
+        max_value=50,
+        value=int(periods_default),
+        key=f"{section_key}_inc_years",
+    )
+    increment = st.number_input(
+        "Increment per year",
+        value=float(increment_default),
+        step=0.1,
+        key=f"{section_key}_inc_value",
+    )
+    compound = False
+    if allow_compound:
+        compound = st.checkbox(
+            "Compound annually (apply % growth)",
+            value=False,
+            key=f"{section_key}_inc_compound",
+        )
+
+    base_value = None
+    if base_value_mode == "input":
+        base_value = st.number_input(
+            "Starting value",
+            value=float(start_value_default),
+            step=0.1,
+            key=f"{section_key}_inc_start_value",
+        )
+
+    if st.button("Apply increment", key=f"{section_key}_inc_apply", use_container_width=True):
+        df = df.copy()
+        mask = filter_builder(df, selected_id, int(start_year))
+        subset = df.loc[mask, [year_column, target_col]].copy()
+        subset[year_column] = pd.to_numeric(subset[year_column], errors="coerce")
+        subset[target_col] = pd.to_numeric(subset[target_col], errors="coerce").fillna(0.0)
+        subset = subset.dropna(subset=[year_column]).sort_values(year_column)
+
+        if subset.empty and not create_missing_rows:
+            st.warning("No matching rows found for the selected filters.")
+            return df
+
+        if base_value_mode != "input":
+            base_value = float(subset[target_col].iloc[0]) if not subset.empty else 0.0
+
+        if create_missing_rows:
+            existing_years = (
+                pd.to_numeric(df[year_column], errors="coerce")
+                .fillna(-1)
+                .astype(int)
+                .tolist()
+            )
+            for offset in range(int(years)):
+                year_value = int(start_year + offset)
+                if year_value not in existing_years:
+                    new_row = {col: np.nan for col in df.columns}
+                    new_row[year_column] = year_value
+                    if id_column and selected_id is not None:
+                        new_row[id_column] = selected_id
+                    df.loc[len(df)] = new_row
+            mask = filter_builder(df, selected_id, int(start_year))
+            subset = df.loc[mask, [year_column, target_col]].copy()
+            subset[year_column] = pd.to_numeric(subset[year_column], errors="coerce")
+            subset = subset.dropna(subset=[year_column]).sort_values(year_column)
+
+        for i, year_value in enumerate(subset[year_column].iloc[: int(years)]):
+            if compound:
+                value = float(base_value) * ((1 + increment) ** i)
+            else:
+                value = float(base_value) + increment * i
+            row_mask = df[year_column].astype(int) == int(year_value)
+            if id_column and selected_id is not None:
+                row_mask &= df[id_column].astype(str) == str(selected_id)
+            df.loc[row_mask, target_col] = value
+
+        st.session_state[section_key] = df
+        st.success("Increment applied")
+
+    return st.session_state.get(section_key, df)
+
+
 def _apply_yearly_increment(
     section_key: str,
     df: pd.DataFrame,
     selected_idx: Optional[int],
 ) -> pd.DataFrame:
-    st.markdown("**Yearly Increment Helper**")
-    st.caption(
-        "Apply a fixed change or % growth from the selected row onward. "
-        "'Increment per year' is the step size (or growth rate when compounding). "
-        "'Years to apply' controls how many consecutive rows are updated."
-    )
-    if df.empty or selected_idx is None:
+    if df.empty or selected_idx is None or selected_idx not in df.index:
         st.caption("Select a row to apply increments.")
         return df
-    if selected_idx not in df.index:
-        st.caption("Selected row is no longer available.")
-        return df
+
+    temp_col = "__row_index__"
+    df = df.copy()
+    df[temp_col] = np.arange(len(df))
+    start_pos = int(df.at[selected_idx, temp_col])
+
+    def _filter(df: pd.DataFrame, _selected_id: Optional[str], start_year: int) -> pd.Series:
+        return df[temp_col] >= int(start_year)
 
     numeric_cols = [
         col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])
@@ -907,50 +1200,23 @@ def _apply_yearly_increment(
         st.caption("No numeric columns available.")
         return df
 
-    target_col = st.selectbox(
-        "Column",
-        options=numeric_cols,
-        key=f"{section_key}_inc_col",
+    updated = _render_yearly_increment_helper(
+        section_key=section_key,
+        df=df,
+        year_column=temp_col,
+        target_columns=numeric_cols,
+        filter_builder=_filter,
+        start_year_label="Start row",
+        start_year_default=start_pos,
+        periods_default=1,
+        increment_default=1.0,
+        allow_compound=True,
+        create_missing_rows=False,
+        base_value_mode="first_row",
     )
-    compound = st.checkbox(
-        "Compound annually (apply % growth)",
-        value=False,
-        key=f"{section_key}_inc_compound",
-    )
-    increment = st.number_input(
-        "Increment per year",
-        value=1.0,
-        step=0.1,
-        key=f"{section_key}_inc_value",
-    )
-    years = st.number_input(
-        "Years to apply",
-        min_value=1,
-        max_value=50,
-        value=1,
-        key=f"{section_key}_inc_years",
-    )
-
-    base_value = df.at[selected_idx, target_col]
-    if pd.isna(base_value):
-        base_value = 0.0
-    st.caption(f"Current value: {base_value:,.2f}")
-
-    if st.button("Apply increment", key=f"{section_key}_inc_apply", use_container_width=True):
-        start_pos = df.index.get_loc(selected_idx)
-        for offset in range(int(years)):
-            row_pos = start_pos + offset
-            if row_pos >= len(df.index):
-                break
-            row_idx = df.index[row_pos]
-            if compound:
-                next_value = float(base_value) * ((1 + increment) ** offset)
-            else:
-                next_value = float(base_value) + increment * offset
-            df.at[row_idx, target_col] = next_value
-        st.session_state[section_key] = df
-        st.success("Increment applied")
-    return st.session_state.get(section_key, df)
+    updated = updated.drop(columns=[temp_col], errors="ignore")
+    st.session_state[section_key] = updated
+    return updated
 
 
 def _widget_value(label: str, value, key: str):
@@ -1154,6 +1420,512 @@ def _default_ramp_schedule() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _default_stage_schedule_mapping() -> pd.DataFrame:
+    """Default mapping from pipeline stage to schedule assumptions."""
+
+    data = [
+        {
+            "Stage": "Discovery",
+            "Success Probability %": 10.0,
+            "Time to market (years)": 7,
+            "Sales ramp length (years)": 5,
+            "Ramp shape": "Linear",
+            "R&D remaining pre-launch (USD)": 300_000_000,
+            "R&D annual post-launch (USD/year)": 15_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
+            "Discovery->Preclinical": 60.0,
+            "Preclinical->Phase I": 70.0,
+            "Phase I->Phase II": 65.0,
+            "Phase II->Phase III": 55.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 60.0,
+            "Preclinical->Phase I annual success %": 70.0,
+            "Phase I->Phase II annual success %": 65.0,
+            "Phase II->Phase III annual success %": 55.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
+        },
+        {
+            "Stage": "Preclinical",
+            "Success Probability %": 20.0,
+            "Time to market (years)": 6,
+            "Sales ramp length (years)": 5,
+            "Ramp shape": "Linear",
+            "R&D remaining pre-launch (USD)": 250_000_000,
+            "R&D annual post-launch (USD/year)": 12_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 70.0,
+            "Phase I->Phase II": 65.0,
+            "Phase II->Phase III": 55.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 70.0,
+            "Phase I->Phase II annual success %": 65.0,
+            "Phase II->Phase III annual success %": 55.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
+        },
+        {
+            "Stage": "Phase I",
+            "Success Probability %": 35.0,
+            "Time to market (years)": 5,
+            "Sales ramp length (years)": 4,
+            "Ramp shape": "Linear",
+            "R&D remaining pre-launch (USD)": 200_000_000,
+            "R&D annual post-launch (USD/year)": 10_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 65.0,
+            "Phase II->Phase III": 55.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 65.0,
+            "Phase II->Phase III annual success %": 55.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
+        },
+        {
+            "Stage": "Phase II",
+            "Success Probability %": 45.0,
+            "Time to market (years)": 4,
+            "Sales ramp length (years)": 4,
+            "Ramp shape": "Linear",
+            "R&D remaining pre-launch (USD)": 150_000_000,
+            "R&D annual post-launch (USD/year)": 9_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 100.0,
+            "Phase II->Phase III": 55.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 100.0,
+            "Phase II->Phase III annual success %": 55.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
+        },
+        {
+            "Stage": "Phase III",
+            "Success Probability %": 60.0,
+            "Time to market (years)": 3,
+            "Sales ramp length (years)": 3,
+            "Ramp shape": "Linear",
+            "R&D remaining pre-launch (USD)": 100_000_000,
+            "R&D annual post-launch (USD/year)": 8_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 100.0,
+            "Phase II->Phase III": 100.0,
+            "Phase III->Approval": 65.0,
+            "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 100.0,
+            "Phase II->Phase III annual success %": 100.0,
+            "Phase III->Approval annual success %": 65.0,
+            "Approval->Commercial annual success %": 100.0,
+        },
+        {
+            "Stage": "Approval",
+            "Success Probability %": 80.0,
+            "Time to market (years)": 1,
+            "Sales ramp length (years)": 2,
+            "Ramp shape": "Linear",
+            "R&D remaining pre-launch (USD)": 50_000_000,
+            "R&D annual post-launch (USD/year)": 6_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 100.0,
+            "Phase II->Phase III": 100.0,
+            "Phase III->Approval": 100.0,
+            "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 100.0,
+            "Phase II->Phase III annual success %": 100.0,
+            "Phase III->Approval annual success %": 100.0,
+            "Approval->Commercial annual success %": 100.0,
+        },
+        {
+            "Stage": "Commercial",
+            "Success Probability %": 100.0,
+            "Time to market (years)": 0,
+            "Sales ramp length (years)": 1,
+            "Ramp shape": "Step",
+            "R&D remaining pre-launch (USD)": 0.0,
+            "R&D annual post-launch (USD/year)": 5_000_000,
+            "Discovery duration (years)": 1,
+            "Preclinical duration (years)": 1,
+            "Phase I duration (years)": 1,
+            "Phase II duration (years)": 2,
+            "Phase III duration (years)": 1,
+            "Approval duration (years)": 1,
+            "Commercial duration (years)": 0,
+            "Discovery R&D weight %": 10.0,
+            "Preclinical R&D weight %": 15.0,
+            "Phase I R&D weight %": 15.0,
+            "Phase II R&D weight %": 25.0,
+            "Phase III R&D weight %": 25.0,
+            "Approval R&D weight %": 10.0,
+            "Discovery CAPEX weight %": 5.0,
+            "Preclinical CAPEX weight %": 10.0,
+            "Phase I CAPEX weight %": 10.0,
+            "Phase II CAPEX weight %": 25.0,
+            "Phase III CAPEX weight %": 35.0,
+            "Approval CAPEX weight %": 15.0,
+            "Discovery completion milestone (USD)": 0.0,
+            "Preclinical completion milestone (USD)": 0.0,
+            "Phase I completion milestone (USD)": 5_000_000,
+            "Phase II completion milestone (USD)": 15_000_000,
+            "Phase III completion milestone (USD)": 25_000_000,
+            "Approval completion milestone (USD)": 30_000_000,
+            "Discovery->Preclinical": 100.0,
+            "Preclinical->Phase I": 100.0,
+            "Phase I->Phase II": 100.0,
+            "Phase II->Phase III": 100.0,
+            "Phase III->Approval": 100.0,
+            "Approval->Commercial": 100.0,
+            "Discovery->Preclinical annual success %": 100.0,
+            "Preclinical->Phase I annual success %": 100.0,
+            "Phase I->Phase II annual success %": 100.0,
+            "Phase II->Phase III annual success %": 100.0,
+            "Phase III->Approval annual success %": 100.0,
+            "Approval->Commercial annual success %": 100.0,
+        },
+    ]
+    return pd.DataFrame(data)
+
+
+def _stage_duration_years_from_row(row: pd.Series) -> Dict[str, int]:
+    durations: Dict[str, int] = {}
+    for col in STAGE_DURATION_COLUMNS:
+        if col not in row:
+            continue
+        stage = col.replace(" duration (years)", "")
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        durations[stage] = max(0, int(value))
+    return durations
+
+
+def _stage_cost_weights_from_row(row: pd.Series) -> Dict[str, float]:
+    weights: Dict[str, float] = {}
+    for col in STAGE_COST_WEIGHT_COLUMNS:
+        if col not in row:
+            continue
+        stage = col.replace(" R&D weight %", "")
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        weight = float(value)
+        if weight > 1.0:
+            weight = weight / 100.0
+        weights[stage] = max(0.0, weight)
+    return weights
+
+
+def _stage_capex_weights_from_row(row: pd.Series) -> Dict[str, float]:
+    weights: Dict[str, float] = {}
+    for col in STAGE_CAPEX_WEIGHT_COLUMNS:
+        if col not in row:
+            continue
+        stage = col.replace(" CAPEX weight %", "")
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        weight = float(value)
+        if weight > 1.0:
+            weight = weight / 100.0
+        weights[stage] = max(0.0, weight)
+    return weights
+
+
+def _compute_time_to_market_from_durations(stage: str, durations: Dict[str, int]) -> Optional[int]:
+    if stage not in STAGE_SEQUENCE or not durations:
+        return None
+    stage_idx = STAGE_SEQUENCE.index(stage)
+    total = 0
+    for idx in range(stage_idx, len(STAGE_SEQUENCE) - 1):
+        from_stage = STAGE_SEQUENCE[idx]
+        total += int(durations.get(from_stage, 0))
+    return total if total > 0 else 0
+
+
+def _stage_mapping_row(mapping_df: pd.DataFrame, stage: str) -> Optional[pd.Series]:
+    if mapping_df is None or mapping_df.empty or not stage:
+        return None
+    if "Stage" not in mapping_df.columns:
+        return None
+    matches = mapping_df[mapping_df["Stage"].astype(str) == str(stage)]
+    if matches.empty:
+        return None
+    return matches.iloc[0]
+
+
+def _stage_transition_probabilities_from_row(row: pd.Series) -> Dict[str, float]:
+    transitions: Dict[str, float] = {}
+    for col in STAGE_TRANSITION_COLUMNS:
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        prob = float(value)
+        if prob > 1.0:
+            prob = prob / 100.0
+        transitions[col] = max(0.0, min(1.0, prob))
+    return transitions
+
+
+def _stage_transition_curve_from_row(
+    row: pd.Series,
+    durations: Dict[str, int],
+) -> Dict[str, List[float]]:
+    curves: Dict[str, List[float]] = {}
+    for col in STAGE_TRANSITION_ANNUAL_COLUMNS:
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        transition = col.replace(" annual success %", "")
+        from_stage = transition.split("->")[0]
+        duration = int(durations.get(from_stage, 0))
+        if duration <= 0:
+            continue
+        prob = float(value)
+        if prob > 1.0:
+            prob = prob / 100.0
+        prob = max(0.0, min(1.0, prob))
+        curves[transition] = [prob] * duration
+    return curves
+
+
+def _stage_milestones_from_row(
+    row: pd.Series,
+    durations: Dict[str, int],
+    transitions: Dict[str, float],
+) -> List[Milestone]:
+    milestones: List[Milestone] = []
+    if not durations:
+        return milestones
+    cumulative_years = 0
+    for stage in STAGE_SEQUENCE:
+        duration = int(durations.get(stage, 0))
+        cumulative_years += duration
+        col = f"{stage} completion milestone (USD)"
+        if col not in row:
+            continue
+        amount = row.get(col)
+        if pd.isna(amount) or float(amount) == 0.0:
+            continue
+        transition_key = None
+        if stage != "Commercial":
+            next_idx = STAGE_SEQUENCE.index(stage) + 1
+            if next_idx < len(STAGE_SEQUENCE):
+                transition_key = f"{stage}->{STAGE_SEQUENCE[next_idx]}"
+        probability = transitions.get(transition_key, 1.0) if transition_key else 1.0
+        milestone = Milestone(
+            name=f"{stage} completion milestone",
+            year_offset=cumulative_years,
+            amount=float(amount),
+            probability=float(probability),
+            timing="from_start",
+        )
+        milestones.append(milestone)
+    return milestones
+
+
+def _apply_stage_schedule_defaults(
+    df: pd.DataFrame,
+    mapping_df: pd.DataFrame,
+    *,
+    stage_column: str,
+    overwrite: bool,
+) -> pd.DataFrame:
+    if df.empty or mapping_df is None or mapping_df.empty or stage_column not in df.columns:
+        return df
+    updated = df.copy()
+    for idx, row in updated.iterrows():
+        stage = row.get(stage_column)
+        mapping_row = _stage_mapping_row(mapping_df, stage)
+        if mapping_row is None:
+            continue
+        durations = _stage_duration_years_from_row(mapping_row)
+        derived_time_to_market = _compute_time_to_market_from_durations(stage, durations)
+        defaults = {
+            "success_prob": mapping_row.get("Success Probability %"),
+            "time_to_market": derived_time_to_market
+            if derived_time_to_market is not None
+            else mapping_row.get("Time to market (years)"),
+            "sales_ramp_length": mapping_row.get("Sales ramp length (years)"),
+            "sales_ramp_shape": mapping_row.get("Ramp shape"),
+            "rd_remaining_pre_launch": mapping_row.get("R&D remaining pre-launch (USD)"),
+            "rd_annual_post_launch": mapping_row.get("R&D annual post-launch (USD/year)"),
+        }
+        for col, value in defaults.items():
+            if pd.isna(value):
+                continue
+            existing = row.get(col)
+            if overwrite or pd.isna(existing) or existing in (None, ""):
+                if col == "success_prob" and value > 1.0:
+                    updated.at[idx, col] = float(value) / 100.0
+                else:
+                    updated.at[idx, col] = value
+    return updated
+
+
 def _default_debt_schedule(first_year: int, n_years: int) -> pd.DataFrame:
     years = list(range(int(first_year), int(first_year) + int(n_years)))
     return pd.DataFrame(
@@ -1218,33 +1990,25 @@ def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
 
     with toolbar_cols[3]:
         with st.expander("Yearly Increment Helper"):
-            st.caption(
-                "Seed a ramp schedule from a starting point. 'Increment per year' is a fixed step, "
-                "and 'Number of periods' controls how many rows are generated."
+            def _filter(df: pd.DataFrame, _selected_id: Optional[str], start_year: int) -> pd.Series:
+                return pd.to_numeric(df["Year offset"], errors="coerce").fillna(0).astype(int) >= int(start_year)
+
+            schedule_df = _render_yearly_increment_helper(
+                section_key=session_key,
+                df=schedule_df,
+                year_column="Year offset",
+                target_columns=["Ramp factor"],
+                filter_builder=_filter,
+                start_year_label="Start year offset",
+                start_year_default=0,
+                periods_default=5,
+                increment_default=0.2,
+                allow_compound=False,
+                create_missing_rows=True,
+                base_value_mode="input",
+                start_value_default=0.2,
             )
-            start_year = st.number_input(
-                "Start year offset", min_value=0, value=0, key=f"{session_key}_start"
-            )
-            start_value = st.number_input(
-                "Starting value", min_value=0.0, value=0.2, step=0.05, key=f"{session_key}_value"
-            )
-            increment = st.number_input(
-                "Increment per year", value=0.2, step=0.05, key=f"{session_key}_increment"
-            )
-            n_periods = st.number_input(
-                "Number of periods", min_value=1, max_value=40, value=5, key=f"{session_key}_periods"
-            )
-            if st.button("Apply helper", key=f"{session_key}_apply"):
-                rows = []
-                for i in range(int(n_periods)):
-                    rows.append(
-                        {
-                            "Year offset": int(start_year + i),
-                            "Ramp factor": float(start_value + increment * i),
-                        }
-                    )
-                schedule_df = pd.DataFrame(rows)
-                st.session_state[session_key] = schedule_df
+            st.session_state[session_key] = schedule_df
 
     edited_df = st.data_editor(
         schedule_df,
@@ -1263,6 +2027,18 @@ def _validate_product_df(df: pd.DataFrame) -> pd.DataFrame:
     if "success_prob" in validated.columns:
         validated["success_prob"] = (
             validated["success_prob"].fillna(0.0).clip(0.0, 1.0)
+        )
+    if "time_to_market" in validated.columns:
+        validated["time_to_market"] = (
+            pd.to_numeric(validated["time_to_market"], errors="coerce")
+            .fillna(0.0)
+            .clip(lower=0.0)
+        )
+    if "sales_ramp_length" in validated.columns:
+        validated["sales_ramp_length"] = (
+            pd.to_numeric(validated["sales_ramp_length"], errors="coerce")
+            .fillna(0.0)
+            .clip(lower=0.0)
         )
 
     percent_cols = [
@@ -1293,7 +2069,11 @@ def _validate_product_df(df: pd.DataFrame) -> pd.DataFrame:
     return validated
 
 
-def _sanitize_product_records(df: pd.DataFrame) -> List[Dict]:
+def _sanitize_product_records(
+    df: pd.DataFrame,
+    stage_mapping: Optional[pd.DataFrame] = None,
+    overwrite_defaults: bool = False,
+) -> List[Dict]:
     records: List[Dict] = []
     cfg_fields = {f.name for f in fields(ProductConfig)}
     for raw in df.to_dict("records"):
@@ -1309,12 +2089,70 @@ def _sanitize_product_records(df: pd.DataFrame) -> List[Dict]:
         cleaned.setdefault("stage", "Unspecified")
         cleaned.setdefault("success_prob", 0.5)
         cleaned.setdefault("include_in_consolidation", True)
+        mapping_row = _stage_mapping_row(stage_mapping, cleaned.get("stage"))
+        if mapping_row is not None:
+            durations = _stage_duration_years_from_row(mapping_row)
+            cost_weights = _stage_cost_weights_from_row(mapping_row)
+            capex_weights = _stage_capex_weights_from_row(mapping_row)
+            if overwrite_defaults or "success_prob" not in cleaned:
+                mapped_prob = mapping_row.get("Success Probability %")
+                if pd.notna(mapped_prob):
+                    mapped_prob = float(mapped_prob)
+                    if mapped_prob > 1.0:
+                        mapped_prob = mapped_prob / 100.0
+                    cleaned["success_prob"] = mapped_prob
+            if overwrite_defaults or "time_to_market" not in cleaned:
+                mapped_time = _compute_time_to_market_from_durations(cleaned.get("stage"), durations)
+                if mapped_time is None:
+                    mapped_time = mapping_row.get("Time to market (years)")
+                if pd.notna(mapped_time):
+                    cleaned["time_to_market"] = mapped_time
+            if overwrite_defaults or "sales_ramp_length" not in cleaned:
+                mapped_ramp = mapping_row.get("Sales ramp length (years)")
+                if pd.notna(mapped_ramp):
+                    cleaned["sales_ramp_length"] = mapped_ramp
+            if overwrite_defaults or "sales_ramp_shape" not in cleaned:
+                mapped_shape = mapping_row.get("Ramp shape")
+                if pd.notna(mapped_shape):
+                    cleaned["sales_ramp_shape"] = mapped_shape
+            if overwrite_defaults or "rd_remaining_pre_launch" not in cleaned:
+                mapped_rd = mapping_row.get("R&D remaining pre-launch (USD)")
+                if pd.notna(mapped_rd):
+                    cleaned["rd_remaining_pre_launch"] = mapped_rd
+            if overwrite_defaults or "rd_annual_post_launch" not in cleaned:
+                mapped_rd_annual = mapping_row.get("R&D annual post-launch (USD/year)")
+                if pd.notna(mapped_rd_annual):
+                    cleaned["rd_annual_post_launch"] = mapped_rd_annual
+            if durations:
+                cleaned["stage_duration_years"] = durations
+            if cost_weights:
+                cleaned["stage_cost_weights"] = cost_weights
+            if capex_weights:
+                cleaned["stage_capex_weights"] = capex_weights
+            transition_curve = _stage_transition_curve_from_row(mapping_row, durations)
+            if transition_curve:
+                cleaned["stage_transition_curve"] = transition_curve
+            transitions = _stage_transition_probabilities_from_row(mapping_row)
+            if transitions:
+                cleaned["stage_transition_probabilities"] = transitions
+            milestones = _stage_milestones_from_row(mapping_row, durations, transitions)
+            if milestones:
+                cleaned["milestones"] = [asdict(milestone) for milestone in milestones]
         records.append(cleaned)
     return records
 
 
-def _build_portfolio(product_df: pd.DataFrame, model_cfg: ModelConfig) -> Portfolio | None:
-    product_records = _sanitize_product_records(product_df)
+def _build_portfolio(
+    product_df: pd.DataFrame,
+    model_cfg: ModelConfig,
+    stage_mapping: Optional[pd.DataFrame] = None,
+    overwrite_defaults: bool = False,
+) -> Portfolio | None:
+    product_records = _sanitize_product_records(
+        product_df,
+        stage_mapping=stage_mapping,
+        overwrite_defaults=overwrite_defaults,
+    )
     if not product_records:
         return None
     products = [Product(ProductConfig(**record), model_cfg) for record in product_records]
@@ -1338,6 +2176,7 @@ def _compute_financial_statements(
             "G&A": cons["gna"],
             "Royalty": cons["royalty"],
             "R&D expense": cons["rd_expense_pnl"],
+            "Milestones": cons.get("milestones", pd.Series(0.0, index=years)),
             "EBITDA": cons["ebitda"],
             "EBIT": cons["ebit"],
             "Tax": cons["tax"],
@@ -1460,6 +2299,9 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         return pd.DataFrame()
 
     revenue_df = st.session_state.get("vaccine_revenue_table", pd.DataFrame()).copy()
+    for col in ["ID_vaccine", "Vaccine name"]:
+        if col not in revenue_df.columns:
+            revenue_df[col] = dev_df.get(col, pd.Series(dtype=str))
     if "Patent revenue target (USD)" not in revenue_df.columns:
         revenue_df["Patent revenue target (USD)"] = _coerce_numeric(
             revenue_df.get("Patent customers per year", pd.Series(dtype=float))
@@ -1470,6 +2312,9 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         ) * _coerce_numeric(revenue_df.get("Post patent price (USD/customer)", pd.Series(dtype=float)))
 
     cost_df = st.session_state.get("vaccine_cost_table", pd.DataFrame()).copy()
+    for col in ["ID_vaccine", "Vaccine name"]:
+        if col not in cost_df.columns:
+            cost_df[col] = dev_df.get(col, pd.Series(dtype=str))
     gna_cols = [
         "Indirect staff cost (USD)",
         "Electricity (USD)",
@@ -1477,7 +2322,11 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         "Interest & amortization (USD)",
     ]
     if "G&A total (USD)" not in cost_df.columns:
-        cost_df["G&A total (USD)"] = cost_df[gna_cols].sum(axis=1)
+        available_gna = [col for col in gna_cols if col in cost_df.columns]
+        if available_gna:
+            cost_df["G&A total (USD)"] = cost_df[available_gna].sum(axis=1)
+        else:
+            cost_df["G&A total (USD)"] = 0.0
     if "Patent operating cost %" not in cost_df.columns:
         cost_df["Patent operating cost %"] = (
             _coerce_numeric(cost_df.get("COGS patent % of sales", pd.Series(dtype=float)))
@@ -1486,12 +2335,18 @@ def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.Dat
         )
 
     rd_df = st.session_state.get("vaccine_rd_table", pd.DataFrame()).copy()
+    for col in ["ID_vaccine", "Vaccine name"]:
+        if col not in rd_df.columns:
+            rd_df[col] = dev_df.get(col, pd.Series(dtype=str))
     if "Pre-GTM total (USD)" not in rd_df.columns:
         rd_df["Pre-GTM total (USD)"] = _coerce_numeric(
             rd_df.get("Pre-GTM spent to date (USD)", pd.Series(dtype=float))
         ) + _coerce_numeric(rd_df.get("Pre-GTM remaining (USD)", pd.Series(dtype=float)))
 
     capex_df = st.session_state.get("vaccine_capex_table", pd.DataFrame()).copy()
+    for col in ["ID_vaccine", "Vaccine name"]:
+        if col not in capex_df.columns:
+            capex_df[col] = dev_df.get(col, pd.Series(dtype=str))
     capex_pre_cols = [
         "Manufacturing & Scale-up Assets (Pre-GTM, USD)",
         "Quality & Compliance Infrastructure (Pre-GTM, USD)",
@@ -1682,6 +2537,8 @@ def _evaluate_portfolio_shock(
     cost_multiplier: float = 1.0,
     discount_shift: float = 0.0,
     success_prob_multiplier: float = 1.0,
+    launch_delay_years: int = 0,
+    stage_slippage_years: Optional[Dict[str, int]] = None,
 ) -> Optional[ValuationResult]:
     """Run a valuation after applying a Scenario-style shock."""
 
@@ -1693,6 +2550,8 @@ def _evaluate_portfolio_shock(
         cost_multiplier=cost_multiplier,
         discount_rate_shift=discount_shift,
         success_prob_multiplier=success_prob_multiplier,
+        launch_delay_years=launch_delay_years,
+        stage_slippage_years=stage_slippage_years or {},
     )
     scen_engine = ScenarioEngine(portfolio)
     shocked_portfolio = scen_engine._apply_scenario(scenario)
@@ -1962,7 +2821,7 @@ def _real_options_value(val_result, volatility: float = 0.35, years: int = 3) ->
         return None
     underlying = max(val_result.rnpv, 0.0)
     strike = val_result.consolidated["rd_cash"].abs().sum() / years if years else 1.0
-    if strike <= 0:
+    if underlying <= 0 or strike <= 0 or volatility <= 0 or years <= 0:
         return None
     # Black-Scholes call option approximation on project deferral
     from math import log, sqrt
@@ -3494,11 +4353,23 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     def _safe_add_picture(document, image: Any) -> None:
         if image is None:
             return
-        if hasattr(image, "getvalue"):
-            image = BytesIO(image.getvalue())
-        elif hasattr(image, "seek"):
-            image.seek(0)
         try:
+            if isinstance(image, (bytes, bytearray)):
+                image = BytesIO(image)
+            elif hasattr(image, "getvalue"):
+                try:
+                    image_bytes = image.getvalue()
+                except ValueError:
+                    image.seek(0)
+                    image_bytes = image.read()
+                image = BytesIO(image_bytes)
+            elif hasattr(image, "save"):
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                buffer.seek(0)
+                image = buffer
+            elif hasattr(image, "seek"):
+                image.seek(0)
             document.add_picture(image)
         except Exception:
             return
@@ -3934,6 +4805,25 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             nonlocal y_position
             image = chart_images.get(image_key)
             if not image:
+                return
+            try:
+                if isinstance(image, (bytes, bytearray)):
+                    image = BytesIO(image)
+                elif hasattr(image, "getvalue"):
+                    try:
+                        image_bytes = image.getvalue()
+                    except ValueError:
+                        image.seek(0)
+                        image_bytes = image.read()
+                    image = BytesIO(image_bytes)
+                elif hasattr(image, "save"):
+                    buffer = BytesIO()
+                    image.save(buffer, format="PNG")
+                    buffer.seek(0)
+                    image = buffer
+                elif hasattr(image, "seek"):
+                    image.seek(0)
+            except Exception:
                 return
             if y_position <= 180:
                 pdf_canvas.showPage()
@@ -4452,918 +5342,1094 @@ def main() -> None:
     )
 
     with config_tab:
-        st.subheader("Model assumptions")
+        with st.expander("Model assumptions", expanded=True):
 
-        with st.expander("General assumptions", expanded=True):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                first_year = st.number_input("First forecast year", value=2024)
-                n_years = st.number_input("Number of years", min_value=5, max_value=40, value=25)
-                currency = st.text_input("Currency", value="USD")
-            with col2:
-                tax_rate = st.slider("Tax rate", min_value=0.0, max_value=0.35, value=0.25)
-                wc_pct = st.slider("Working capital (% sales)", 0.0, 0.3, 0.08)
-            with col3:
-                inflation = st.number_input("Inflation assumption", value=0.02, min_value=0.0, max_value=0.25, step=0.005)
-                base_fx = st.text_input("Reporting FX pair", value="USD/EUR")
-            auto_sync_vaccine_sales = st.checkbox(
-                "Rebuild Vaccine Sales table when assumptions change",
-                value=True,
-            )
-            st.caption("Set the macro baseline for the consolidated forecast and disclosures.")
-
-        with st.expander("Forecast assumptions", expanded=True):
-            ramp_df = _render_schedule_editor("Sales ramp schedule", "sales_ramp_schedule")
-            ramp_df = ramp_df.sort_values("Year offset")
-            if ramp_df.empty:
-                st.warning("Ramp schedule empty. Reverting to default values.")
-                ramp = _default_ramp_schedule()["Ramp factor"].tolist()
-            else:
-                ramp = ramp_df["Ramp factor"].astype(float).tolist()
-            st.caption("Ramp factors feed revenue build-ups across every product.")
-
-        with st.expander("Vaccine sales"):
-            assumptions_changed = (
-                st.session_state.get("vaccine_sales_first_year") != int(first_year)
-                or st.session_state.get("vaccine_sales_n_years") != int(n_years)
-            )
-            if auto_sync_vaccine_sales and assumptions_changed:
-                st.session_state["vaccine_sales_table"] = _default_vaccine_sales_table(
-                    int(first_year),
-                    int(n_years),
+            with st.expander("Start here: guided setup", expanded=True):
+                st.markdown(
+                    "\n".join(
+                        [
+                            "1. Confirm the pipeline stage taxonomy.",
+                            "2. Set general assumptions (years, tax, working capital).",
+                            "3. Load a template or enter product assumptions.",
+                            "4. Run the model and review dashboard + scenarios.",
+                        ]
+                    )
                 )
-            st.session_state["vaccine_sales_first_year"] = int(first_year)
-            st.session_state["vaccine_sales_n_years"] = int(n_years)
-            vaccine_df = _render_product_assumption_table(
-                session_key="vaccine_sales_table",
-                default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
-                blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
-                id_column=None,
-                name_column="Vaccine name",
-                column_config={
-                    "ID_vaccine": st.column_config.TextColumn("ID", help="Vaccine ID"),
-                    "Vaccine name": st.column_config.TextColumn("Vaccine name"),
-                    "Year": st.column_config.NumberColumn("Year", step=1),
-                    "Doses (M)": st.column_config.NumberColumn("Doses (M)", min_value=0.0, step=0.5),
-                    "Price per dose": st.column_config.NumberColumn(
-                        "Price per dose", min_value=0.0, step=1.0
-                    ),
-                },
-            )
-            vaccine_df = _recompute_vaccine_sales_implied_revenue(vaccine_df)
-            st.session_state["vaccine_sales_table"] = vaccine_df
-            with st.expander("Yearly Increment Helper", expanded=False):
+                st.caption("Use this checklist to keep inputs consistent and audit-ready.")
+
+            with st.expander("Pipeline stage templates", expanded=True):
+                st.markdown(f"**Use {' → '.join(STAGE_SEQUENCE)}**")
+                selected_stage = st.selectbox(
+                    "Select a stage template to apply",
+                    options=STAGE_SEQUENCE,
+                    key="pipeline_stage_template_select",
+                )
+                st.markdown("**Selected template**")
+                st.markdown(f"- {selected_stage}")
+                st.caption("Select a stage to align asset setup and scenario inputs.")
+                stage_index = STAGE_SEQUENCE.index(selected_stage)
+                show_discovery = stage_index == 0
+                show_preclinical = stage_index == 1
+                show_phase_i = stage_index == 2
+                show_phase_ii = stage_index == 3
+                show_phase_iii = stage_index == 4
+                show_approval = stage_index == 5
+                show_commercial = stage_index == 6
+                show_precommercial = stage_index <= 4
+                show_approval_or_later = stage_index >= 5
+                show_forecast_ramp = show_discovery or show_approval_or_later
+                show_vaccine_sales = show_commercial
+                show_uses_sources = show_precommercial or show_approval
+                show_relevant_market_sizes = stage_index in {1, 2, 3, 4}
+                show_market_size_estimation = show_approval_or_later
+                show_revenue_estimation = show_approval_or_later
+                show_cost_assumptions = show_approval_or_later
+                show_royalties = show_approval_or_later
+                show_market_share = show_approval_or_later
+                show_rd = show_precommercial
+                show_capex = True
+
+            with st.expander("Stage-to-schedule mapping", expanded=False):
                 st.caption(
-                    "Apply a fixed step or % growth to a vaccine's yearly doses/price. "
-                    "'Increment per year' is the step size (or growth rate when compounding). "
-                    "'Number of years' controls how many matching rows are updated from the start year."
+                    "Define default schedule assumptions per stage. These defaults can automatically "
+                    "populate product assumptions when the stage changes. Stage durations are used to "
+                    "derive time-to-market and to build annual transition probability curves."
                 )
-                if {"ID_vaccine", "Year"}.issubset(vaccine_df.columns):
-                    vaccine_ids = (
-                        vaccine_df["ID_vaccine"].dropna().astype(str).unique().tolist()
-                    )
-                    selected_id = st.selectbox(
-                        "Vaccine ID",
-                        options=vaccine_ids,
-                        key="vaccine_sales_inc_id",
-                    )
-                    target_col = st.selectbox(
-                        "Column",
-                        options=["Doses (M)", "Price per dose"],
-                        key="vaccine_sales_inc_col",
-                    )
-                    start_year = st.number_input(
-                        "Start year",
-                        value=int(first_year),
-                        step=1,
-                        key="vaccine_sales_inc_start_year",
-                    )
-                    periods = st.number_input(
-                        "Number of years",
-                        min_value=1,
-                        max_value=50,
-                        value=5,
-                        step=1,
-                        key="vaccine_sales_inc_periods",
-                    )
-                    increment = st.number_input(
-                        "Increment per year",
-                        value=1.0,
-                        step=0.1,
-                        key="vaccine_sales_inc_value",
-                    )
-                    use_compound = st.checkbox(
-                        "Compound annually (apply % growth)",
-                        value=False,
-                        key="vaccine_sales_inc_compound",
-                    )
-                    if st.button(
-                        "Apply increment",
-                        key="vaccine_sales_inc_apply",
-                        use_container_width=True,
-                    ):
-                        df = st.session_state.get("vaccine_sales_table", vaccine_df).copy()
-                        mask = (df["ID_vaccine"].astype(str) == str(selected_id)) & (
-                            pd.to_numeric(df["Year"], errors="coerce")
-                            >= int(start_year)
-                        )
-                        if mask.any():
-                            subset = df.loc[mask, ["Year", target_col]].copy()
-                            subset["Year"] = (
-                                pd.to_numeric(subset["Year"], errors="coerce")
-                                .fillna(int(start_year))
-                                .astype(int)
-                            )
-                            subset[target_col] = pd.to_numeric(
-                                subset[target_col], errors="coerce"
-                            ).fillna(0.0)
-                            subset = subset.sort_values("Year")
-                            if subset.empty:
-                                st.warning("No matching rows found for the selected vaccine/year range.")
-                                st.stop()
-                            base_value = float(subset[target_col].iloc[0])
-                            for i, year in enumerate(subset["Year"].iloc[: int(periods)]):
-                                if use_compound:
-                                    value = float(base_value) * ((1 + increment) ** i)
-                                else:
-                                    value = float(base_value) + increment * i
-                                df.loc[
-                                    (df["ID_vaccine"].astype(str) == str(selected_id))
-                                    & (df["Year"] == year),
-                                    target_col,
-                                ] = value
-                            df = _recompute_vaccine_sales_implied_revenue(df)
-                            st.session_state["vaccine_sales_table"] = df
-                            vaccine_df = df
-                            st.success("Increment applied to selected vaccine/year range.")
-                        else:
-                            st.warning("No matching rows found for the selected vaccine/year range.")
+                audit_owner = st.text_input(
+                    "Mapping updated by",
+                    value=st.session_state.get("stage_mapping_audit_owner", "Finance"),
+                    key="stage_mapping_audit_owner",
+                )
+                if "stage_mapping_audit_log" not in st.session_state:
+                    st.session_state["stage_mapping_audit_log"] = []
+                auto_apply_defaults = st.checkbox(
+                    "Auto-apply stage defaults to product assumptions",
+                    value=st.session_state.get("stage_mapping_auto_apply", True),
+                    key="stage_mapping_auto_apply",
+                )
+                overwrite_defaults = st.checkbox(
+                    "Override existing values when applying defaults",
+                    value=st.session_state.get("stage_mapping_overwrite", False),
+                    key="stage_mapping_overwrite",
+                )
+                mapping_df = _ensure_table_state(
+                    "stage_schedule_mapping",
+                    _default_stage_schedule_mapping,
+                )
+                if "stage_mapping_edit" not in st.session_state:
+                    st.session_state["stage_mapping_edit"] = False
+                if st.session_state["stage_mapping_edit"]:
+                    if st.button("Done", key="stage_mapping_done_btn"):
+                        st.session_state["stage_mapping_edit"] = False
                 else:
-                    st.caption("Add vaccine IDs and years to use the helper.")
-            sync_sales_to_revenue = st.checkbox(
-                "Sync vaccine sales to revenue estimation",
-                value=True,
-                key="sync_vaccine_sales_to_revenue",
-            )
-            if sync_sales_to_revenue and not vaccine_df.empty:
-                revenue_table = st.session_state.get(
-                    "vaccine_revenue_table",
-                    _default_vaccine_revenue_table(),
-                ).copy()
-                if {
-                    "Patent customers per year",
-                    "Patent price (USD/customer)",
-                    "ID_vaccine",
-                }.issubset(revenue_table.columns):
-                    price_series = _coerce_numeric(
-                        revenue_table["Patent price (USD/customer)"], 0.0
-                    ).replace(0, np.nan)
-                    revenue_table["ID_vaccine"] = revenue_table["ID_vaccine"].astype(str)
-                    sales_by_vaccine = (
-                        vaccine_df.groupby("ID_vaccine")["Implied revenue"].mean().to_dict()
+                    if st.button("Edit", key="stage_mapping_edit_btn"):
+                        st.session_state["stage_mapping_edit"] = True
+                if st.session_state["stage_mapping_edit"]:
+                    previous_mapping = mapping_df.copy()
+                    mapping_df = st.data_editor(
+                        mapping_df,
+                        num_rows="fixed",
+                        hide_index=True,
+                        key="stage_schedule_mapping_editor",
+                        column_config={
+                            "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
+                            "Success Probability %": st.column_config.NumberColumn(
+                                "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
+                            ),
+                            "Time to market (years)": st.column_config.NumberColumn(
+                                "Time to market (years)", min_value=0, step=1
+                            ),
+                            "Sales ramp length (years)": st.column_config.NumberColumn(
+                                "Sales ramp length (years)", min_value=0, step=1
+                            ),
+                            "Ramp shape": st.column_config.SelectboxColumn(
+                                "Ramp shape", options=RAMP_SHAPE_OPTIONS
+                            ),
+                            "R&D remaining pre-launch (USD)": st.column_config.NumberColumn(
+                                "R&D remaining pre-launch (USD)", step=1_000_000.0
+                            ),
+                            "R&D annual post-launch (USD/year)": st.column_config.NumberColumn(
+                                "R&D annual post-launch (USD/year)", step=1_000_000.0
+                            ),
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0, step=1
+                                )
+                                for col in STAGE_DURATION_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_COST_WEIGHT_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_CAPEX_WEIGHT_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_TRANSITION_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_TRANSITION_ANNUAL_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, step=1_000_000.0
+                                )
+                                for col in STAGE_MILESTONE_COLUMNS
+                            },
+                        },
                     )
-                    desired_targets = revenue_table["ID_vaccine"].map(sales_by_vaccine)
-                    if "Vaccine name" in vaccine_df.columns and "Vaccine name" in revenue_table.columns:
-                        sales_by_name = (
-                            vaccine_df.groupby("Vaccine name")["Implied revenue"].mean().to_dict()
+                    if not mapping_df.equals(previous_mapping):
+                        st.session_state["stage_mapping_audit_log"].append(
+                            {
+                                "timestamp": pd.Timestamp.utcnow().isoformat(),
+                                "updated_by": audit_owner,
+                                "note": "Stage mapping updated",
+                            }
                         )
-                        name_targets = revenue_table["Vaccine name"].map(sales_by_name)
-                        desired_targets = desired_targets.fillna(name_targets)
-                    desired_targets = desired_targets.fillna(0.0)
-                    revenue_table["Patent customers per year"] = (
-                        desired_targets / price_series
-                    ).fillna(0.0)
-                    st.session_state["vaccine_revenue_table"] = revenue_table
-            st.metric(f"{int(n_years)}-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
-            base_products = st.session_state.get("product_table", _default_products())
-            st.session_state["product_table"] = _sync_vaccine_sales_products(
-                base_products,
-                vaccine_df,
-            )
+                else:
+                    st.dataframe(mapping_df, use_container_width=True, hide_index=True)
+                st.session_state["stage_schedule_mapping"] = mapping_df
+                with st.expander("Mapping audit trail", expanded=False):
+                    audit_log = st.session_state.get("stage_mapping_audit_log", [])
+                    if audit_log:
+                        st.dataframe(pd.DataFrame(audit_log), use_container_width=True)
+                    else:
+                        st.caption("No mapping changes recorded yet.")
 
-        with st.expander("Uses and sources of funds"):
+            with st.expander("General assumptions", expanded=True):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    first_year = st.number_input("First forecast year", value=2024)
+                    n_years = st.number_input("Number of years", min_value=5, max_value=40, value=25)
+                    currency = st.text_input("Currency", value="USD")
+                with col2:
+                    tax_rate = st.slider("Tax rate", min_value=0.0, max_value=0.35, value=0.25)
+                    wc_pct = st.slider("Working capital (% sales)", 0.0, 0.3, 0.08)
+                with col3:
+                    inflation = st.number_input("Inflation assumption", value=0.02, min_value=0.0, max_value=0.25, step=0.005)
+                    base_fx = st.text_input("Reporting FX pair", value="USD/EUR")
+                auto_sync_vaccine_sales = st.checkbox(
+                    "Rebuild Vaccine Sales table when assumptions change",
+                    value=True,
+                )
+                st.caption("Set the macro baseline for the consolidated forecast and disclosures.")
+
+            if show_forecast_ramp:
+                with st.expander("Forecast assumptions", expanded=True):
+                    ramp_df = _render_schedule_editor("Sales ramp schedule", "sales_ramp_schedule")
+                    ramp_df = ramp_df.sort_values("Year offset")
+                    if ramp_df.empty:
+                        st.warning("Ramp schedule empty. Reverting to default values.")
+                        ramp = _default_ramp_schedule()["Ramp factor"].tolist()
+                    else:
+                        ramp = ramp_df["Ramp factor"].astype(float).tolist()
+                    st.caption("Ramp factors feed revenue build-ups across every product.")
+            else:
+                ramp = _default_ramp_schedule()["Ramp factor"].tolist()
+
+            if show_vaccine_sales:
+                with st.expander("Vaccine sales"):
+                    assumptions_changed = (
+                        st.session_state.get("vaccine_sales_first_year") != int(first_year)
+                        or st.session_state.get("vaccine_sales_n_years") != int(n_years)
+                    )
+                    if auto_sync_vaccine_sales and assumptions_changed:
+                        st.session_state["vaccine_sales_table"] = _default_vaccine_sales_table(
+                            int(first_year),
+                            int(n_years),
+                        )
+                    st.session_state["vaccine_sales_first_year"] = int(first_year)
+                    st.session_state["vaccine_sales_n_years"] = int(n_years)
+                    vaccine_df = _render_product_assumption_table(
+                        session_key="vaccine_sales_table",
+                        default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
+                        blank_row_factory=lambda df: _blank_vaccine_sales_row(df, int(first_year)),
+                        id_column=None,
+                        name_column="Vaccine name",
+                        column_config={
+                            "ID_vaccine": st.column_config.TextColumn("ID", help="Vaccine ID"),
+                            "Vaccine name": st.column_config.TextColumn("Vaccine name"),
+                            "Year": st.column_config.NumberColumn("Year", step=1),
+                            "Doses (M)": st.column_config.NumberColumn("Doses (M)", min_value=0.0, step=0.5),
+                            "Price per dose": st.column_config.NumberColumn(
+                                "Price per dose", min_value=0.0, step=1.0
+                            ),
+                        },
+                    )
+                    vaccine_df = _recompute_vaccine_sales_implied_revenue(vaccine_df)
+                    st.session_state["vaccine_sales_table"] = vaccine_df
+                    with st.expander("Yearly Increment Helper", expanded=False):
+                        def _filter(df: pd.DataFrame, selected_id: Optional[str], start_year: int) -> pd.Series:
+                            if selected_id is None:
+                                return pd.Series([False] * len(df), index=df.index)
+                            year_values = pd.to_numeric(df["Year"], errors="coerce").fillna(0).astype(int)
+                            return (df["ID_vaccine"].astype(str) == str(selected_id)) & (year_values >= int(start_year))
+
+                        if {"ID_vaccine", "Year"}.issubset(vaccine_df.columns):
+                            vaccine_df = _render_yearly_increment_helper(
+                                section_key="vaccine_sales",
+                                df=vaccine_df,
+                                year_column="Year",
+                                target_columns=["Doses (M)", "Price per dose"],
+                                filter_builder=_filter,
+                                id_column="ID_vaccine",
+                                id_label="Vaccine ID",
+                                start_year_label="Start year",
+                                start_year_default=int(first_year),
+                                periods_default=5,
+                                increment_default=1.0,
+                                allow_compound=True,
+                                create_missing_rows=False,
+                                base_value_mode="first_row",
+                            )
+                            vaccine_df = _recompute_vaccine_sales_implied_revenue(vaccine_df)
+                            st.session_state["vaccine_sales_table"] = vaccine_df
+                        else:
+                            st.caption("Add vaccine IDs and years to use the helper.")
+                    sync_sales_to_revenue = st.checkbox(
+                        "Sync vaccine sales to revenue estimation",
+                        value=True,
+                        key="sync_vaccine_sales_to_revenue",
+                    )
+                    if sync_sales_to_revenue and not vaccine_df.empty:
+                        revenue_table = st.session_state.get(
+                            "vaccine_revenue_table",
+                            _default_vaccine_revenue_table(),
+                        ).copy()
+                        if {
+                            "Patent customers per year",
+                            "Patent price (USD/customer)",
+                            "ID_vaccine",
+                        }.issubset(revenue_table.columns):
+                            price_series = _coerce_numeric(
+                                revenue_table["Patent price (USD/customer)"], 0.0
+                            ).replace(0, np.nan)
+                            revenue_table["ID_vaccine"] = revenue_table["ID_vaccine"].astype(str)
+                            sales_by_vaccine = (
+                                vaccine_df.groupby("ID_vaccine")["Implied revenue"].mean().to_dict()
+                            )
+                            desired_targets = revenue_table["ID_vaccine"].map(sales_by_vaccine)
+                            if "Vaccine name" in vaccine_df.columns and "Vaccine name" in revenue_table.columns:
+                                sales_by_name = (
+                                    vaccine_df.groupby("Vaccine name")["Implied revenue"].mean().to_dict()
+                                )
+                                name_targets = revenue_table["Vaccine name"].map(sales_by_name)
+                                desired_targets = desired_targets.fillna(name_targets)
+                            desired_targets = desired_targets.fillna(0.0)
+                            revenue_table["Patent customers per year"] = (
+                                desired_targets / price_series
+                            ).fillna(0.0)
+                            st.session_state["vaccine_revenue_table"] = revenue_table
+                    st.metric(f"{int(n_years)}-year vaccine sales", f"{vaccine_df['Implied revenue'].sum():,.0f}")
+                    base_products = st.session_state.get("product_table", _default_products())
+                    st.session_state["product_table"] = _sync_vaccine_sales_products(
+                        base_products,
+                        vaccine_df,
+                    )
+
             funding_required = float(st.session_state.get("funding_required", 250_000_000.0))
             planned_new_equity = float(st.session_state.get("planned_new_equity", 200_000_000.0))
-            auto_funding_required = st.checkbox(
-                "Auto-calculate funding required from model outputs",
-                value=True,
-            )
-            uses_col, sources_col = st.columns(2)
-            with uses_col:
-                st.markdown("**Uses**")
-                uses_df = _render_product_assumption_table(
-                    session_key="uses_table",
-                    default_factory=_default_uses_table,
-                    blank_row_factory=_blank_use_row,
-                    id_column=None,
-                    name_column="Item",
-                    column_config={
-                        "ID_vaccine": st.column_config.TextColumn("ID", help="Vaccine ID"),
-                        "Vaccine name": st.column_config.TextColumn("Vaccine name"),
-                        "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
-                    },
-                )
-                uses_total = float(uses_df.get("Amount", pd.Series(dtype=float)).sum())
-                st.metric("Total uses", f"{uses_total:,.0f}")
-                if {"ID_vaccine", "Vaccine name", "Amount"}.issubset(uses_df.columns):
-                    uses_by_vaccine = (
-                        uses_df.groupby(["ID_vaccine", "Vaccine name"], dropna=False)["Amount"]
-                        .sum()
-                        .reset_index()
+            uses_total = float(st.session_state.get("uses_total", 0.0))
+            sources_total = float(st.session_state.get("sources_total", 0.0))
+            burn_total = float(st.session_state.get("burn_total", 0.0))
+            wc_total = float(st.session_state.get("wc_total", 0.0))
+
+            if show_uses_sources:
+                with st.expander("Uses and sources of funds"):
+                    auto_funding_required = st.checkbox(
+                        "Auto-calculate funding required from model outputs",
+                        value=True,
                     )
-                    st.dataframe(
-                        uses_by_vaccine.style.format({"Amount": "{:,.0f}"}),
-                        use_container_width=True,
-                    )
-            with sources_col:
-                st.markdown("**Sources**")
-                sources_df = _render_product_assumption_table(
-                    session_key="sources_table",
-                    default_factory=_default_sources_table,
-                    blank_row_factory=_blank_source_row,
-                    id_column=None,
-                    name_column="Item",
-                    column_config={
-                        "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
-                    },
-                )
-                sources_other_total = 0.0
-                if {"Item", "Amount"}.issubset(sources_df.columns):
-                    source_items = sources_df["Item"].astype(str).str.strip().str.lower()
-                    sources_other_total = float(
-                        sources_df.loc[source_items != "new equity", "Amount"]
-                        .apply(pd.to_numeric, errors="coerce")
-                        .fillna(0.0)
-                        .sum()
-                    )
-                debt_draw_total = 0.0
-                debt_schedule_df = st.session_state.get("debt_schedule_table")
-                if debt_schedule_df is not None and "Debt drawdowns" in debt_schedule_df.columns:
-                    debt_draw_total = float(
-                        pd.to_numeric(debt_schedule_df["Debt drawdowns"], errors="coerce")
-                        .fillna(0.0)
-                        .sum()
-                    )
-                sources_other_total += debt_draw_total
-                valuation_result = st.session_state.get("valuation_result")
-                burn_total = 0.0
-                wc_total = 0.0
-                if valuation_result is not None:
-                    cons = valuation_result.consolidated
-                    if "fcff_after_wc" in cons.columns:
-                        burn_total = float((-cons["fcff_after_wc"].clip(upper=0)).sum())
-                    if "delta_wc" in cons.columns:
-                        wc_total = float((-cons["delta_wc"].clip(upper=0)).sum())
-                derived_funding_required = uses_total + burn_total + wc_total
-                if auto_funding_required:
-                    funding_required = float(derived_funding_required)
-                    st.session_state["funding_required"] = funding_required
-                planned_new_equity = max(funding_required - sources_other_total, 0.0)
-                st.session_state["planned_new_equity"] = planned_new_equity
-                if {"Item", "Amount"}.issubset(sources_df.columns):
-                    mask = sources_df["Item"].astype(str).str.strip().str.lower() == "new equity"
-                    if mask.any():
-                        sources_df.loc[mask, "Amount"] = planned_new_equity
-                        st.session_state["sources_table"] = sources_df
-                    elif planned_new_equity > 0:
-                        sources_df.loc[len(sources_df)] = {
-                            "Item": "New equity",
-                            "Amount": planned_new_equity,
-                        }
-                        st.session_state["sources_table"] = sources_df
-                sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
-                st.metric("Total sources", f"{sources_total:,.0f}")
-            delta = sources_total - uses_total
-            st.info(f"Funding gap (sources - uses): {delta:,.0f}")
-
-        with st.expander("Debt schedule inputs", expanded=False):
-            debt_table_changed = (
-                st.session_state.get("debt_schedule_first_year") != int(first_year)
-                or st.session_state.get("debt_schedule_n_years") != int(n_years)
-            )
-            if debt_table_changed or "debt_schedule_table" not in st.session_state:
-                st.session_state["debt_schedule_table"] = _default_debt_schedule(
-                    int(first_year),
-                    int(n_years),
-                )
-            st.session_state["debt_schedule_first_year"] = int(first_year)
-            st.session_state["debt_schedule_n_years"] = int(n_years)
-            debt_interest_rate = st.number_input(
-                "Debt interest rate",
-                min_value=0.0,
-                max_value=1.0,
-                value=float(st.session_state.get("debt_interest_rate", 0.08)),
-                step=0.005,
-                format="%.3f",
-                key="debt_interest_rate",
-            )
-            debt_schedule_df = _render_product_assumption_table(
-                session_key="debt_schedule_table",
-                default_factory=lambda: _default_debt_schedule(int(first_year), int(n_years)),
-                blank_row_factory=lambda df: _blank_debt_schedule_row(
-                    df,
-                    int(first_year),
-                    int(n_years),
-                ),
-                id_column=None,
-                name_column="Year",
-                column_config={
-                    "Year": st.column_config.NumberColumn("Year", step=1),
-                    "Debt drawdowns": st.column_config.NumberColumn(
-                        "Debt drawdowns", step=1_000_000.0
-                    ),
-                },
-            )
-            st.session_state["debt_schedule_table"] = debt_schedule_df
-            st.caption("Edit debt drawdowns; repayments and interest are calculated from the rate.")
-            funding_gap = funding_required - uses_total
-            st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
-            if abs(funding_gap) > 1.0:
-                st.warning("Funding required does not match total uses.")
-            reconciliation = pd.DataFrame(
-                [
-                    {"Component": "Uses total", "Amount": uses_total},
-                    {"Component": "Cash burn (FCFF < 0)", "Amount": burn_total},
-                    {"Component": "Working capital draw", "Amount": wc_total},
-                    {"Component": "Funding required", "Amount": funding_required},
-                ]
-            )
-            st.dataframe(reconciliation.style.format({"Amount": "{:,.0f}"}))
-
-        with st.expander("Risk-adjusted DCF valuation method - assumptions"):
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                discount_rate = st.slider("Discount rate", min_value=0.02, max_value=0.30, value=0.10)
-            with col_b:
-                ev_multiple = st.slider("Terminal EV/EBITDA multiple", 2.0, 30.0, 8.0)
-            with col_c:
-                risk_buffer = st.number_input(
-                    "Additional risk premium", min_value=0.0, max_value=0.20, value=0.0, step=0.01
-                )
-            st.caption("Discount rate + premium governs the rNPV and terminal value." )
-
-        with st.expander("Funding required"):
-            funding_required = st.number_input(
-                "Total funding required",
-                value=float(st.session_state.get("funding_required", 250_000_000.0)),
-                step=5_000_000.0,
-                format="%0.0f",
-                key="funding_required",
-            )
-
-        with st.expander("Shareholders / Investors"):
-            shareholders_df = _render_product_assumption_table(
-                session_key="shareholders_table",
-                default_factory=_default_shareholders_table,
-                blank_row_factory=_blank_shareholder_row,
-                id_column=None,
-                name_column="Shareholder",
-                column_config={
-                    "Ownership %": st.column_config.NumberColumn(
-                        "Ownership %", min_value=0.0, max_value=1.0, step=0.01
-                    ),
-                    "Investment": st.column_config.NumberColumn("Investment", step=1_000_000.0),
-                },
-            )
-            investment = pd.to_numeric(
-                shareholders_df.get("Investment", pd.Series(dtype=float)), errors="coerce"
-            ).fillna(0.0)
-            planned_new_equity = float(st.session_state.get("planned_new_equity", 0.0))
-            pre_money = float(investment.sum())
-            post_money = max(pre_money + planned_new_equity, 1.0)
-            if "Shareholder" in shareholders_df.columns:
-                trimmed = shareholders_df["Shareholder"].astype(str).str.strip().str.lower()
-                new_equity_mask = trimmed == "new equity round"
-                if new_equity_mask.any():
-                    shareholders_df.loc[new_equity_mask, "Investment"] = planned_new_equity
-                elif planned_new_equity > 0:
-                    shareholders_df.loc[len(shareholders_df)] = {
-                        "Shareholder": "New equity round",
-                        "Ownership %": planned_new_equity / post_money,
-                        "Investment": planned_new_equity,
-                    }
-
-            ownership = pd.to_numeric(
-                shareholders_df.get("Investment", pd.Series(dtype=float)), errors="coerce"
-            ).fillna(0.0) / post_money
-            shareholders_df["Ownership %"] = ownership
-            st.session_state["shareholders_table"] = shareholders_df
-            st.metric("Total ownership (post-money)", f"{shareholders_df['Ownership %'].sum():.0%}")
-            if valuation_result is not None:
-                shareholders_df["Equity value (rNPV)"] = shareholders_df["Ownership %"] * valuation_result.rnpv
-                st.dataframe(
-                    shareholders_df.style.format(
-                        {"Ownership %": "{:.1%}", "Investment": "{:,.0f}", "Equity value (rNPV)": "{:,.0f}"}
-                    )
-                )
-
-        with st.expander("Relevant market sizes"):
-            market_df = _render_product_assumption_table(
-                session_key="market_sizes_table",
-                default_factory=_default_market_sizes_table,
-                blank_row_factory=_blank_relevant_market_row,
-                id_column=None,
-                name_column="Segment",
-                column_config={
-                    "Value": st.column_config.NumberColumn("Value", step=1_000_000.0),
-                },
-            )
-
-        with st.expander("New equity issued"):
-            new_equity = st.number_input(
-                "Planned new equity",
-                value=planned_new_equity,
-                step=5_000_000.0,
-                format="%0.0f",
-                key="planned_new_equity",
-            )
-
-        with st.expander("Selectors"):
-            selector_choices = st.multiselect(
-                "Tag this run with selectors", options=SELECTOR_OPTIONS, default=["Base case"]
-            )
-            st.write("Active selectors:", ", ".join(selector_choices) or "None")
-
-        effective_discount_rate = float(min(0.40, discount_rate + risk_buffer))
-        model_cfg = ModelConfig(
-            first_year=int(first_year),
-            n_years=int(n_years),
-            currency=currency,
-            discount_rate=effective_discount_rate,
-            tax_rate=float(tax_rate),
-            working_capital_pct_sales=float(wc_pct),
-            ev_ebitda_multiple=float(ev_multiple),
-            sales_ramp_factors=ramp,
-        )
-
-        st.subheader("Product assumptions")
-
-        dev_df = _render_product_assumption_table(
-            session_key="vaccine_development_table",
-            default_factory=lambda: _default_vaccine_development_table(int(first_year)),
-            blank_row_factory=lambda df: _blank_vaccine_development_row(df, int(first_year)),
-            column_config={
-                "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
-                "Consolidation": st.column_config.CheckboxColumn("Consolidate", default=True),
-                "Success Probability %": st.column_config.NumberColumn(
-                    "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
-                ),
-            },
-        )
-        entry_calc = _coerce_numeric(dev_df.get("First year forecast", pd.Series(dtype=float))) + _coerce_numeric(
-            dev_df.get("Time to market", pd.Series(dtype=float))
-        )
-        if "Market entry year" not in dev_df.columns:
-            dev_df["Market entry year"] = entry_calc
-        else:
-            missing_entry = dev_df["Market entry year"].isna()
-            dev_df.loc[missing_entry, "Market entry year"] = entry_calc[missing_entry]
-        if "End patent year" not in dev_df.columns:
-            dev_df["End patent year"] = dev_df["Market entry year"] + _coerce_numeric(
-                dev_df.get("Patent duration years", pd.Series(dtype=float)), default=0
-            ) - 1
-        else:
-            mask_patent = dev_df["End patent year"].isna()
-            dev_df.loc[mask_patent, "End patent year"] = (
-                dev_df.loc[mask_patent, "Market entry year"]
-                + _coerce_numeric(
-                    dev_df.loc[mask_patent, "Patent duration years"],
-                    default=0,
-                )
-                - 1
-            )
-        st.session_state["vaccine_development_table"] = dev_df
-        st.caption("Track each vaccine's readiness, probability of success, and patent end year.")
-
-        with st.expander("Vaccine market size estimation", expanded=True):
-            market_size_df = _render_product_assumption_table(
-                session_key="market_size_estimation",
-                default_factory=_default_market_size_estimation_table,
-                blank_row_factory=_blank_market_size_row,
-            )
-            market_size = _coerce_numeric(market_size_df.get("Market size (# customers)", pd.Series(dtype=float)))
-            avg_spend = _coerce_numeric(
-                market_size_df.get("Average spend (USD/customer)", pd.Series(dtype=float))
-            )
-            tam = market_size * avg_spend
-            market_size_df["Total Addressable Market Size (USD)"] = tam
-            sam_pct = _coerce_numeric(
-                market_size_df.get("Serviceable Available Market (% TAM)", pd.Series(dtype=float))
-            )
-            market_size_df["Serviceable Available Market (USD)"] = tam * sam_pct.div(100)
-            som_pct = _coerce_numeric(
-                market_size_df.get("Serviceable Obtainable Market (%)", pd.Series(dtype=float))
-            )
-            market_size_df["Serviceable Obtainable Market (USD)"] = tam * som_pct.div(100)
-            st.session_state["market_size_estimation"] = market_size_df
-            market_size_display = market_size_df[[
-                "ID_vaccine",
-                "Vaccine name",
-                "Total Addressable Market Size (USD)",
-                "Serviceable Available Market (USD)",
-                "Serviceable Obtainable Market (USD)",
-            ]]
-            st.dataframe(
-                market_size_display.style.format(
-                    {
-                        "Total Addressable Market Size (USD)": "{:.0f}",
-                        "Serviceable Available Market (USD)": "{:.0f}",
-                        "Serviceable Obtainable Market (USD)": "{:.0f}",
-                    }
-                )
-            )
-
-        with st.expander("Vaccines revenue estimation", expanded=True):
-            revenue_df = _render_product_assumption_table(
-                session_key="vaccine_revenue_table",
-                default_factory=_default_vaccine_revenue_table,
-                blank_row_factory=_blank_vaccine_revenue_row,
-            )
-            patent_customers = _coerce_numeric(
-                revenue_df.get("Patent customers per year", pd.Series(dtype=float))
-            )
-            patent_price = _coerce_numeric(
-                revenue_df.get("Patent price (USD/customer)", pd.Series(dtype=float))
-            )
-            revenue_df["Patent revenue target (USD)"] = patent_customers * patent_price
-            cust_adj = _coerce_numeric(
-                revenue_df.get("Post patent customer adj. %", pd.Series(dtype=float))
-            ).div(100).replace(0, np.nan)
-            price_adj = _coerce_numeric(
-                revenue_df.get("Post patent price adj. %", pd.Series(dtype=float))
-            ).div(100).replace(0, np.nan)
-            if "Post patent customers per year" not in revenue_df.columns:
-                revenue_df["Post patent customers per year"] = patent_customers * cust_adj.fillna(1.0)
-            else:
-                post_patent_customers = _coerce_numeric(
-                    revenue_df["Post patent customers per year"], 0.0
-                )
-                mask_missing = post_patent_customers.isna() | (post_patent_customers == 0)
-                revenue_df.loc[mask_missing, "Post patent customers per year"] = (
-                    patent_customers[mask_missing] * cust_adj.fillna(1.0)[mask_missing]
-                )
-            if "Post patent price (USD/customer)" not in revenue_df.columns:
-                revenue_df["Post patent price (USD/customer)"] = patent_price * price_adj.fillna(1.0)
-            else:
-                post_patent_price = _coerce_numeric(
-                    revenue_df["Post patent price (USD/customer)"], 0.0
-                )
-                mask_price = post_patent_price.isna() | (post_patent_price == 0)
-                revenue_df.loc[mask_price, "Post patent price (USD/customer)"] = (
-                    patent_price[mask_price] * price_adj.fillna(1.0)[mask_price]
-                )
-            revenue_df["Post patent revenue target (USD)"] = (
-                _coerce_numeric(revenue_df["Post patent customers per year"], 0)
-                * _coerce_numeric(revenue_df["Post patent price (USD/customer)"], 0)
-            )
-            st.session_state["vaccine_revenue_table"] = revenue_df
-            revenue_display = revenue_df[[
-                "ID_vaccine",
-                "Vaccine name",
-                "Patent revenue target (USD)",
-                "Post patent revenue target (USD)",
-            ]]
-            st.dataframe(
-                revenue_display.style.format(
-                    {
-                        "Patent revenue target (USD)": "{:.0f}",
-                        "Post patent revenue target (USD)": "{:.0f}",
-                    }
-                )
-            )
-
-        with st.expander("Vaccine cost assumptions", expanded=True):
-            cost_df = _render_product_assumption_table(
-                session_key="vaccine_cost_table",
-                default_factory=_default_vaccine_cost_table,
-                blank_row_factory=_blank_vaccine_cost_row,
-            )
-            cogs_patent = _coerce_numeric(cost_df.get("COGS patent % of sales", pd.Series(dtype=float)))
-            cogs_post = _coerce_numeric(cost_df.get("COGS post % of sales", pd.Series(dtype=float)))
-            marketing_pct = _coerce_numeric(cost_df.get("Marketing annual % of sales", pd.Series(dtype=float)))
-            royalty_pct = _coerce_numeric(cost_df.get("Royalties cost % of sales", pd.Series(dtype=float)))
-            gna_cols = [
-                "Indirect staff cost (USD)",
-                "Electricity (USD)",
-                "Depreciation (USD)",
-                "Interest & amortization (USD)",
-            ]
-            cost_df["G&A total (USD)"] = cost_df[gna_cols].sum(axis=1)
-            cost_df["Patent operating cost %"] = cogs_patent + marketing_pct + royalty_pct
-            cost_df["Post operating cost %"] = cogs_post + marketing_pct + royalty_pct
-            st.session_state["vaccine_cost_table"] = cost_df
-            cost_display = cost_df[
-                [
-                    "ID_vaccine",
-                    "Vaccine name",
-                    "COGS patent % of sales",
-                    "COGS post % of sales",
-                    "Marketing annual % of sales",
-                    "Marketing launch cost (USD)",
-                    "Royalties cost % of sales",
-                    "G&A total (USD)",
-                    "Patent operating cost %",
-                    "Post operating cost %",
-                ]
-            ]
-            percent_cols = [
-                "COGS patent % of sales",
-                "COGS post % of sales",
-                "Marketing annual % of sales",
-                "Royalties cost % of sales",
-                "Patent operating cost %",
-                "Post operating cost %",
-            ]
-            percent_fmt = {col: "{:.1f}%" for col in percent_cols if col in cost_display.columns}
-            currency_fmt = {
-                col: "{:.0f}"
-                for col in ["Marketing launch cost (USD)", "G&A total (USD)"]
-                if col in cost_display.columns
-            }
-            st.dataframe(cost_display.style.format({**percent_fmt, **currency_fmt}))
-
-        with st.expander("Vaccines research & development (R&D)", expanded=True):
-            rd_df = _render_product_assumption_table(
-                session_key="vaccine_rd_table",
-                default_factory=_default_vaccine_rd_table,
-                blank_row_factory=_blank_vaccine_rd_row,
-            )
-            rd_df["Pre-GTM total (USD)"] = _coerce_numeric(
-                rd_df.get("Pre-GTM spent to date (USD)", pd.Series(dtype=float))
-            ) + _coerce_numeric(rd_df.get("Pre-GTM remaining (USD)", pd.Series(dtype=float)))
-            st.session_state["vaccine_rd_table"] = rd_df
-            rd_display = rd_df[
-                [
-                    "ID_vaccine",
-                    "Vaccine name",
-                    "Cost accounting (capitalisation)",
-                    "Pre-GTM spent to date (USD)",
-                    "Pre-GTM remaining (USD)",
-                    "Pre-GTM total (USD)",
-                    "Post-GTM annual cost (USD/year)",
-                ]
-            ]
-            rd_fmt = {
-                col: "{:.0f}"
-                for col in rd_display.columns
-                if col not in ["ID_vaccine", "Vaccine name", "Cost accounting (capitalisation)"]
-            }
-            st.dataframe(rd_display.style.format(rd_fmt))
-
-        with st.expander("Vaccine CAPEX assumptions", expanded=True):
-            with st.expander("Shared CAPEX pools", expanded=False):
-                shared_pools_df = _render_product_assumption_table(
-                    session_key="shared_capex_pools_table",
-                    default_factory=_default_shared_capex_pools_table,
-                    blank_row_factory=lambda df: {
-                        "Pool name": "New shared pool",
-                        "Applies to (IDs or ALL)": "ALL",
-                        "Allocation method": "Equal",
-                    },
-                    column_config={
-                        "Allocation method": st.column_config.SelectboxColumn(
-                            "Allocation method", options=["Equal", "By Weight"]
+                    uses_col, sources_col = st.columns(2)
+                    with uses_col:
+                        st.markdown("**Uses**")
+                        uses_df = _render_product_assumption_table(
+                            session_key="uses_table",
+                            default_factory=_default_uses_table,
+                            blank_row_factory=_blank_use_row,
+                            id_column=None,
+                            name_column="Item",
+                            column_config={
+                                "ID_vaccine": st.column_config.TextColumn("ID", help="Vaccine ID"),
+                                "Vaccine name": st.column_config.TextColumn("Vaccine name"),
+                                "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
+                            },
                         )
-                    },
-                )
-                st.session_state["shared_capex_pools_table"] = shared_pools_df
-            with st.expander("Shared CAPEX allocation weights", expanded=False):
-                shared_allocations_df = _render_product_assumption_table(
-                    session_key="shared_capex_allocations_table",
-                    default_factory=_default_shared_capex_allocations_table,
-                    blank_row_factory=lambda df: {
-                        "Pool name": "Core manufacturing facility",
-                        "ID_vaccine": _next_vaccine_id(df),
-                        "Weight": 1.0,
-                    },
-                )
-                st.session_state["shared_capex_allocations_table"] = shared_allocations_df
+                        uses_total = float(uses_df.get("Amount", pd.Series(dtype=float)).sum())
+                        st.session_state["uses_total"] = uses_total
+                        st.metric("Total uses", f"{uses_total:,.0f}")
+                        if {"ID_vaccine", "Vaccine name", "Amount"}.issubset(uses_df.columns):
+                            uses_by_vaccine = (
+                                uses_df.groupby(["ID_vaccine", "Vaccine name"], dropna=False)["Amount"]
+                                .sum()
+                                .reset_index()
+                            )
+                            st.dataframe(
+                                uses_by_vaccine.style.format({"Amount": "{:,.0f}"}),
+                                use_container_width=True,
+                            )
+                    with sources_col:
+                        st.markdown("**Sources**")
+                        sources_df = _render_product_assumption_table(
+                            session_key="sources_table",
+                            default_factory=_default_sources_table,
+                            blank_row_factory=_blank_source_row,
+                            id_column=None,
+                            name_column="Item",
+                            column_config={
+                                "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
+                            },
+                        )
+                        sources_other_total = 0.0
+                        if {"Item", "Amount"}.issubset(sources_df.columns):
+                            source_items = sources_df["Item"].astype(str).str.strip().str.lower()
+                            sources_other_total = float(
+                                sources_df.loc[source_items != "new equity", "Amount"]
+                                .apply(pd.to_numeric, errors="coerce")
+                                .fillna(0.0)
+                                .sum()
+                            )
+                        debt_draw_total = 0.0
+                        debt_schedule_df = st.session_state.get("debt_schedule_table")
+                        if debt_schedule_df is not None and "Debt drawdowns" in debt_schedule_df.columns:
+                            debt_draw_total = float(
+                                pd.to_numeric(debt_schedule_df["Debt drawdowns"], errors="coerce")
+                                .fillna(0.0)
+                                .sum()
+                            )
+                        sources_other_total += debt_draw_total
+                        valuation_result = st.session_state.get("valuation_result")
+                        burn_total = 0.0
+                        wc_total = 0.0
+                        if valuation_result is not None:
+                            cons = valuation_result.consolidated
+                            if "fcff_after_wc" in cons.columns:
+                                burn_total = float((-cons["fcff_after_wc"].clip(upper=0)).sum())
+                            if "delta_wc" in cons.columns:
+                                wc_total = float((-cons["delta_wc"].clip(upper=0)).sum())
+                        st.session_state["burn_total"] = burn_total
+                        st.session_state["wc_total"] = wc_total
+                        derived_funding_required = uses_total + burn_total + wc_total
+                        if auto_funding_required:
+                            funding_required = float(derived_funding_required)
+                            st.session_state["funding_required"] = funding_required
+                        planned_new_equity = max(funding_required - sources_other_total, 0.0)
+                        st.session_state["planned_new_equity"] = planned_new_equity
+                        if {"Item", "Amount"}.issubset(sources_df.columns):
+                            mask = sources_df["Item"].astype(str).str.strip().str.lower() == "new equity"
+                            if mask.any():
+                                sources_df.loc[mask, "Amount"] = planned_new_equity
+                                st.session_state["sources_table"] = sources_df
+                            elif planned_new_equity > 0:
+                                sources_df.loc[len(sources_df)] = {
+                                    "Item": "New equity",
+                                    "Amount": planned_new_equity,
+                                }
+                                st.session_state["sources_table"] = sources_df
+                        sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
+                        st.session_state["sources_total"] = sources_total
+                        st.metric("Total sources", f"{sources_total:,.0f}")
+                    delta = sources_total - uses_total
+                    st.info(f"Funding gap (sources - uses): {delta:,.0f}")
 
-            capex_df = _render_product_assumption_table(
-                session_key="vaccine_capex_table",
-                default_factory=_default_vaccine_capex_table,
-                blank_row_factory=_blank_vaccine_capex_row,
-            )
-            capex_pre_cols = [
-                "Manufacturing & Scale-up Assets (Pre-GTM, USD)",
-                "Quality & Compliance Infrastructure (Pre-GTM, USD)",
-                "Cold-chain / Distribution Assets (Pre-GTM, USD)",
-                "IT / Data / Digital Infrastructure (Pre-GTM, USD)",
-                "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)",
-                "Process Development & Tech-Transfer Assets (Pre-GTM, USD)",
-            ]
-            capex_post_cols = [
-                "Manufacturing & Scale-up Assets (Post-GTM, USD/year)",
-                "Quality & Compliance Infrastructure (Post-GTM, USD/year)",
-                "Cold-chain / Distribution Assets (Post-GTM, USD/year)",
-                "IT / Data / Digital Infrastructure (Post-GTM, USD/year)",
-                "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)",
-                "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)",
-            ]
-            capex_pre = capex_df.get(capex_pre_cols, pd.DataFrame()).apply(
-                pd.to_numeric, errors="coerce"
-            )
-            capex_post = capex_df.get(capex_post_cols, pd.DataFrame()).apply(
-                pd.to_numeric, errors="coerce"
-            )
-            capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
-            capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
-            if not shared_pools_df.empty:
-                shared_allocations = _build_shared_capex_allocations(
-                    st.session_state.get("vaccine_development_table", pd.DataFrame()),
-                    shared_pools_df,
-                    shared_allocations_df,
-                )
-                if not shared_allocations.empty:
-                    pool_values = shared_pools_df.copy()
-                    pool_values["Pool name"] = pool_values.get("Pool name", "").astype(str)
-                    pool_values["Pre-GTM total (USD)"] = pool_values.get(
-                        capex_pre_cols, pd.DataFrame()
-                    ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
-                    pool_values["Post-GTM total (USD/year)"] = pool_values.get(
-                        capex_post_cols, pd.DataFrame()
-                    ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
-                    shared_totals = shared_allocations.merge(
-                        pool_values[
-                            ["Pool name", "Pre-GTM total (USD)", "Post-GTM total (USD/year)"]
-                        ],
-                        on="Pool name",
-                        how="left",
+            if show_uses_sources:
+                with st.expander("Debt schedule inputs", expanded=False):
+                    debt_table_changed = (
+                        st.session_state.get("debt_schedule_first_year") != int(first_year)
+                        or st.session_state.get("debt_schedule_n_years") != int(n_years)
                     )
-                    shared_totals["Shared Pre-GTM capex (USD)"] = (
-                        shared_totals["Share"]
-                        * shared_totals["Pre-GTM total (USD)"].fillna(0.0)
+                    if debt_table_changed or "debt_schedule_table" not in st.session_state:
+                        st.session_state["debt_schedule_table"] = _default_debt_schedule(
+                            int(first_year),
+                            int(n_years),
+                        )
+                    st.session_state["debt_schedule_first_year"] = int(first_year)
+                    st.session_state["debt_schedule_n_years"] = int(n_years)
+                    debt_interest_rate = st.number_input(
+                        "Debt interest rate",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=float(st.session_state.get("debt_interest_rate", 0.08)),
+                        step=0.005,
+                        format="%.3f",
+                        key="debt_interest_rate",
                     )
-                    shared_totals["Shared Post-GTM capex (USD/year)"] = (
-                        shared_totals["Share"]
-                        * shared_totals["Post-GTM total (USD/year)"].fillna(0.0)
+                    debt_schedule_df = _render_product_assumption_table(
+                        session_key="debt_schedule_table",
+                        default_factory=lambda: _default_debt_schedule(int(first_year), int(n_years)),
+                        blank_row_factory=lambda df: _blank_debt_schedule_row(
+                            df,
+                            int(first_year),
+                            int(n_years),
+                        ),
+                        id_column=None,
+                        name_column="Year",
+                        column_config={
+                            "Year": st.column_config.NumberColumn("Year", step=1),
+                            "Debt drawdowns": st.column_config.NumberColumn(
+                                "Debt drawdowns", step=1_000_000.0
+                            ),
+                        },
                     )
-                    shared_summary = (
-                        shared_totals.groupby("ID_vaccine", as_index=False)[
-                            ["Shared Pre-GTM capex (USD)", "Shared Post-GTM capex (USD/year)"]
+                    st.session_state["debt_schedule_table"] = debt_schedule_df
+                    st.caption("Edit debt drawdowns; repayments and interest are calculated from the rate.")
+                    funding_gap = funding_required - uses_total
+                    st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
+                    if abs(funding_gap) > 1.0:
+                        st.warning("Funding required does not match total uses.")
+                    reconciliation = pd.DataFrame(
+                        [
+                            {"Component": "Uses total", "Amount": uses_total},
+                            {"Component": "Cash burn (FCFF < 0)", "Amount": burn_total},
+                            {"Component": "Working capital draw", "Amount": wc_total},
+                            {"Component": "Funding required", "Amount": funding_required},
                         ]
-                        .sum()
                     )
-                    capex_df = capex_df.drop(
-                        columns=[
-                            "Shared Pre-GTM capex (USD)",
-                            "Shared Post-GTM capex (USD/year)",
-                        ],
-                        errors="ignore",
-                    )
-                    capex_df = capex_df.merge(shared_summary, on="ID_vaccine", how="left")
-                    capex_df["Shared Pre-GTM capex (USD)"] = capex_df.get(
-                        "Shared Pre-GTM capex (USD)", pd.Series(0.0, index=capex_df.index)
-                    ).fillna(0.0)
-                    capex_df["Shared Post-GTM capex (USD/year)"] = capex_df.get(
-                        "Shared Post-GTM capex (USD/year)", pd.Series(0.0, index=capex_df.index)
-                    ).fillna(0.0)
-                    capex_df["Total Pre-GTM capex (USD)"] = (
-                        capex_df["Total Pre-GTM capex (USD)"]
-                        + capex_df["Shared Pre-GTM capex (USD)"]
-                    )
-                    capex_df["Total Post-GTM capex (USD/year)"] = (
-                        capex_df["Total Post-GTM capex (USD/year)"]
-                        + capex_df["Shared Post-GTM capex (USD/year)"]
-                    )
-            st.session_state["vaccine_capex_table"] = capex_df
-            capex_display = capex_df[
-                [
-                    "ID_vaccine",
-                    "Vaccine name",
-                    "Total Pre-GTM capex (USD)",
-                    "Total Post-GTM capex (USD/year)",
-                ]
-            ]
-            capex_fmt = {
-                col: "{:.0f}"
-                for col in capex_display.columns
-                if col not in ["ID_vaccine", "Vaccine name"]
-            }
-            st.dataframe(capex_display.style.format(capex_fmt))
+                    st.dataframe(reconciliation.style.format({"Amount": "{:,.0f}"}))
 
-        with st.expander("Vaccines royalty revenues", expanded=True):
-            royalty_df = _render_product_assumption_table(
-                session_key="vaccine_royalty_table",
-                default_factory=_default_royalty_table,
-                blank_row_factory=_blank_vaccine_royalty_row,
-                column_config={
-                    "Monetization model": st.column_config.SelectboxColumn(
-                        "Monetization model", options=["Product Sale", "Licensing"]
+            with st.expander("Risk-adjusted DCF valuation method - assumptions"):
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    discount_rate = st.slider("Discount rate", min_value=0.02, max_value=0.30, value=0.10)
+                with col_b:
+                    ev_multiple = st.slider("Terminal EV/EBITDA multiple", 2.0, 30.0, 8.0)
+                with col_c:
+                    risk_buffer = st.number_input(
+                        "Additional risk premium", min_value=0.0, max_value=0.20, value=0.0, step=0.01
                     )
+                st.caption("Discount rate + premium governs the rNPV and terminal value." )
+
+            with st.expander("Funding required"):
+                funding_required = st.number_input(
+                    "Total funding required",
+                    value=float(st.session_state.get("funding_required", 250_000_000.0)),
+                    step=5_000_000.0,
+                    format="%0.0f",
+                    key="funding_required",
+                )
+
+            with st.expander("Shareholders / Investors"):
+                shareholders_df = _render_product_assumption_table(
+                    session_key="shareholders_table",
+                    default_factory=_default_shareholders_table,
+                    blank_row_factory=_blank_shareholder_row,
+                    id_column=None,
+                    name_column="Shareholder",
+                    column_config={
+                        "Ownership %": st.column_config.NumberColumn(
+                            "Ownership %", min_value=0.0, max_value=1.0, step=0.01
+                        ),
+                        "Investment": st.column_config.NumberColumn("Investment", step=1_000_000.0),
+                    },
+                )
+                investment = pd.to_numeric(
+                    shareholders_df.get("Investment", pd.Series(dtype=float)), errors="coerce"
+                ).fillna(0.0)
+                planned_new_equity = float(st.session_state.get("planned_new_equity", 0.0))
+                pre_money = float(investment.sum())
+                post_money = max(pre_money + planned_new_equity, 1.0)
+                if "Shareholder" in shareholders_df.columns:
+                    trimmed = shareholders_df["Shareholder"].astype(str).str.strip().str.lower()
+                    new_equity_mask = trimmed == "new equity round"
+                    if new_equity_mask.any():
+                        shareholders_df.loc[new_equity_mask, "Investment"] = planned_new_equity
+                    elif planned_new_equity > 0:
+                        shareholders_df.loc[len(shareholders_df)] = {
+                            "Shareholder": "New equity round",
+                            "Ownership %": planned_new_equity / post_money,
+                            "Investment": planned_new_equity,
+                        }
+
+                ownership = pd.to_numeric(
+                    shareholders_df.get("Investment", pd.Series(dtype=float)), errors="coerce"
+                ).fillna(0.0) / post_money
+                shareholders_df["Ownership %"] = ownership
+                st.session_state["shareholders_table"] = shareholders_df
+                st.metric("Total ownership (post-money)", f"{shareholders_df['Ownership %'].sum():.0%}")
+                if valuation_result is not None:
+                    shareholders_df["Equity value (rNPV)"] = shareholders_df["Ownership %"] * valuation_result.rnpv
+                    st.dataframe(
+                        shareholders_df.style.format(
+                            {"Ownership %": "{:.1%}", "Investment": "{:,.0f}", "Equity value (rNPV)": "{:,.0f}"}
+                        )
+                    )
+
+            if show_relevant_market_sizes:
+                with st.expander("Relevant market sizes"):
+                    market_df = _render_product_assumption_table(
+                        session_key="market_sizes_table",
+                        default_factory=_default_market_sizes_table,
+                        blank_row_factory=_blank_relevant_market_row,
+                        id_column=None,
+                        name_column="Segment",
+                        column_config={
+                            "Value": st.column_config.NumberColumn("Value", step=1_000_000.0),
+                        },
+                    )
+
+            with st.expander("New equity issued"):
+                new_equity = st.number_input(
+                    "Planned new equity",
+                    value=planned_new_equity,
+                    step=5_000_000.0,
+                    format="%0.0f",
+                    key="planned_new_equity",
+                )
+
+            with st.expander("Selectors"):
+                selector_choices = st.multiselect(
+                    "Tag this run with selectors", options=SELECTOR_OPTIONS, default=["Base case"]
+                )
+                st.write("Active selectors:", ", ".join(selector_choices) or "None")
+
+            effective_discount_rate = float(min(0.40, discount_rate + risk_buffer))
+            model_cfg = ModelConfig(
+                first_year=int(first_year),
+                n_years=int(n_years),
+                currency=currency,
+                discount_rate=effective_discount_rate,
+                tax_rate=float(tax_rate),
+                working_capital_pct_sales=float(wc_pct),
+                ev_ebitda_multiple=float(ev_multiple),
+                sales_ramp_factors=ramp,
+            )
+
+        with st.expander("Product assumptions", expanded=True):
+
+            dev_df = _render_product_assumption_table(
+                session_key="vaccine_development_table",
+                default_factory=lambda: _default_vaccine_development_table(int(first_year)),
+                blank_row_factory=lambda df: _blank_vaccine_development_row(df, int(first_year)),
+                column_config={
+                    "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
+                    "Consolidation": st.column_config.CheckboxColumn("Consolidate", default=True),
+                    "Success Probability %": st.column_config.NumberColumn(
+                        "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
+                    ),
                 },
             )
-            revenue_lookup = st.session_state.get("vaccine_revenue_table", pd.DataFrame())
-            if "ID_vaccine" in revenue_lookup.columns:
-                revenue_lookup = revenue_lookup.drop_duplicates("ID_vaccine", keep="last")
-                patent_lookup = revenue_lookup.set_index("ID_vaccine").get(
-                    "Patent revenue target (USD)", pd.Series(dtype=float)
-                )
-                post_lookup = revenue_lookup.set_index("ID_vaccine").get(
-                    "Post patent revenue target (USD)", pd.Series(dtype=float)
-                )
+            entry_calc = _coerce_numeric(dev_df.get("First year forecast", pd.Series(dtype=float))) + _coerce_numeric(
+                dev_df.get("Time to market", pd.Series(dtype=float))
+            )
+            if "Market entry year" not in dev_df.columns:
+                dev_df["Market entry year"] = entry_calc
             else:
-                patent_lookup = pd.Series(dtype=float)
-                post_lookup = pd.Series(dtype=float)
-            royalty_rate = _coerce_numeric(royalty_df.get("Royalty rate (%)", pd.Series(dtype=float))).div(100)
-            royalty_df["Patent revenue (USD)"] = royalty_df["ID_vaccine"].map(patent_lookup)
-            royalty_df["Post patent revenue (USD)"] = royalty_df["ID_vaccine"].map(post_lookup)
-            royalty_df["Royalty income (USD)"] = royalty_df["Patent revenue (USD)"] * royalty_rate
-            st.session_state["vaccine_royalty_table"] = royalty_df
-            st.dataframe(
-                royalty_df[[
-                    "ID_vaccine",
-                    "Vaccine name",
-                    "Royalty rate (%)",
-                    "Royalty income (USD)",
-                    "Patent revenue (USD)",
-                    "Post patent revenue (USD)",
-                ]].style.format({
-                    "Royalty rate (%)": "{:.1f}",
-                    "Royalty income (USD)": "{:.0f}",
-                    "Patent revenue (USD)": "{:.0f}",
-                    "Post patent revenue (USD)": "{:.0f}",
-                })
-            )
+                missing_entry = dev_df["Market entry year"].isna()
+                dev_df.loc[missing_entry, "Market entry year"] = entry_calc[missing_entry]
+            if "End patent year" not in dev_df.columns:
+                dev_df["End patent year"] = dev_df["Market entry year"] + _coerce_numeric(
+                    dev_df.get("Patent duration years", pd.Series(dtype=float)), default=0
+                ) - 1
+            else:
+                mask_patent = dev_df["End patent year"].isna()
+                dev_df.loc[mask_patent, "End patent year"] = (
+                    dev_df.loc[mask_patent, "Market entry year"]
+                    + _coerce_numeric(
+                        dev_df.loc[mask_patent, "Patent duration years"],
+                        default=0,
+                    )
+                    - 1
+                )
+            st.session_state["vaccine_development_table"] = dev_df
+            st.caption("Track each vaccine's readiness, probability of success, and patent end year.")
 
-        with st.expander("Vaccines market share", expanded=True):
-            market_share_df = _render_product_assumption_table(
-                session_key="vaccine_market_share_table",
-                default_factory=_default_market_share_table,
-                blank_row_factory=_blank_vaccine_market_share_row,
-            )
-            relevant_market = _coerce_numeric(
-                market_share_df.get("Relevant market size (USD)", pd.Series(dtype=float))
-            )
-            patent_target_pct = _coerce_numeric(
-                market_share_df.get("Revenue target - patent %", pd.Series(dtype=float))
-            ).div(100)
-            post_target_pct = _coerce_numeric(
-                market_share_df.get("Revenue target - post %", pd.Series(dtype=float))
-            ).div(100)
-            market_share_df["Revenue target patent (USD)"] = relevant_market * patent_target_pct
-            market_share_df["Revenue target post (USD)"] = relevant_market * post_target_pct
-            st.session_state["vaccine_market_share_table"] = market_share_df
-            st.dataframe(
-                market_share_df[[
-                    "ID_vaccine",
-                    "Vaccine name",
-                    "Relevant market type",
-                    "Relevant market size (USD)",
-                    "Revenue target patent (USD)",
-                    "Revenue target post (USD)",
-                    "Market share patent %",
-                    "Market share post %",
-                    "Market growth %",
-                    "Sales growth %",
-                ]].style.format({
-                    "Relevant market size (USD)": "{:.0f}",
-                    "Revenue target patent (USD)": "{:.0f}",
-                    "Revenue target post (USD)": "{:.0f}",
-                    "Market share patent %": "{:.1f}",
-                    "Market share post %": "{:.1f}",
-                    "Market growth %": "{:.1f}",
-                    "Sales growth %": "{:.1f}",
-                })
-            )
+            if show_market_size_estimation:
+                with st.expander("Vaccine market size estimation", expanded=True):
+                    market_size_df = _render_product_assumption_table(
+                        session_key="market_size_estimation",
+                        default_factory=_default_market_size_estimation_table,
+                        blank_row_factory=_blank_market_size_row,
+                    )
+                    market_size = _coerce_numeric(
+                        market_size_df.get("Market size (# customers)", pd.Series(dtype=float))
+                    )
+                    avg_spend = _coerce_numeric(
+                        market_size_df.get("Average spend (USD/customer)", pd.Series(dtype=float))
+                    )
+                    tam = market_size * avg_spend
+                    market_size_df["Total Addressable Market Size (USD)"] = tam
+                    sam_pct = _coerce_numeric(
+                        market_size_df.get("Serviceable Available Market (% TAM)", pd.Series(dtype=float))
+                    )
+                    market_size_df["Serviceable Available Market (USD)"] = tam * sam_pct.div(100)
+                    som_pct = _coerce_numeric(
+                        market_size_df.get("Serviceable Obtainable Market (%)", pd.Series(dtype=float))
+                    )
+                    market_size_df["Serviceable Obtainable Market (USD)"] = tam * som_pct.div(100)
+                    st.session_state["market_size_estimation"] = market_size_df
+                    market_size_display = market_size_df[
+                        [
+                            "ID_vaccine",
+                            "Vaccine name",
+                            "Total Addressable Market Size (USD)",
+                            "Serviceable Available Market (USD)",
+                            "Serviceable Obtainable Market (USD)",
+                        ]
+                    ]
+                    st.dataframe(
+                        market_size_display.style.format(
+                            {
+                                "Total Addressable Market Size (USD)": "{:.0f}",
+                                "Serviceable Available Market (USD)": "{:.0f}",
+                                "Serviceable Obtainable Market (USD)": "{:.0f}",
+                            }
+                        )
+                    )
 
-        product_df = _render_product_assumption_table(
-            session_key="product_table",
-            default_factory=_default_products,
-            blank_row_factory=lambda df: _blank_product_row(f"Product {len(df) + 1}"),
-            column_config={
-                "stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
-                "include_in_consolidation": st.column_config.CheckboxColumn("Include", default=True),
-                "success_prob": st.column_config.NumberColumn(
-                    "Success probability", min_value=0.0, max_value=1.0, step=0.05
-                ),
-                "labor_pct": st.column_config.NumberColumn(
-                    "Labor %", min_value=0.0, max_value=1.0, step=0.01
-                ),
-                "overhead_pct": st.column_config.NumberColumn(
-                    "Overhead %", min_value=0.0, max_value=1.0, step=0.01
-                ),
-                "material_pct": st.column_config.NumberColumn(
-                    "Material %", min_value=0.0, max_value=1.0, step=0.01
-                ),
-            },
-            id_column=None,
-            name_column="name",
-        )
-        product_df = _validate_product_df(product_df)
-        st.session_state["product_table"] = product_df
+            if show_revenue_estimation:
+                with st.expander("Vaccines revenue estimation", expanded=True):
+                    revenue_df = _render_product_assumption_table(
+                        session_key="vaccine_revenue_table",
+                        default_factory=_default_vaccine_revenue_table,
+                        blank_row_factory=_blank_vaccine_revenue_row,
+                    )
+                    patent_customers = _coerce_numeric(
+                        revenue_df.get("Patent customers per year", pd.Series(dtype=float))
+                    )
+                    patent_price = _coerce_numeric(
+                        revenue_df.get("Patent price (USD/customer)", pd.Series(dtype=float))
+                    )
+                    revenue_df["Patent revenue target (USD)"] = patent_customers * patent_price
+                    cust_adj = _coerce_numeric(
+                        revenue_df.get("Post patent customer adj. %", pd.Series(dtype=float))
+                    ).div(100).replace(0, np.nan)
+                    price_adj = _coerce_numeric(
+                        revenue_df.get("Post patent price adj. %", pd.Series(dtype=float))
+                    ).div(100).replace(0, np.nan)
+                    if "Post patent customers per year" not in revenue_df.columns:
+                        revenue_df["Post patent customers per year"] = patent_customers * cust_adj.fillna(1.0)
+                    else:
+                        post_patent_customers = _coerce_numeric(
+                            revenue_df["Post patent customers per year"], 0.0
+                        )
+                        mask_missing = post_patent_customers.isna() | (post_patent_customers == 0)
+                        revenue_df.loc[mask_missing, "Post patent customers per year"] = (
+                            patent_customers[mask_missing] * cust_adj.fillna(1.0)[mask_missing]
+                        )
+                    if "Post patent price (USD/customer)" not in revenue_df.columns:
+                        revenue_df["Post patent price (USD/customer)"] = patent_price * price_adj.fillna(1.0)
+                    else:
+                        post_patent_price = _coerce_numeric(
+                            revenue_df["Post patent price (USD/customer)"], 0.0
+                        )
+                        mask_price = post_patent_price.isna() | (post_patent_price == 0)
+                        revenue_df.loc[mask_price, "Post patent price (USD/customer)"] = (
+                            patent_price[mask_price] * price_adj.fillna(1.0)[mask_price]
+                        )
+                    revenue_df["Post patent revenue target (USD)"] = (
+                        _coerce_numeric(revenue_df["Post patent customers per year"], 0)
+                        * _coerce_numeric(revenue_df["Post patent price (USD/customer)"], 0)
+                    )
+                    st.session_state["vaccine_revenue_table"] = revenue_df
+                    revenue_display = revenue_df[
+                        [
+                            "ID_vaccine",
+                            "Vaccine name",
+                            "Patent revenue target (USD)",
+                            "Post patent revenue target (USD)",
+                        ]
+                    ]
+                    st.dataframe(
+                        revenue_display.style.format(
+                            {
+                                "Patent revenue target (USD)": "{:.0f}",
+                                "Post patent revenue target (USD)": "{:.0f}",
+                            }
+                        )
+                    )
 
-        portfolio = _build_portfolio(product_df, model_cfg)
-        if portfolio is None:
-            st.info("Add at least one product with a name to run valuations.")
-        else:
-            valuation_result = ValuationEngine(portfolio).run()
-            st.session_state["model_config"] = model_cfg
-            st.session_state["portfolio"] = portfolio
-            st.session_state["valuation_result"] = valuation_result
-            st.success(
-                f"Run complete: portfolio rNPV = {valuation_result.rnpv:,.0f} {model_cfg.currency}."
+            if show_cost_assumptions:
+                with st.expander("Vaccine cost assumptions", expanded=True):
+                    cost_df = _render_product_assumption_table(
+                        session_key="vaccine_cost_table",
+                        default_factory=_default_vaccine_cost_table,
+                        blank_row_factory=_blank_vaccine_cost_row,
+                    )
+                    cogs_patent = _coerce_numeric(cost_df.get("COGS patent % of sales", pd.Series(dtype=float)))
+                    cogs_post = _coerce_numeric(cost_df.get("COGS post % of sales", pd.Series(dtype=float)))
+                    marketing_pct = _coerce_numeric(cost_df.get("Marketing annual % of sales", pd.Series(dtype=float)))
+                    royalty_pct = _coerce_numeric(cost_df.get("Royalties cost % of sales", pd.Series(dtype=float)))
+                    gna_cols = [
+                        "Indirect staff cost (USD)",
+                        "Electricity (USD)",
+                        "Depreciation (USD)",
+                        "Interest & amortization (USD)",
+                    ]
+                    cost_df["G&A total (USD)"] = cost_df[gna_cols].sum(axis=1)
+                    cost_df["Patent operating cost %"] = cogs_patent + marketing_pct + royalty_pct
+                    cost_df["Post operating cost %"] = cogs_post + marketing_pct + royalty_pct
+                    st.session_state["vaccine_cost_table"] = cost_df
+                    cost_display = cost_df[
+                        [
+                            "ID_vaccine",
+                            "Vaccine name",
+                            "COGS patent % of sales",
+                            "COGS post % of sales",
+                            "Marketing annual % of sales",
+                            "Marketing launch cost (USD)",
+                            "Royalties cost % of sales",
+                            "G&A total (USD)",
+                            "Patent operating cost %",
+                            "Post operating cost %",
+                        ]
+                    ]
+                    percent_cols = [
+                        "COGS patent % of sales",
+                        "COGS post % of sales",
+                        "Marketing annual % of sales",
+                        "Royalties cost % of sales",
+                        "Patent operating cost %",
+                        "Post operating cost %",
+                    ]
+                    percent_fmt = {col: "{:.1f}%" for col in percent_cols if col in cost_display.columns}
+                    currency_fmt = {
+                        col: "{:.0f}"
+                        for col in ["Marketing launch cost (USD)", "G&A total (USD)"]
+                        if col in cost_display.columns
+                    }
+                    st.dataframe(cost_display.style.format({**percent_fmt, **currency_fmt}))
+
+            if show_rd:
+                with st.expander("Vaccines research & development (R&D)", expanded=True):
+                    rd_df = _render_product_assumption_table(
+                        session_key="vaccine_rd_table",
+                        default_factory=_default_vaccine_rd_table,
+                        blank_row_factory=_blank_vaccine_rd_row,
+                    )
+                    rd_df["Pre-GTM total (USD)"] = _coerce_numeric(
+                        rd_df.get("Pre-GTM spent to date (USD)", pd.Series(dtype=float))
+                    ) + _coerce_numeric(rd_df.get("Pre-GTM remaining (USD)", pd.Series(dtype=float)))
+                    st.session_state["vaccine_rd_table"] = rd_df
+                    rd_display = rd_df[
+                        [
+                            "ID_vaccine",
+                            "Vaccine name",
+                            "Cost accounting (capitalisation)",
+                            "Pre-GTM spent to date (USD)",
+                            "Pre-GTM remaining (USD)",
+                            "Pre-GTM total (USD)",
+                            "Post-GTM annual cost (USD/year)",
+                        ]
+                    ]
+                    rd_fmt = {
+                        col: "{:.0f}"
+                        for col in rd_display.columns
+                        if col not in ["ID_vaccine", "Vaccine name", "Cost accounting (capitalisation)"]
+                    }
+                    st.dataframe(rd_display.style.format(rd_fmt))
+
+            if show_capex:
+                with st.expander("Vaccine CAPEX assumptions", expanded=True):
+                    with st.expander("Shared CAPEX pools", expanded=False):
+                        shared_pools_df = _render_product_assumption_table(
+                            session_key="shared_capex_pools_table",
+                            default_factory=_default_shared_capex_pools_table,
+                            blank_row_factory=lambda df: {
+                                "Pool name": "New shared pool",
+                                "Applies to (IDs or ALL)": "ALL",
+                                "Allocation method": "Equal",
+                            },
+                            column_config={
+                                "Allocation method": st.column_config.SelectboxColumn(
+                                    "Allocation method", options=["Equal", "By Weight"]
+                                )
+                            },
+                        )
+                        st.session_state["shared_capex_pools_table"] = shared_pools_df
+                    with st.expander("Shared CAPEX allocation weights", expanded=False):
+                        shared_allocations_df = _render_product_assumption_table(
+                            session_key="shared_capex_allocations_table",
+                            default_factory=_default_shared_capex_allocations_table,
+                            blank_row_factory=lambda df: {
+                                "Pool name": "Core manufacturing facility",
+                                "ID_vaccine": _next_vaccine_id(df),
+                                "Weight": 1.0,
+                            },
+                        )
+                        st.session_state["shared_capex_allocations_table"] = shared_allocations_df
+
+                    capex_df = _render_product_assumption_table(
+                        session_key="vaccine_capex_table",
+                        default_factory=_default_vaccine_capex_table,
+                        blank_row_factory=_blank_vaccine_capex_row,
+                    )
+                    capex_pre_cols = [
+                        "Manufacturing & Scale-up Assets (Pre-GTM, USD)",
+                        "Quality & Compliance Infrastructure (Pre-GTM, USD)",
+                        "Cold-chain / Distribution Assets (Pre-GTM, USD)",
+                        "IT / Data / Digital Infrastructure (Pre-GTM, USD)",
+                        "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)",
+                        "Process Development & Tech-Transfer Assets (Pre-GTM, USD)",
+                    ]
+                    capex_post_cols = [
+                        "Manufacturing & Scale-up Assets (Post-GTM, USD/year)",
+                        "Quality & Compliance Infrastructure (Post-GTM, USD/year)",
+                        "Cold-chain / Distribution Assets (Post-GTM, USD/year)",
+                        "IT / Data / Digital Infrastructure (Post-GTM, USD/year)",
+                        "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)",
+                        "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)",
+                    ]
+                    capex_pre = capex_df.get(capex_pre_cols, pd.DataFrame()).apply(
+                        pd.to_numeric, errors="coerce"
+                    )
+                    capex_post = capex_df.get(capex_post_cols, pd.DataFrame()).apply(
+                        pd.to_numeric, errors="coerce"
+                    )
+                    capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
+                    capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
+                    if not shared_pools_df.empty:
+                        shared_allocations = _build_shared_capex_allocations(
+                            st.session_state.get("vaccine_development_table", pd.DataFrame()),
+                            shared_pools_df,
+                            shared_allocations_df,
+                        )
+                        if not shared_allocations.empty:
+                            pool_values = shared_pools_df.copy()
+                            pool_values["Pool name"] = pool_values.get("Pool name", "").astype(str)
+                            pool_values["Pre-GTM total (USD)"] = pool_values.get(
+                                capex_pre_cols, pd.DataFrame()
+                            ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+                            pool_values["Post-GTM total (USD/year)"] = pool_values.get(
+                                capex_post_cols, pd.DataFrame()
+                            ).apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+                            shared_totals = shared_allocations.merge(
+                                pool_values[
+                                    ["Pool name", "Pre-GTM total (USD)", "Post-GTM total (USD/year)"]
+                                ],
+                                on="Pool name",
+                                how="left",
+                            )
+                            shared_totals["Shared Pre-GTM capex (USD)"] = (
+                                shared_totals["Share"]
+                                * shared_totals["Pre-GTM total (USD)"].fillna(0.0)
+                            )
+                            shared_totals["Shared Post-GTM capex (USD/year)"] = (
+                                shared_totals["Share"]
+                                * shared_totals["Post-GTM total (USD/year)"].fillna(0.0)
+                            )
+                            shared_summary = (
+                                shared_totals.groupby("ID_vaccine", as_index=False)[
+                                    ["Shared Pre-GTM capex (USD)", "Shared Post-GTM capex (USD/year)"]
+                                ]
+                                .sum()
+                            )
+                            capex_df = capex_df.drop(
+                                columns=[
+                                    "Shared Pre-GTM capex (USD)",
+                                    "Shared Post-GTM capex (USD/year)",
+                                ],
+                                errors="ignore",
+                            )
+                            capex_df = capex_df.merge(shared_summary, on="ID_vaccine", how="left")
+                            capex_df["Shared Pre-GTM capex (USD)"] = capex_df.get(
+                                "Shared Pre-GTM capex (USD)", pd.Series(0.0, index=capex_df.index)
+                            ).fillna(0.0)
+                            capex_df["Shared Post-GTM capex (USD/year)"] = capex_df.get(
+                                "Shared Post-GTM capex (USD/year)", pd.Series(0.0, index=capex_df.index)
+                            ).fillna(0.0)
+                            capex_df["Total Pre-GTM capex (USD)"] = (
+                                capex_df["Total Pre-GTM capex (USD)"]
+                                + capex_df["Shared Pre-GTM capex (USD)"]
+                            )
+                            capex_df["Total Post-GTM capex (USD/year)"] = (
+                                capex_df["Total Post-GTM capex (USD/year)"]
+                                + capex_df["Shared Post-GTM capex (USD/year)"]
+                            )
+                    st.session_state["vaccine_capex_table"] = capex_df
+                    capex_display = capex_df[
+                        [
+                            "ID_vaccine",
+                            "Vaccine name",
+                            "Total Pre-GTM capex (USD)",
+                            "Total Post-GTM capex (USD/year)",
+                        ]
+                    ]
+                    capex_fmt = {
+                        col: "{:.0f}"
+                        for col in capex_display.columns
+                        if col not in ["ID_vaccine", "Vaccine name"]
+                    }
+                    st.dataframe(capex_display.style.format(capex_fmt))
+
+            if show_royalties:
+                with st.expander("Vaccines royalty revenues", expanded=True):
+                    royalty_df = _render_product_assumption_table(
+                        session_key="vaccine_royalty_table",
+                        default_factory=_default_royalty_table,
+                        blank_row_factory=_blank_vaccine_royalty_row,
+                        column_config={
+                            "Monetization model": st.column_config.SelectboxColumn(
+                                "Monetization model", options=["Product Sale", "Licensing"]
+                            )
+                        },
+                    )
+                    revenue_lookup = st.session_state.get("vaccine_revenue_table", pd.DataFrame())
+                    if "ID_vaccine" in revenue_lookup.columns:
+                        revenue_lookup = revenue_lookup.drop_duplicates("ID_vaccine", keep="last")
+                        patent_lookup = revenue_lookup.set_index("ID_vaccine").get(
+                            "Patent revenue target (USD)", pd.Series(dtype=float)
+                        )
+                        post_lookup = revenue_lookup.set_index("ID_vaccine").get(
+                            "Post patent revenue target (USD)", pd.Series(dtype=float)
+                        )
+                    else:
+                        patent_lookup = pd.Series(dtype=float)
+                        post_lookup = pd.Series(dtype=float)
+                    royalty_rate = _coerce_numeric(royalty_df.get("Royalty rate (%)", pd.Series(dtype=float))).div(100)
+                    royalty_df["Patent revenue (USD)"] = royalty_df["ID_vaccine"].map(patent_lookup)
+                    royalty_df["Post patent revenue (USD)"] = royalty_df["ID_vaccine"].map(post_lookup)
+                    royalty_df["Royalty income (USD)"] = royalty_df["Patent revenue (USD)"] * royalty_rate
+                    st.session_state["vaccine_royalty_table"] = royalty_df
+                    st.dataframe(
+                        royalty_df[
+                            [
+                                "ID_vaccine",
+                                "Vaccine name",
+                                "Royalty rate (%)",
+                                "Royalty income (USD)",
+                                "Patent revenue (USD)",
+                                "Post patent revenue (USD)",
+                            ]
+                        ].style.format(
+                            {
+                                "Royalty rate (%)": "{:.1f}",
+                                "Royalty income (USD)": "{:.0f}",
+                                "Patent revenue (USD)": "{:.0f}",
+                                "Post patent revenue (USD)": "{:.0f}",
+                            }
+                        )
+                    )
+
+            if show_market_share:
+                with st.expander("Vaccines market share", expanded=True):
+                    market_share_df = _render_product_assumption_table(
+                        session_key="vaccine_market_share_table",
+                        default_factory=_default_market_share_table,
+                        blank_row_factory=_blank_vaccine_market_share_row,
+                    )
+                    relevant_market = _coerce_numeric(
+                        market_share_df.get("Relevant market size (USD)", pd.Series(dtype=float))
+                    )
+                    patent_target_pct = _coerce_numeric(
+                        market_share_df.get("Revenue target - patent %", pd.Series(dtype=float))
+                    ).div(100)
+                    post_target_pct = _coerce_numeric(
+                        market_share_df.get("Revenue target - post %", pd.Series(dtype=float))
+                    ).div(100)
+                    market_share_df["Revenue target patent (USD)"] = relevant_market * patent_target_pct
+                    market_share_df["Revenue target post (USD)"] = relevant_market * post_target_pct
+                    st.session_state["vaccine_market_share_table"] = market_share_df
+                    st.dataframe(
+                        market_share_df[
+                            [
+                                "ID_vaccine",
+                                "Vaccine name",
+                                "Relevant market type",
+                                "Relevant market size (USD)",
+                                "Revenue target patent (USD)",
+                                "Revenue target post (USD)",
+                                "Market share patent %",
+                                "Market share post %",
+                                "Market growth %",
+                                "Sales growth %",
+                            ]
+                        ].style.format(
+                            {
+                                "Relevant market size (USD)": "{:.0f}",
+                                "Revenue target patent (USD)": "{:.0f}",
+                                "Revenue target post (USD)": "{:.0f}",
+                                "Market share patent %": "{:.1f}",
+                                "Market share post %": "{:.1f}",
+                                "Market growth %": "{:.1f}",
+                                "Sales growth %": "{:.1f}",
+                            }
+                        )
+                    )
+
+            with st.expander("Template library", expanded=False):
+                templates = _template_library()
+                template_name = st.selectbox("Choose a template", options=list(templates.keys()))
+                if st.button("Load template into product table"):
+                    st.session_state["product_table"] = templates[template_name].copy()
+                    st.success(f"Loaded template: {template_name}")
+                st.caption("Templates provide starting points for common biotech asset profiles.")
+
+            product_df = _render_product_assumption_table(
+                session_key="product_table",
+                default_factory=_default_products,
+                blank_row_factory=lambda df: _blank_product_row(f"Product {len(df) + 1}"),
+                column_config={
+                    "stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
+                    "sales_ramp_length": st.column_config.NumberColumn(
+                        "Sales ramp length (years)", min_value=0, step=1
+                    ),
+                    "sales_ramp_shape": st.column_config.SelectboxColumn(
+                        "Ramp shape", options=RAMP_SHAPE_OPTIONS
+                    ),
+                    "include_in_consolidation": st.column_config.CheckboxColumn("Include", default=True),
+                    "success_prob": st.column_config.NumberColumn(
+                        "Success probability", min_value=0.0, max_value=1.0, step=0.05
+                    ),
+                    "labor_pct": st.column_config.NumberColumn(
+                        "Labor %", min_value=0.0, max_value=1.0, step=0.01
+                    ),
+                    "overhead_pct": st.column_config.NumberColumn(
+                        "Overhead %", min_value=0.0, max_value=1.0, step=0.01
+                    ),
+                    "material_pct": st.column_config.NumberColumn(
+                        "Material %", min_value=0.0, max_value=1.0, step=0.01
+                    ),
+                },
+                id_column=None,
+                name_column="name",
             )
+            stage_mapping = st.session_state.get(
+                "stage_schedule_mapping",
+                _default_stage_schedule_mapping(),
+            )
+            if st.session_state.get("stage_mapping_auto_apply", True):
+                product_df = _apply_stage_schedule_defaults(
+                    product_df,
+                    stage_mapping,
+                    stage_column="stage",
+                    overwrite=st.session_state.get("stage_mapping_overwrite", False),
+                )
+            product_df = _validate_product_df(product_df)
+            st.session_state["product_table"] = product_df
+
+            portfolio = _build_portfolio(
+                product_df,
+                model_cfg,
+                stage_mapping=stage_mapping,
+                overwrite_defaults=st.session_state.get("stage_mapping_overwrite", False),
+            )
+            if portfolio is None:
+                st.info("Add at least one product with a name to run valuations.")
+            else:
+                validation_issues = validate_portfolio(portfolio)
+                if validation_issues:
+                    st.error("Validation issues detected:")
+                    for issue in validation_issues:
+                        st.write(f"- {issue}")
+                    st.stop()
+                valuation_result = ValuationEngine(portfolio).run()
+                st.session_state["model_config"] = model_cfg
+                st.session_state["portfolio"] = portfolio
+                st.session_state["valuation_result"] = valuation_result
+                st.success(
+                    f"Run complete: portfolio rNPV = {valuation_result.rnpv:,.0f} {model_cfg.currency}."
+                )
 
     with financial_tab:
         st.subheader("Financial statements")
@@ -5457,16 +6523,48 @@ def main() -> None:
         else:
             st.markdown("**Dashboard snapshot**")
             cons = valuation_result.consolidated
-            kpi_cols = st.columns(4)
+            kpi_cols = st.columns(5)
             kpi_cols[0].metric("Portfolio rNPV", f"{valuation_result.rnpv:,.0f} {model_cfg.currency}")
-            kpi_cols[1].metric("Peak revenue", f"{cons['revenue'].max():,.0f}")
+            peak_year = int(cons["revenue"].idxmax())
+            kpi_cols[1].metric("Peak revenue year", f"{peak_year}")
+            kpi_cols[2].metric("Peak revenue", f"{cons['revenue'].max():,.0f}")
             avg_margin = cons["ebitda"].sum() / cons["revenue"].sum() if cons["revenue"].sum() else 0.0
-            kpi_cols[2].metric("Avg EBITDA margin", f"{avg_margin:.1%}")
-            kpi_cols[3].metric("Total FCFF after WC", f"{cons['fcff_after_wc'].sum():,.0f}")
+            kpi_cols[3].metric("Avg EBITDA margin", f"{avg_margin:.1%}")
+            break_even_candidates = cons.index[cons["fcff_after_wc"] > 0]
+            break_even_year = int(break_even_candidates[0]) if len(break_even_candidates) else None
+            kpi_cols[4].metric("Break-even year", f"{break_even_year}" if break_even_year else "N/A")
 
             chart_data = cons[["revenue", "ebitda", "fcff_after_wc"]]
             st.area_chart(chart_data)
             st.bar_chart(cons["fcff_after_wc"], use_container_width=True)
+
+            with st.expander("Comparable multiples (EV/EBITDA or EV/Sales)", expanded=False):
+                comps_df = st.session_state.get(
+                    "comps_table",
+                    pd.DataFrame(
+                        [
+                            {"Peer": "Peer A", "Multiple": 8.0, "Metric": "EV/EBITDA"},
+                            {"Peer": "Peer B", "Multiple": 10.0, "Metric": "EV/EBITDA"},
+                            {"Peer": "Peer C", "Multiple": 12.0, "Metric": "EV/EBITDA"},
+                        ]
+                    ),
+                )
+                comps_df = st.data_editor(comps_df, num_rows="dynamic", key="comps_table_editor")
+                st.session_state["comps_table"] = comps_df
+                valid_mult = pd.to_numeric(comps_df.get("Multiple"), errors="coerce").dropna()
+                if not valid_mult.empty:
+                    min_mult = float(valid_mult.min())
+                    med_mult = float(valid_mult.median())
+                    max_mult = float(valid_mult.max())
+                    last_year = cons.index.max()
+                    base_ebitda = float(cons.loc[last_year, "ebitda"])
+                    st.markdown(
+                        f"Implied EV range (using last-year EBITDA {base_ebitda:,.0f}): "
+                        f"{min_mult * base_ebitda:,.0f} - {max_mult * base_ebitda:,.0f}"
+                    )
+                    st.caption(f"Median multiple: {med_mult:.1f}x")
+                else:
+                    st.info("Add comparable multiples to see implied valuation ranges.")
 
         st.markdown("**Scenario analysis**")
         if portfolio is None:
@@ -5483,25 +6581,29 @@ def main() -> None:
                     cost: float,
                     dr: float,
                     prob: float,
+                    delay: int = 0,
+                    stage_slippage: Optional[Dict[str, int]] = None,
                 ) -> None:
                     st.session_state["scenario_rev_mult"] = rev
                     st.session_state["scenario_cost_mult"] = cost
                     st.session_state["scenario_dr_shift"] = dr
                     st.session_state["scenario_prob_mult"] = prob
+                    st.session_state["scenario_delay"] = delay
+                    st.session_state["scenario_stage_slippage"] = stage_slippage or {}
 
                 if preset_buttons[0].button("Base", key="scenario_preset_base"):
-                    _apply_preset(rev=1.0, cost=1.0, dr=0.0, prob=1.0)
+                    _apply_preset(rev=1.0, cost=1.0, dr=0.0, prob=1.0, delay=0)
                 if preset_buttons[1].button("Upside", key="scenario_preset_upside"):
-                    _apply_preset(rev=1.2, cost=0.9, dr=-0.01, prob=1.1)
+                    _apply_preset(rev=1.2, cost=0.9, dr=-0.01, prob=1.1, delay=0)
                 if preset_buttons[2].button("Downside", key="scenario_preset_downside"):
-                    _apply_preset(rev=0.8, cost=1.1, dr=0.01, prob=0.9)
+                    _apply_preset(rev=0.8, cost=1.1, dr=0.01, prob=0.9, delay=1)
                 if preset_buttons[3].button("Trial failure", key="scenario_preset_failure"):
-                    _apply_preset(rev=0.6, cost=1.3, dr=0.03, prob=0.75)
+                    _apply_preset(rev=0.6, cost=1.3, dr=0.03, prob=0.75, delay=2)
 
             with name_col:
                 scenario_name = st.text_input("Scenario name", value="Custom scenario", key="scenario_name")
 
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             rev_mult = col1.slider(
                 "Revenue multiplier",
                 0.25,
@@ -5530,12 +6632,41 @@ def main() -> None:
                 st.session_state.get("scenario_prob_mult", 1.0),
                 key="scenario_prob_mult",
             )
+            launch_delay = col5.slider(
+                "Launch delay (years)",
+                0,
+                5,
+                int(st.session_state.get("scenario_delay", 0)),
+                key="scenario_delay",
+            )
+            st.markdown("**Stage slippage (years)**")
+            slip_col1, slip_col2 = st.columns(2)
+            slip_phase_ii = slip_col1.slider(
+                "Phase II delay",
+                0,
+                3,
+                int(st.session_state.get("scenario_slip_phase_ii", 0)),
+                key="scenario_slip_phase_ii",
+            )
+            slip_phase_iii = slip_col2.slider(
+                "Phase III delay",
+                0,
+                3,
+                int(st.session_state.get("scenario_slip_phase_iii", 0)),
+                key="scenario_slip_phase_iii",
+            )
+            stage_slippage = {
+                "Phase II": int(slip_phase_ii),
+                "Phase III": int(slip_phase_iii),
+            }
             scenario = Scenario(
                 name=scenario_name or "Custom scenario",
                 revenue_multiplier=float(rev_mult),
                 cost_multiplier=float(cost_mult),
                 discount_rate_shift=float(dr_shift),
                 success_prob_multiplier=float(prob_mult),
+                launch_delay_years=int(launch_delay),
+                stage_slippage_years=stage_slippage,
             )
             scen_results = ScenarioEngine(portfolio).run_scenarios([scenario])
 
@@ -5545,6 +6676,8 @@ def main() -> None:
                 cost_multiplier=float(cost_mult),
                 discount_shift=float(dr_shift),
                 success_prob_multiplier=float(prob_mult),
+                launch_delay_years=int(launch_delay),
+                stage_slippage_years=stage_slippage,
             )
             if scenario_result is not None and valuation_result is not None:
                 base_cons = valuation_result.consolidated
@@ -5569,6 +6702,48 @@ def main() -> None:
                     "FCFF delta",
                     f"{scen_cons['fcff_after_wc'].sum():,.0f}",
                     f"{scen_cons['fcff_after_wc'].sum() - base_cons['fcff_after_wc'].sum():+,.0f}",
+                )
+
+                def _funding_required_from_cons(cons_df: pd.DataFrame) -> float:
+                    uses_total = float(st.session_state.get("uses_total", 0.0))
+                    burn_total = 0.0
+                    wc_total = 0.0
+                    if "fcff_after_wc" in cons_df.columns:
+                        burn_total = float((-cons_df["fcff_after_wc"].clip(upper=0)).sum())
+                    if "delta_wc" in cons_df.columns:
+                        wc_total = float((-cons_df["delta_wc"].clip(upper=0)).sum())
+                    return uses_total + burn_total + wc_total
+
+                component_rows = [
+                    {
+                        "Component": "Revenue",
+                        "Base": float(base_cons["revenue"].sum()),
+                        "Scenario": float(scen_cons["revenue"].sum()),
+                    },
+                    {
+                        "Component": "R&D cash burn",
+                        "Base": float((-base_cons.get("rd_cash", pd.Series(0.0, index=base_cons.index))).sum()),
+                        "Scenario": float((-scen_cons.get("rd_cash", pd.Series(0.0, index=scen_cons.index))).sum()),
+                    },
+                    {
+                        "Component": "CAPEX cash",
+                        "Base": float((-base_cons.get("capex_cash", pd.Series(0.0, index=base_cons.index))).sum()),
+                        "Scenario": float((-scen_cons.get("capex_cash", pd.Series(0.0, index=scen_cons.index))).sum()),
+                    },
+                    {
+                        "Component": "Equity required (uses + burn + WC)",
+                        "Base": _funding_required_from_cons(base_cons),
+                        "Scenario": _funding_required_from_cons(scen_cons),
+                    },
+                ]
+                component_df = pd.DataFrame(component_rows)
+                component_df["Delta"] = component_df["Scenario"] - component_df["Base"]
+                st.markdown("**Scenario deltas by component**")
+                st.dataframe(
+                    component_df.style.format(
+                        {"Base": "{:,.0f}", "Scenario": "{:,.0f}", "Delta": "{:+,.0f}"}
+                    ),
+                    use_container_width=True,
                 )
 
                 overlay_df = pd.DataFrame(
@@ -5649,6 +6824,52 @@ def main() -> None:
             ratios = _build_ratio_table(cons)
             st.markdown("**Margin & intensity analysis**")
             st.dataframe(ratios.style.format("{:.1%}"))
+
+            with st.expander("Probability-weighted cost burden", expanded=False):
+                per_product_prob = valuation_result.per_product_prob
+                cost_rows: List[Dict[str, float]] = []
+                cost_columns = [
+                    "cogs",
+                    "labor",
+                    "overhead",
+                    "materials",
+                    "sales_marketing",
+                    "gna",
+                    "royalty",
+                ]
+                for name, df in per_product_prob.items():
+                    opex = df[cost_columns].sum().sum() if all(col in df.columns for col in cost_columns) else 0.0
+                    rd_cash = df["rd_cash"].sum() if "rd_cash" in df.columns else 0.0
+                    capex_cash = df["capex_cash"].sum() if "capex_cash" in df.columns else 0.0
+                    total_cost = -(opex + rd_cash + capex_cash)
+                    cost_rows.append(
+                        {
+                            "Product": name,
+                            "Probability-weighted opex": -opex,
+                            "Probability-weighted R&D cash": -rd_cash,
+                            "Probability-weighted CAPEX": -capex_cash,
+                            "Total cost burden": total_cost,
+                        }
+                    )
+                if cost_rows:
+                    cost_df = pd.DataFrame(cost_rows).sort_values("Total cost burden", ascending=False)
+                    st.dataframe(
+                        cost_df.style.format(
+                            {
+                                "Probability-weighted opex": "{:,.0f}",
+                                "Probability-weighted R&D cash": "{:,.0f}",
+                                "Probability-weighted CAPEX": "{:,.0f}",
+                                "Total cost burden": "{:,.0f}",
+                            }
+                        ),
+                        use_container_width=True,
+                    )
+                    st.caption(
+                        "Costs are weighted by the annual success schedule so early-stage programs show "
+                        "risk-adjusted cash burn rather than raw spend."
+                    )
+                else:
+                    st.info("Run the model to view probability-weighted cost burdens.")
             st.markdown("**Vaccine break-even analysis (interactive)**")
             base_inputs = _build_vaccine_break_even_inputs(model_cfg)
             if base_inputs.empty:

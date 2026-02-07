@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import List, Dict, Optional, Callable, Iterable
 
 import numpy as np
@@ -42,6 +42,8 @@ class ProductConfig:
     include_in_consolidation: bool = True
 
     time_to_market: int = 3
+    sales_ramp_length: Optional[int] = None
+    sales_ramp_shape: Optional[str] = None
     patent_years: int = 20
     preexisting_market: bool = False
 
@@ -69,6 +71,34 @@ class ProductConfig:
     rd_amort_years: int = 10
     capex_dep_years: int = 10
 
+    stage_duration_years: Dict[str, int] = field(default_factory=dict)
+    stage_cost_weights: Dict[str, float] = field(default_factory=dict)
+    stage_capex_weights: Dict[str, float] = field(default_factory=dict)
+    stage_transition_probabilities: Dict[str, float] = field(default_factory=dict)
+    stage_transition_curve: Dict[str, List[float]] = field(default_factory=dict)
+    post_patent_erosion: List[float] = field(default_factory=lambda: [1.0, 0.85, 0.7, 0.55, 0.4])
+    milestones: List["Milestone"] = field(default_factory=list)
+
+
+@dataclass
+class Milestone:
+    name: str
+    year_offset: int
+    amount: float
+    probability: float = 1.0
+    timing: str = "from_launch"
+
+
+STAGE_SEQUENCE = [
+    "Discovery",
+    "Preclinical",
+    "Phase I",
+    "Phase II",
+    "Phase III",
+    "Approval",
+    "Commercial",
+]
+
 
 def _scale_product_config(
     config: ProductConfig,
@@ -76,6 +106,7 @@ def _scale_product_config(
     revenue_multiplier: float = 1.0,
     cost_multiplier: float = 1.0,
     success_prob_multiplier: float = 1.0,
+    launch_delay_years: int = 0,
 ) -> ProductConfig:
     cfg_dict = asdict(config)
     cfg_dict["patent_revenue_target"] *= revenue_multiplier
@@ -93,6 +124,42 @@ def _scale_product_config(
     cfg_dict["capex_remaining_pre_launch"] *= cost_multiplier
     cfg_dict["capex_annual_post_launch"] *= cost_multiplier
     cfg_dict["success_prob"] = max(0.0, min(1.0, cfg_dict["success_prob"] * success_prob_multiplier))
+    cfg_dict["milestones"] = [
+        Milestone(**asdict(milestone)) if isinstance(milestone, Milestone) else Milestone(**milestone)
+        for milestone in config.milestones
+    ]
+    if launch_delay_years and not config.preexisting_market:
+        cfg_dict["time_to_market"] = max(0, int(config.time_to_market) + int(launch_delay_years))
+    return ProductConfig(**cfg_dict)
+
+
+def _apply_stage_slippage(config: ProductConfig, slippage: Dict[str, int]) -> ProductConfig:
+    if not slippage or config.preexisting_market:
+        return config
+    cfg_dict = asdict(config)
+    stage_durations = cfg_dict.get("stage_duration_years") or {}
+    updated_durations = dict(stage_durations) if stage_durations else {}
+    for stage, years in slippage.items():
+        try:
+            delay = int(years)
+        except (TypeError, ValueError):
+            continue
+        if delay == 0:
+            continue
+        if updated_durations:
+            updated_durations[stage] = max(0, int(updated_durations.get(stage, 0)) + delay)
+        else:
+            if stage == config.stage:
+                cfg_dict["time_to_market"] = max(0, int(cfg_dict.get("time_to_market", 0)) + delay)
+    if updated_durations:
+        cfg_dict["stage_duration_years"] = updated_durations
+        if config.stage in STAGE_SEQUENCE:
+            stage_idx = STAGE_SEQUENCE.index(config.stage)
+            total = 0
+            for idx in range(stage_idx, len(STAGE_SEQUENCE) - 1):
+                from_stage = STAGE_SEQUENCE[idx]
+                total += int(updated_durations.get(from_stage, 0))
+            cfg_dict["time_to_market"] = max(0, total)
     return ProductConfig(**cfg_dict)
 
 
@@ -130,6 +197,99 @@ class Product:
         return ramp
 
     @staticmethod
+    def _erosion_factors_array(years_since_patent_end: np.ndarray, erosion_factors: Iterable[float]) -> np.ndarray:
+        erosion_list = list(erosion_factors)
+        if not erosion_list:
+            return np.ones_like(years_since_patent_end, dtype=float)
+        erosion_values = np.array(erosion_list, dtype=float)
+        idx = np.clip(years_since_patent_end, 0, len(erosion_values) - 1)
+        erosion = erosion_values[idx]
+        erosion[years_since_patent_end < 0] = 1.0
+        return erosion
+
+    @staticmethod
+    def _ramp_shape_values(shape: Optional[str], length: int) -> List[float]:
+        if length <= 0:
+            return []
+        normalized = (shape or "Linear").strip().lower()
+        if length == 1:
+            return [1.0]
+        if normalized in {"step", "step-up"}:
+            return [0.0] + [1.0] * (length - 1)
+        if normalized in {"s-curve", "s curve", "sigmoid"}:
+            x = np.linspace(-2.5, 2.5, length)
+            curve = 1.0 / (1.0 + np.exp(-x))
+            curve = (curve - curve.min()) / (curve.max() - curve.min())
+            return curve.tolist()
+        return np.linspace(0.2, 1.0, length).tolist()
+
+    def _stage_success_probability(self) -> float:
+        cfg = self.config
+        if not cfg.stage_transition_probabilities and not cfg.stage_transition_curve:
+            return max(0.0, min(1.0, cfg.success_prob))
+        if cfg.stage not in STAGE_SEQUENCE:
+            return max(0.0, min(1.0, cfg.success_prob))
+        stage_idx = STAGE_SEQUENCE.index(cfg.stage)
+        if cfg.stage in {"Approval", "Commercial"}:
+            return 1.0
+        transitions = []
+        for idx in range(stage_idx, len(STAGE_SEQUENCE) - 1):
+            from_stage = STAGE_SEQUENCE[idx]
+            to_stage = STAGE_SEQUENCE[idx + 1]
+            key = f"{from_stage}->{to_stage}"
+            if cfg.stage_transition_curve and key in cfg.stage_transition_curve:
+                curve = cfg.stage_transition_curve.get(key, [])
+                transitions.extend(curve if curve else [1.0])
+            else:
+                transitions.append(cfg.stage_transition_probabilities.get(key, 1.0))
+        prob = float(np.prod(transitions)) if transitions else 1.0
+        return max(0.0, min(1.0, prob))
+
+    def _success_prob_schedule(self) -> pd.Series:
+        years = self.model_config.years
+        cfg = self.config
+        cumulative_prob = self._stage_success_probability()
+        if cfg.preexisting_market or cfg.time_to_market <= 0:
+            return pd.Series(cumulative_prob, index=years)
+        if cfg.stage_transition_curve or cfg.stage_duration_years:
+            annual_probs: List[float] = []
+            if cfg.stage in STAGE_SEQUENCE:
+                stage_idx = STAGE_SEQUENCE.index(cfg.stage)
+                for idx in range(stage_idx, len(STAGE_SEQUENCE) - 1):
+                    from_stage = STAGE_SEQUENCE[idx]
+                    to_stage = STAGE_SEQUENCE[idx + 1]
+                    key = f"{from_stage}->{to_stage}"
+                    duration = int(cfg.stage_duration_years.get(from_stage, 0))
+                    if duration <= 0:
+                        continue
+                    curve = cfg.stage_transition_curve.get(key)
+                    if curve:
+                        curve_list = [float(value) for value in curve]
+                        if len(curve_list) < duration:
+                            curve_list = curve_list + [curve_list[-1]] * (duration - len(curve_list))
+                        else:
+                            curve_list = curve_list[:duration]
+                        annual_probs.extend(curve_list)
+                    else:
+                        annual_prob = cfg.stage_transition_probabilities.get(key, 1.0)
+                        annual_probs.extend([annual_prob] * duration)
+            if annual_probs:
+                schedule = np.ones(len(years), dtype=float)
+                cumulative = 1.0
+                max_years = min(len(annual_probs), len(years))
+                for idx in range(max_years):
+                    cumulative *= annual_probs[idx]
+                    schedule[idx] = cumulative
+                schedule[max_years:] = cumulative
+                return pd.Series(schedule, index=years)
+        pre_years = max(1, int(cfg.time_to_market))
+        schedule = np.ones(len(years), dtype=float)
+        ramp = np.linspace(1.0, cumulative_prob, num=pre_years + 1)
+        schedule[: pre_years + 1] = ramp
+        schedule[pre_years + 1 :] = cumulative_prob
+        return pd.Series(schedule, index=years)
+
+    @staticmethod
     def _growth_years(
         years: np.ndarray,
         years_since_launch: np.ndarray,
@@ -165,10 +325,62 @@ class Product:
         values[:years] = -annual
         return pd.Series(values, index=index)
 
+    def _stage_costed_prelaunch_cashflow(
+        self,
+        total: float,
+        index: np.ndarray,
+        stage_weights: Dict[str, float],
+    ) -> pd.Series:
+        cfg = self.config
+        values = np.zeros(len(index))
+        if total <= 0 or cfg.preexisting_market:
+            return pd.Series(values, index=index)
+        if not cfg.stage_duration_years:
+            pre_years = max(1, int(cfg.time_to_market))
+            return self._spread_prelaunch_cashflow(total, pre_years, index)
+        if cfg.stage not in STAGE_SEQUENCE:
+            pre_years = max(1, int(cfg.time_to_market))
+            return self._spread_prelaunch_cashflow(total, pre_years, index)
+        stage_idx = STAGE_SEQUENCE.index(cfg.stage)
+        stages = STAGE_SEQUENCE[stage_idx : -1]
+        total_years = sum(int(cfg.stage_duration_years.get(stage, 0)) for stage in stages)
+        if total_years <= 0:
+            pre_years = max(1, int(cfg.time_to_market))
+            return self._spread_prelaunch_cashflow(total, pre_years, index)
+        weights = {stage: float(stage_weights.get(stage, 0.0)) for stage in stages}
+        weight_total = sum(weight for stage, weight in weights.items() if cfg.stage_duration_years.get(stage, 0) > 0)
+        per_year: List[float] = []
+        if weight_total <= 0:
+            per_year = [total / total_years] * total_years
+        else:
+            for stage in stages:
+                duration = int(cfg.stage_duration_years.get(stage, 0))
+                if duration <= 0:
+                    continue
+                stage_weight = weights.get(stage, 0.0) / weight_total
+                stage_total = total * stage_weight
+                per_year.extend([stage_total / duration] * duration)
+        pre_years = min(len(per_year), len(index))
+        values[:pre_years] = -np.array(per_year[:pre_years])
+        return pd.Series(values, index=index)
+
     def build_revenue_series(self) -> pd.Series:
         years = self.model_config.years
         cfg = self.config
         ramp_factors = list(self.model_config.sales_ramp_factors or [])
+        if cfg.sales_ramp_shape:
+            ramp_len = int(cfg.sales_ramp_length or len(ramp_factors) or 1)
+            ramp_factors = self._ramp_shape_values(cfg.sales_ramp_shape, ramp_len)
+        elif cfg.sales_ramp_length is not None:
+            ramp_len = int(cfg.sales_ramp_length)
+            if ramp_len <= 0:
+                ramp_factors = []
+            elif not ramp_factors:
+                ramp_factors = [1.0] * ramp_len
+            elif ramp_len <= len(ramp_factors):
+                ramp_factors = ramp_factors[:ramp_len]
+            else:
+                ramp_factors = ramp_factors + [ramp_factors[-1]] * (ramp_len - len(ramp_factors))
         revenue = pd.Series(0.0, index=years, name=f"{cfg.name}_revenue")
         if not cfg.include_in_consolidation:
             return revenue
@@ -190,7 +402,9 @@ class Product:
             patent_end,
         )
         target_with_growth = base_target * np.power(1.0 + growth_rate, growth_years)
-        revenue.values[:] = ramp * target_with_growth
+        years_since_patent_end = years_arr - (patent_end + 1)
+        erosion = self._erosion_factors_array(years_since_patent_end, cfg.post_patent_erosion)
+        revenue.values[:] = ramp * target_with_growth * erosion
         return revenue
 
     def build_cashflow_table(self) -> pd.DataFrame:
@@ -217,8 +431,11 @@ class Product:
 
         rd_cash = pd.Series(0.0, index=years)
         if cfg.rd_remaining_pre_launch > 0 and not cfg.preexisting_market:
-            pre_years = max(1, cfg.time_to_market)
-            rd_cash += self._spread_prelaunch_cashflow(cfg.rd_remaining_pre_launch, pre_years, years)
+            rd_cash += self._stage_costed_prelaunch_cashflow(
+                cfg.rd_remaining_pre_launch,
+                years,
+                cfg.stage_cost_weights,
+            )
 
         launch_year = self._launch_year()
         rd_cash.loc[years >= launch_year] -= cfg.rd_annual_post_launch
@@ -233,8 +450,11 @@ class Product:
 
         capex_cash = pd.Series(0.0, index=years)
         if cfg.capex_remaining_pre_launch > 0 and not cfg.preexisting_market:
-            pre_years = max(1, cfg.time_to_market)
-            capex_cash += self._spread_prelaunch_cashflow(cfg.capex_remaining_pre_launch, pre_years, years)
+            capex_cash += self._stage_costed_prelaunch_cashflow(
+                cfg.capex_remaining_pre_launch,
+                years,
+                cfg.stage_capex_weights,
+            )
 
         capex_cash.loc[years >= launch_year] -= cfg.capex_annual_post_launch
         df["capex_cash"] = capex_cash
@@ -253,6 +473,26 @@ class Product:
             + df["royalty"]
             + df["rd_expense_pnl"]
         )
+        df["milestones"] = 0.0
+        normalized_milestones: List[Milestone] = []
+        for milestone in cfg.milestones:
+            if isinstance(milestone, Milestone):
+                normalized_milestones.append(milestone)
+                continue
+            try:
+                normalized_milestones.append(Milestone(**milestone))
+            except (TypeError, ValueError, KeyError):
+                continue
+        for milestone in normalized_milestones:
+            if milestone.timing == "from_launch":
+                milestone_year = self._launch_year() + milestone.year_offset
+            elif milestone.timing == "from_start":
+                milestone_year = self.model_config.first_year + milestone.year_offset
+            else:
+                milestone_year = self.model_config.first_year + milestone.year_offset
+            if milestone_year in df.index:
+                df.loc[milestone_year, "milestones"] += milestone.amount * milestone.probability
+        df["ebit"] = df["ebit"] + df["milestones"]
         df["da"] = -(df["rd_amort"] + df["depreciation"])
         df["ebitda"] = df["ebit"] + df["da"]
 
@@ -262,14 +502,14 @@ class Product:
         df.loc[positive_ebit, "tax"] = -tax_rate * df.loc[positive_ebit, "ebit"]
         df["nopat"] = df["ebit"] + df["tax"]
 
-        df["fcff"] = df["nopat"] + df["da"] + df["capex_cash"] + df["rd_cap_add"]
+        df["fcff"] = df["nopat"] + df["da"] + df["capex_cash"] + df["rd_cap_add"] + df["milestones"]
         return df
 
     def build_probability_weighted_table(self) -> pd.DataFrame:
         df = self.build_cashflow_table().copy()
-        p = self.config.success_prob
+        prob_schedule = self._success_prob_schedule()
         numeric_cols = df.select_dtypes(include=["number"]).columns
-        df.loc[:, numeric_cols] = df.loc[:, numeric_cols] * p
+        df.loc[:, numeric_cols] = df.loc[:, numeric_cols].multiply(prob_schedule, axis=0)
         return df
 
 
@@ -291,6 +531,7 @@ class Portfolio:
             "sales_marketing",
             "gna",
             "royalty",
+            "milestones",
             "rd_cash",
             "rd_cap_add",
             "rd_amort",
@@ -454,6 +695,8 @@ class Scenario:
     cost_multiplier: float = 1.0
     discount_rate_shift: float = 0.0
     success_prob_multiplier: float = 1.0
+    launch_delay_years: int = 0
+    stage_slippage_years: Dict[str, int] = field(default_factory=dict)
 
 
 class ScenarioEngine:
@@ -472,7 +715,9 @@ class ScenarioEngine:
                 revenue_multiplier=scenario.revenue_multiplier,
                 cost_multiplier=scenario.cost_multiplier,
                 success_prob_multiplier=scenario.success_prob_multiplier,
+                launch_delay_years=scenario.launch_delay_years,
             )
+            new_cfg = _apply_stage_slippage(new_cfg, scenario.stage_slippage_years)
             new_products.append(Product(new_cfg, new_model_cfg))
 
         return Portfolio(new_products, new_model_cfg)
@@ -531,27 +776,32 @@ class MonteCarloEngine:
         revenue_max: float = 1.2,
         cost_min: float = 0.8,
         cost_max: float = 1.2,
+        revenue_cost_correlation: float = 0.3,
         random_seed: Optional[int] = None,
     ) -> pd.Series:
         rng = np.random.default_rng(random_seed)
         vals = []
 
-        def _sample_scale(dist: str, sigma: float, min_val: float, max_val: float) -> float:
+        def _sample_scale(dist: str, z: float, sigma: float, min_val: float, max_val: float) -> float:
             dist = dist.lower()
             if dist == "lognormal":
                 mu = -0.5 * sigma**2
-                return float(rng.lognormal(mean=mu, sigma=sigma))
+                return float(np.exp(mu + sigma * z))
             if dist == "uniform":
                 low = min(min_val, max_val)
                 high = max(min_val, max_val)
-                return float(rng.uniform(low, high))
-            return float(rng.normal(1.0, sigma))
+                u = float(0.5 * (1 + np.math.erf(z / np.sqrt(2))))
+                return float(low + (high - low) * u)
+            return float(1.0 + sigma * z)
 
         for _ in range(n_sims):
             model_cfg = self.base_portfolio.model_config
             new_products: List[Product] = []
-            rev_scale = _sample_scale(revenue_dist, revenue_sigma, revenue_min, revenue_max)
-            cogs_scale = _sample_scale(cost_dist, cost_sigma, cost_min, cost_max)
+            corr = float(np.clip(revenue_cost_correlation, -0.99, 0.99))
+            cov = np.array([[1.0, corr], [corr, 1.0]])
+            z = rng.multivariate_normal([0.0, 0.0], cov)
+            rev_scale = _sample_scale(revenue_dist, z[0], revenue_sigma, revenue_min, revenue_max)
+            cogs_scale = _sample_scale(cost_dist, z[1], cost_sigma, cost_min, cost_max)
 
             for prod in self.base_portfolio.products:
                 new_cfg = _scale_product_config(
@@ -797,6 +1047,8 @@ class ForecastScenarioBridge:
 __all__ = [
     "ModelConfig",
     "ProductConfig",
+    "Milestone",
+    "STAGE_SEQUENCE",
     "Product",
     "Portfolio",
     "ValuationEngine",
@@ -808,7 +1060,74 @@ __all__ = [
     "MonteCarloEngine",
     "ForecastEngine",
     "ForecastScenarioBridge",
+    "validate_product_config",
+    "validate_portfolio",
 ]
+
+
+def validate_product_config(config: ProductConfig) -> List[str]:
+    issues: List[str] = []
+    if not (0.0 <= config.success_prob <= 1.0):
+        issues.append(f"{config.name}: success_prob must be between 0 and 1.")
+    if config.stage == "Commercial" and config.time_to_market > 0:
+        issues.append(f"{config.name}: Commercial stage requires time_to_market of 0.")
+    if config.patent_years <= 0:
+        issues.append(f"{config.name}: patent_years must be positive.")
+    if config.time_to_market < 0 and not config.preexisting_market:
+        issues.append(f"{config.name}: time_to_market must be >= 0 for non-preexisting products.")
+    if config.sales_ramp_shape and config.sales_ramp_shape not in {"Linear", "S-curve", "Step"}:
+        issues.append(f"{config.name}: sales_ramp_shape must be Linear, S-curve, or Step.")
+    for label, value in {
+        "rd_remaining_pre_launch": config.rd_remaining_pre_launch,
+        "rd_annual_post_launch": config.rd_annual_post_launch,
+        "capex_remaining_pre_launch": config.capex_remaining_pre_launch,
+        "capex_annual_post_launch": config.capex_annual_post_launch,
+    }.items():
+        if value < 0:
+            issues.append(f"{config.name}: {label} cannot be negative.")
+    for key, prob in config.stage_transition_probabilities.items():
+        if not (0.0 <= prob <= 1.0):
+            issues.append(f"{config.name}: stage transition '{key}' must be between 0 and 1.")
+    for stage, duration in config.stage_duration_years.items():
+        if duration < 0:
+            issues.append(f"{config.name}: stage duration '{stage}' must be >= 0.")
+    for stage, weight in config.stage_cost_weights.items():
+        if weight < 0:
+            issues.append(f"{config.name}: stage cost weight '{stage}' must be >= 0.")
+    for stage, weight in config.stage_capex_weights.items():
+        if weight < 0:
+            issues.append(f"{config.name}: stage capex weight '{stage}' must be >= 0.")
+    for key, curve in config.stage_transition_curve.items():
+        for prob in curve:
+            if not (0.0 <= prob <= 1.0):
+                issues.append(
+                    f"{config.name}: stage transition '{key}' curve values must be between 0 and 1."
+                )
+    for factor in config.post_patent_erosion:
+        if factor < 0:
+            issues.append(f"{config.name}: post_patent_erosion values must be >= 0.")
+    normalized_milestones: List[Milestone] = []
+    for milestone in config.milestones:
+        if isinstance(milestone, Milestone):
+            normalized_milestones.append(milestone)
+            continue
+        try:
+            normalized_milestones.append(Milestone(**milestone))
+        except (TypeError, ValueError, KeyError):
+            issues.append(f"{config.name}: milestone entries must include name, year_offset, and amount.")
+    for milestone in normalized_milestones:
+        if milestone.amount < 0:
+            issues.append(f"{config.name}: milestone '{milestone.name}' amount cannot be negative.")
+        if not (0.0 <= milestone.probability <= 1.0):
+            issues.append(f"{config.name}: milestone '{milestone.name}' probability must be 0-1.")
+    return issues
+
+
+def validate_portfolio(portfolio: Portfolio) -> List[str]:
+    issues: List[str] = []
+    for product in portfolio.products:
+        issues.extend(validate_product_config(product.config))
+    return issues
 
 
 if __name__ == "__main__":
