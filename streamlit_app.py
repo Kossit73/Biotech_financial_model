@@ -5380,11 +5380,21 @@ def main() -> None:
                     "stage_schedule_mapping",
                     _default_stage_schedule_mapping,
                 )
+                edit_mode = st.toggle(
+                    "Edit stage mapping",
+                    value=st.session_state.get("stage_mapping_edit", False),
+                    key="stage_mapping_edit",
+                    help="Toggle to edit directly in the table.",
+                )
+                st.caption(
+                    "Tip: click any cell to type directly; use Tab/Enter to move across columns."
+                )
                 previous_mapping = mapping_df.copy()
                 mapping_df = st.data_editor(
                     mapping_df,
                     num_rows="fixed",
                     hide_index=True,
+                    disabled=not edit_mode,
                     key="stage_schedule_mapping_editor",
                     column_config={
                         "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
