@@ -164,6 +164,72 @@ def _stage_visibility_flags(selected_stage: str) -> Dict[str, bool]:
     }
 
 
+def _stage_mapping_sanity_checks(mapping_df: pd.DataFrame) -> List[str]:
+    """Validate stage mapping inputs for scientific and commercial plausibility."""
+
+    warnings: List[str] = []
+    if mapping_df is None or mapping_df.empty:
+        return warnings
+    for _, row in mapping_df.iterrows():
+        stage = str(row.get("Stage", "")).strip()
+        if not stage:
+            continue
+        time_to_market = row.get("Time to market (years)")
+        if pd.notna(time_to_market):
+            time_to_market = float(time_to_market)
+        else:
+            time_to_market = None
+        duration_sum = 0
+        durations = {}
+        for col in STAGE_DURATION_COLUMNS:
+            value = row.get(col)
+            if pd.isna(value):
+                continue
+            duration = max(0, int(value))
+            stage_name = col.replace(" duration (years)", "")
+            durations[stage_name] = duration
+            duration_sum += duration
+        if time_to_market is not None and duration_sum and abs(time_to_market - duration_sum) > 1:
+            warnings.append(
+                f"{stage}: time-to-market ({time_to_market:.0f}y) should align with "
+                f"the stage durations total ({duration_sum}y)."
+            )
+        for col, label in [
+            ("Success Probability %", "success probability"),
+            ("R&D remaining pre-launch (USD)", "R&D remaining"),
+            ("R&D annual post-launch (USD/year)", "R&D annual post-launch"),
+        ]:
+            value = row.get(col)
+            if pd.isna(value):
+                continue
+            if col == "Success Probability %" and not (0 <= float(value) <= 100):
+                warnings.append(f"{stage}: {label} should be between 0% and 100%.")
+        for weight_cols, label in [
+            (STAGE_COST_WEIGHT_COLUMNS, "R&D weight"),
+            (STAGE_CAPEX_WEIGHT_COLUMNS, "CAPEX weight"),
+        ]:
+            weight_total = 0.0
+            for col in weight_cols:
+                value = row.get(col)
+                if pd.isna(value):
+                    continue
+                weight_total += float(value)
+            if weight_total and abs(weight_total - 100.0) > 5.0:
+                warnings.append(
+                    f"{stage}: {label} totals {weight_total:.0f}%. Target ~100% so spend allocation is coherent."
+                )
+        if stage in {"Approval", "Commercial"}:
+            if durations.get("Discovery", 0) or durations.get("Preclinical", 0):
+                warnings.append(
+                    f"{stage}: early-stage durations should typically be 0 once in {stage}."
+                )
+            if stage == "Commercial" and time_to_market not in (0, None):
+                warnings.append(
+                    f"{stage}: time-to-market should be 0 for commercial assets."
+                )
+    return warnings
+
+
 def _template_library() -> Dict[str, pd.DataFrame]:
     """Pre-built product templates for quick setup."""
 
@@ -5462,6 +5528,14 @@ def main() -> None:
                             "note": "Stage mapping updated",
                         }
                     )
+                mapping_warnings = _stage_mapping_sanity_checks(mapping_df)
+                if mapping_warnings:
+                    st.warning(
+                        "Scientific/commercial check: please review the items below so stage inputs "
+                        "remain realistic and internally consistent."
+                    )
+                    for warning in mapping_warnings:
+                        st.write(f"• {warning}")
                 st.session_state["stage_schedule_mapping"] = mapping_df
                 with st.expander("Mapping audit trail", expanded=False):
                     audit_log = st.session_state.get("stage_mapping_audit_log", [])
