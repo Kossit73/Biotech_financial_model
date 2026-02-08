@@ -4345,8 +4345,8 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
                 sheet.add_image(xlsx_image(image), "A1")
 
             _add_chart_sheet("Financial Statements Charts", "financial_statements_chart")
-            _add_chart_sheet("Financial Statements Charts", "dashboard_chart")
-            _add_chart_sheet("Financial Statements Charts", "dashboard_fcff_bar")
+            _add_chart_sheet("Dashboard Charts", "dashboard_chart")
+            _add_chart_sheet("Dashboard Charts", "dashboard_fcff_bar")
             _add_chart_sheet("Advanced Analytics Charts", "analytics_decomposition")
             _add_chart_sheet("Advanced Analytics Charts", "analytics_segmentation")
             _add_chart_sheet("Advanced Analytics Charts", "analytics_tornado")
