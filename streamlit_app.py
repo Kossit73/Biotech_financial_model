@@ -230,6 +230,14 @@ def _stage_mapping_sanity_checks(mapping_df: pd.DataFrame) -> List[str]:
     return warnings
 
 
+def _render_section_warnings(title: str, warnings: List[str]) -> None:
+    if not warnings:
+        return
+    st.warning(f"{title}: please review the inputs below for scientific, commercial, or financial validity.")
+    for warning in warnings:
+        st.write(f"• {warning}")
+
+
 def _template_library() -> Dict[str, pd.DataFrame]:
     """Pre-built product templates for quick setup."""
 
@@ -5706,6 +5714,10 @@ def main() -> None:
                         uses_total = float(uses_df.get("Amount", pd.Series(dtype=float)).sum())
                         st.session_state["uses_total"] = uses_total
                         st.metric("Total uses", f"{uses_total:,.0f}")
+                        uses_warnings = []
+                        if (pd.to_numeric(uses_df.get("Amount", pd.Series(dtype=float)), errors="coerce") < 0).any():
+                            uses_warnings.append("Uses contain negative amounts; use positive values.")
+                        _render_section_warnings("Uses", uses_warnings)
                         if {"ID_vaccine", "Vaccine name", "Amount"}.issubset(uses_df.columns):
                             uses_by_vaccine = (
                                 uses_df.groupby(["ID_vaccine", "Vaccine name"], dropna=False)["Amount"]
@@ -5777,6 +5789,10 @@ def main() -> None:
                         sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
                         st.session_state["sources_total"] = sources_total
                         st.metric("Total sources", f"{sources_total:,.0f}")
+                        sources_warnings = []
+                        if (pd.to_numeric(sources_df.get("Amount", pd.Series(dtype=float)), errors="coerce") < 0).any():
+                            sources_warnings.append("Sources contain negative amounts; use positive values.")
+                        _render_section_warnings("Sources", sources_warnings)
                     delta = sources_total - uses_total
                     st.info(f"Funding gap (sources - uses): {delta:,.0f}")
 
@@ -5821,6 +5837,12 @@ def main() -> None:
                     )
                     st.session_state["debt_schedule_table"] = debt_schedule_df
                     st.caption("Edit debt drawdowns; repayments and interest are calculated from the rate.")
+                    debt_warnings = []
+                    if (pd.to_numeric(debt_schedule_df.get("Debt drawdowns", pd.Series(dtype=float)), errors="coerce") < 0).any():
+                        debt_warnings.append("Debt drawdowns should be zero or positive.")
+                    if debt_interest_rate < 0 or debt_interest_rate > 1:
+                        debt_warnings.append("Debt interest rate should be between 0% and 100%.")
+                    _render_section_warnings("Debt schedule", debt_warnings)
                     funding_gap = funding_required - uses_total
                     st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
                     if abs(funding_gap) > 1.0:
@@ -5914,6 +5936,10 @@ def main() -> None:
                             "Value": st.column_config.NumberColumn("Value", step=1_000_000.0),
                         },
                     )
+                    market_warnings = []
+                    if (pd.to_numeric(market_df.get("Value", pd.Series(dtype=float)), errors="coerce") <= 0).any():
+                        market_warnings.append("Relevant market sizes should be greater than zero.")
+                    _render_section_warnings("Relevant market sizes", market_warnings)
 
             with st.expander("New equity issued"):
                 new_equity = st.number_input(
@@ -6023,6 +6049,16 @@ def main() -> None:
                             }
                         )
                     )
+                    market_size_warnings = []
+                    if (market_size <= 0).any():
+                        market_size_warnings.append("Market size (# customers) should be greater than zero.")
+                    if (avg_spend <= 0).any():
+                        market_size_warnings.append("Average spend should be greater than zero.")
+                    if (sam_pct > 100).any() or (sam_pct < 0).any():
+                        market_size_warnings.append("Serviceable Available Market % should be 0–100%.")
+                    if (som_pct > 100).any() or (som_pct < 0).any():
+                        market_size_warnings.append("Serviceable Obtainable Market % should be 0–100%.")
+                    _render_section_warnings("Market size estimation", market_size_warnings)
 
             if show_revenue_estimation:
                 with st.expander("Vaccines revenue estimation", expanded=True):
@@ -6085,6 +6121,16 @@ def main() -> None:
                             }
                         )
                     )
+                    revenue_warnings = []
+                    if (patent_customers < 0).any():
+                        revenue_warnings.append("Patent customers per year should be zero or positive.")
+                    if (patent_price < 0).any():
+                        revenue_warnings.append("Patent price should be zero or positive.")
+                    if (revenue_df["Patent revenue target (USD)"] < 0).any():
+                        revenue_warnings.append("Patent revenue targets should be zero or positive.")
+                    if (revenue_df["Post patent revenue target (USD)"] < 0).any():
+                        revenue_warnings.append("Post-patent revenue targets should be zero or positive.")
+                    _render_section_warnings("Revenue estimation", revenue_warnings)
 
             if show_cost_assumptions:
                 with st.expander("Vaccine cost assumptions", expanded=True):
@@ -6136,6 +6182,18 @@ def main() -> None:
                         if col in cost_display.columns
                     }
                     st.dataframe(cost_display.style.format({**percent_fmt, **currency_fmt}))
+                    cost_warnings = []
+                    for label, series in [
+                        ("COGS patent % of sales", cogs_patent),
+                        ("COGS post % of sales", cogs_post),
+                        ("Marketing annual % of sales", marketing_pct),
+                        ("Royalties cost % of sales", royalty_pct),
+                    ]:
+                        if (series < 0).any() or (series > 1).any():
+                            cost_warnings.append(f"{label} should be between 0% and 100%.")
+                    if (cost_df["G&A total (USD)"] < 0).any():
+                        cost_warnings.append("G&A total should be zero or positive.")
+                    _render_section_warnings("Cost assumptions", cost_warnings)
 
             if show_rd:
                 with st.expander("Vaccines research & development (R&D)", expanded=True):
@@ -6165,6 +6223,15 @@ def main() -> None:
                         if col not in ["ID_vaccine", "Vaccine name", "Cost accounting (capitalisation)"]
                     }
                     st.dataframe(rd_display.style.format(rd_fmt))
+                    rd_warnings = []
+                    for col in [
+                        "Pre-GTM spent to date (USD)",
+                        "Pre-GTM remaining (USD)",
+                        "Post-GTM annual cost (USD/year)",
+                    ]:
+                        if (pd.to_numeric(rd_df.get(col, pd.Series(dtype=float)), errors="coerce") < 0).any():
+                            rd_warnings.append(f"{col} should be zero or positive.")
+                    _render_section_warnings("R&D assumptions", rd_warnings)
 
             if show_capex:
                 with st.expander("Vaccine CAPEX assumptions", expanded=True):
@@ -6223,6 +6290,12 @@ def main() -> None:
                     capex_post = capex_df.get(capex_post_cols, pd.DataFrame()).apply(
                         pd.to_numeric, errors="coerce"
                     )
+                    capex_warnings = []
+                    if (capex_pre < 0).any().any():
+                        capex_warnings.append("Pre-GTM CAPEX entries should be zero or positive.")
+                    if (capex_post < 0).any().any():
+                        capex_warnings.append("Post-GTM CAPEX entries should be zero or positive.")
+                    _render_section_warnings("CAPEX assumptions", capex_warnings)
                     capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
                     capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
                     if not shared_pools_df.empty:
