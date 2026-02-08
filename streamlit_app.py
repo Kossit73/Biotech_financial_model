@@ -5467,32 +5467,46 @@ def main() -> None:
                 else:
                     row_idx = mapping_df.index[row_mask][0]
                     base_row = mapping_df.loc[row_idx]
+                    updates: Dict[str, float | int | str] = {}
+
+                    def _field_key(col_name: str) -> str:
+                        safe = (
+                            col_name.lower()
+                            .replace(" ", "_")
+                            .replace("%", "pct")
+                            .replace("/", "_")
+                            .replace("(", "")
+                            .replace(")", "")
+                            .replace("-", "_")
+                        )
+                        return f"stage_mapping_{safe}"
+
                     col_a, col_b, col_c = st.columns(3)
                     with col_a:
-                        success_prob = st.number_input(
+                        updates["Success Probability %"] = st.number_input(
                             "Success Probability %",
                             min_value=0.0,
                             max_value=100.0,
                             value=float(base_row.get("Success Probability %", 0.0) or 0.0),
                             step=1.0,
-                            key="stage_mapping_success_prob",
+                            key=_field_key("Success Probability %"),
                         )
-                        time_to_market = st.number_input(
+                        updates["Time to market (years)"] = st.number_input(
                             "Time to market (years)",
                             min_value=0,
                             value=int(base_row.get("Time to market (years)", 0) or 0),
                             step=1,
-                            key="stage_mapping_time_to_market",
+                            key=_field_key("Time to market (years)"),
                         )
                     with col_b:
-                        sales_ramp_length = st.number_input(
+                        updates["Sales ramp length (years)"] = st.number_input(
                             "Sales ramp length (years)",
                             min_value=0,
                             value=int(base_row.get("Sales ramp length (years)", 0) or 0),
                             step=1,
-                            key="stage_mapping_ramp_length",
+                            key=_field_key("Sales ramp length (years)"),
                         )
-                        ramp_shape = st.selectbox(
+                        updates["Ramp shape"] = st.selectbox(
                             "Ramp shape",
                             options=RAMP_SHAPE_OPTIONS,
                             index=RAMP_SHAPE_OPTIONS.index(
@@ -5500,30 +5514,98 @@ def main() -> None:
                                 if base_row.get("Ramp shape", RAMP_SHAPE_OPTIONS[0]) in RAMP_SHAPE_OPTIONS
                                 else RAMP_SHAPE_OPTIONS[0]
                             ),
-                            key="stage_mapping_ramp_shape",
+                            key=_field_key("Ramp shape"),
                         )
                     with col_c:
-                        rd_remaining = st.number_input(
+                        updates["R&D remaining pre-launch (USD)"] = st.number_input(
                             "R&D remaining pre-launch (USD)",
                             min_value=0.0,
                             value=float(base_row.get("R&D remaining pre-launch (USD)", 0.0) or 0.0),
                             step=1_000_000.0,
-                            key="stage_mapping_rd_remaining",
+                            key=_field_key("R&D remaining pre-launch (USD)"),
                         )
-                        rd_annual = st.number_input(
+                        updates["R&D annual post-launch (USD/year)"] = st.number_input(
                             "R&D annual post-launch (USD/year)",
                             min_value=0.0,
                             value=float(base_row.get("R&D annual post-launch (USD/year)", 0.0) or 0.0),
                             step=1_000_000.0,
-                            key="stage_mapping_rd_annual",
+                            key=_field_key("R&D annual post-launch (USD/year)"),
                         )
+
+                    with st.expander("Stage durations", expanded=True):
+                        duration_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_DURATION_COLUMNS):
+                            with duration_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0,
+                                    value=int(base_row.get(col, 0) or 0),
+                                    step=1,
+                                    key=_field_key(col),
+                                )
+
+                    with st.expander("Transition probabilities", expanded=False):
+                        trans_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_TRANSITION_COLUMNS):
+                            with trans_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_field_key(col),
+                                )
+                        annual_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_TRANSITION_ANNUAL_COLUMNS):
+                            with annual_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_field_key(col),
+                                )
+
+                    with st.expander("R&D and CAPEX allocation", expanded=False):
+                        rd_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_COST_WEIGHT_COLUMNS):
+                            with rd_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_field_key(col),
+                                )
+                        capex_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_CAPEX_WEIGHT_COLUMNS):
+                            with capex_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_field_key(col),
+                                )
+
+                    with st.expander("Milestones", expanded=False):
+                        milestone_cols = st.columns(2)
+                        for idx, col in enumerate(STAGE_MILESTONE_COLUMNS):
+                            with milestone_cols[idx % 2]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1_000_000.0,
+                                    key=_field_key(col),
+                                )
                     if st.button("Apply quick edits", key="stage_mapping_apply_quick"):
-                        mapping_df.loc[row_idx, "Success Probability %"] = success_prob
-                        mapping_df.loc[row_idx, "Time to market (years)"] = time_to_market
-                        mapping_df.loc[row_idx, "Sales ramp length (years)"] = sales_ramp_length
-                        mapping_df.loc[row_idx, "Ramp shape"] = ramp_shape
-                        mapping_df.loc[row_idx, "R&D remaining pre-launch (USD)"] = rd_remaining
-                        mapping_df.loc[row_idx, "R&D annual post-launch (USD/year)"] = rd_annual
+                        for col, value in updates.items():
+                            mapping_df.loc[row_idx, col] = value
                         st.success(f"Updated {stage_to_edit} defaults.")
                 with st.expander("Full mapping table (advanced)", expanded=False):
                     st.caption(
