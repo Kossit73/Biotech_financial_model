@@ -142,6 +142,28 @@ def _default_products() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _stage_visibility_flags(selected_stage: str) -> Dict[str, bool]:
+    """Return visibility flags for stage-gated sections based on the pipeline stage."""
+
+    stage_index = STAGE_SEQUENCE.index(selected_stage)
+    show_precommercial = stage_index <= 4
+    show_approval_or_later = stage_index >= 5
+    show_forecast_ramp = stage_index in {0, 5, 6}
+    return {
+        "show_forecast_ramp": show_forecast_ramp,
+        "show_vaccine_sales": stage_index == 6,
+        "show_uses_sources": show_precommercial or stage_index == 5,
+        "show_relevant_market_sizes": stage_index in {1, 2, 3, 4},
+        "show_market_size_estimation": show_approval_or_later,
+        "show_revenue_estimation": show_approval_or_later,
+        "show_cost_assumptions": show_approval_or_later,
+        "show_royalties": show_approval_or_later,
+        "show_market_share": show_approval_or_later,
+        "show_rd": show_precommercial,
+        "show_capex": True,
+    }
+
+
 def _template_library() -> Dict[str, pd.DataFrame]:
     """Pre-built product templates for quick setup."""
 
@@ -5318,27 +5340,18 @@ def main() -> None:
                 st.markdown("**Selected template**")
                 st.markdown(f"- {selected_stage}")
                 st.caption("Select a stage to align asset setup and scenario inputs.")
-                stage_index = STAGE_SEQUENCE.index(selected_stage)
-                show_discovery = stage_index == 0
-                show_preclinical = stage_index == 1
-                show_phase_i = stage_index == 2
-                show_phase_ii = stage_index == 3
-                show_phase_iii = stage_index == 4
-                show_approval = stage_index == 5
-                show_commercial = stage_index == 6
-                show_precommercial = stage_index <= 4
-                show_approval_or_later = stage_index >= 5
-                show_forecast_ramp = show_discovery or show_approval_or_later
-                show_vaccine_sales = show_commercial
-                show_uses_sources = show_precommercial or show_approval
-                show_relevant_market_sizes = stage_index in {1, 2, 3, 4}
-                show_market_size_estimation = show_approval_or_later
-                show_revenue_estimation = show_approval_or_later
-                show_cost_assumptions = show_approval_or_later
-                show_royalties = show_approval_or_later
-                show_market_share = show_approval_or_later
-                show_rd = show_precommercial
-                show_capex = True
+                visibility = _stage_visibility_flags(selected_stage)
+                show_forecast_ramp = visibility["show_forecast_ramp"]
+                show_vaccine_sales = visibility["show_vaccine_sales"]
+                show_uses_sources = visibility["show_uses_sources"]
+                show_relevant_market_sizes = visibility["show_relevant_market_sizes"]
+                show_market_size_estimation = visibility["show_market_size_estimation"]
+                show_revenue_estimation = visibility["show_revenue_estimation"]
+                show_cost_assumptions = visibility["show_cost_assumptions"]
+                show_royalties = visibility["show_royalties"]
+                show_market_share = visibility["show_market_share"]
+                show_rd = visibility["show_rd"]
+                show_capex = visibility["show_capex"]
 
             with st.expander("Stage-to-schedule mapping", expanded=False):
                 st.caption(
