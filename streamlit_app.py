@@ -57,71 +57,22 @@ from valuation_codex_package import (
 )
 
 
-STAGE_OPTIONS = [
-    "Discovery",
-    "Preclinical",
-    "Phase I",
-    "Phase II",
-    "Phase III",
-    "Approval",
-    "Commercial",
-]
-
+STAGE_OPTIONS = list(STAGE_SEQUENCE)
 STAGE_TRANSITION_COLUMNS = [
-    "Discovery->Preclinical",
-    "Preclinical->Phase I",
-    "Phase I->Phase II",
-    "Phase II->Phase III",
-    "Phase III->Approval",
-    "Approval->Commercial",
+    f"{from_stage}->{to_stage}"
+    for from_stage, to_stage in zip(STAGE_SEQUENCE[:-1], STAGE_SEQUENCE[1:])
 ]
-
-STAGE_DURATION_COLUMNS = [
-    "Discovery duration (years)",
-    "Preclinical duration (years)",
-    "Phase I duration (years)",
-    "Phase II duration (years)",
-    "Phase III duration (years)",
-    "Approval duration (years)",
-    "Commercial duration (years)",
-]
-
+STAGE_DURATION_COLUMNS = [f"{stage} duration (years)" for stage in STAGE_SEQUENCE]
 STAGE_TRANSITION_ANNUAL_COLUMNS = [
-    "Discovery->Preclinical annual success %",
-    "Preclinical->Phase I annual success %",
-    "Phase I->Phase II annual success %",
-    "Phase II->Phase III annual success %",
-    "Phase III->Approval annual success %",
-    "Approval->Commercial annual success %",
+    f"{transition} annual success %" for transition in STAGE_TRANSITION_COLUMNS
 ]
 
 RAMP_SHAPE_OPTIONS = ["Linear", "S-curve", "Step"]
 
-STAGE_COST_WEIGHT_COLUMNS = [
-    "Discovery R&D weight %",
-    "Preclinical R&D weight %",
-    "Phase I R&D weight %",
-    "Phase II R&D weight %",
-    "Phase III R&D weight %",
-    "Approval R&D weight %",
-]
-
-STAGE_CAPEX_WEIGHT_COLUMNS = [
-    "Discovery CAPEX weight %",
-    "Preclinical CAPEX weight %",
-    "Phase I CAPEX weight %",
-    "Phase II CAPEX weight %",
-    "Phase III CAPEX weight %",
-    "Approval CAPEX weight %",
-]
-
+STAGE_COST_WEIGHT_COLUMNS = [f"{stage} R&D weight %" for stage in STAGE_SEQUENCE[:-1]]
+STAGE_CAPEX_WEIGHT_COLUMNS = [f"{stage} CAPEX weight %" for stage in STAGE_SEQUENCE[:-1]]
 STAGE_MILESTONE_COLUMNS = [
-    "Discovery completion milestone (USD)",
-    "Preclinical completion milestone (USD)",
-    "Phase I completion milestone (USD)",
-    "Phase II completion milestone (USD)",
-    "Phase III completion milestone (USD)",
-    "Approval completion milestone (USD)",
+    f"{stage} completion milestone (USD)" for stage in STAGE_SEQUENCE[:-1]
 ]
 
 SELECTOR_OPTIONS = [
