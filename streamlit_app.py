@@ -5454,80 +5454,144 @@ def main() -> None:
                     "stage_schedule_mapping",
                     _default_stage_schedule_mapping,
                 )
-                edit_mode = st.toggle(
-                    "Edit stage mapping",
-                    value=st.session_state.get("stage_mapping_edit", False),
-                    key="stage_mapping_edit",
-                    help="Toggle to edit directly in the table.",
-                )
-                st.caption(
-                    "Tip: click any cell to type directly; use Tab/Enter to move across columns."
-                )
                 previous_mapping = mapping_df.copy()
-                mapping_df = st.data_editor(
-                    mapping_df,
-                    num_rows="fixed",
-                    hide_index=True,
-                    disabled=not edit_mode,
-                    key="stage_schedule_mapping_editor",
-                    column_config={
-                        "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
-                        "Success Probability %": st.column_config.NumberColumn(
-                            "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
-                        ),
-                        "Time to market (years)": st.column_config.NumberColumn(
-                            "Time to market (years)", min_value=0, step=1
-                        ),
-                        "Sales ramp length (years)": st.column_config.NumberColumn(
-                            "Sales ramp length (years)", min_value=0, step=1
-                        ),
-                        "Ramp shape": st.column_config.SelectboxColumn(
-                            "Ramp shape", options=RAMP_SHAPE_OPTIONS
-                        ),
-                        "R&D remaining pre-launch (USD)": st.column_config.NumberColumn(
-                            "R&D remaining pre-launch (USD)", step=1_000_000.0
-                        ),
-                        "R&D annual post-launch (USD/year)": st.column_config.NumberColumn(
-                            "R&D annual post-launch (USD/year)", step=1_000_000.0
-                        ),
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0, step=1
-                            )
-                            for col in STAGE_DURATION_COLUMNS
-                        },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0.0, max_value=100.0, step=1.0
-                            )
-                            for col in STAGE_COST_WEIGHT_COLUMNS
-                        },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0.0, max_value=100.0, step=1.0
-                            )
-                            for col in STAGE_CAPEX_WEIGHT_COLUMNS
-                        },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0.0, max_value=100.0, step=1.0
-                            )
-                            for col in STAGE_TRANSITION_COLUMNS
-                        },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, min_value=0.0, max_value=100.0, step=1.0
-                            )
-                            for col in STAGE_TRANSITION_ANNUAL_COLUMNS
-                        },
-                        **{
-                            col: st.column_config.NumberColumn(
-                                col, step=1_000_000.0
-                            )
-                            for col in STAGE_MILESTONE_COLUMNS
-                        },
-                    },
+                st.markdown("**Quick edit by stage**")
+                stage_to_edit = st.selectbox(
+                    "Select stage to edit",
+                    options=STAGE_OPTIONS,
+                    key="stage_mapping_quick_stage",
                 )
+                row_mask = mapping_df["Stage"].astype(str) == str(stage_to_edit)
+                if not row_mask.any():
+                    st.warning("Selected stage not found in the mapping table.")
+                else:
+                    row_idx = mapping_df.index[row_mask][0]
+                    base_row = mapping_df.loc[row_idx]
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        success_prob = st.number_input(
+                            "Success Probability %",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float(base_row.get("Success Probability %", 0.0) or 0.0),
+                            step=1.0,
+                            key="stage_mapping_success_prob",
+                        )
+                        time_to_market = st.number_input(
+                            "Time to market (years)",
+                            min_value=0,
+                            value=int(base_row.get("Time to market (years)", 0) or 0),
+                            step=1,
+                            key="stage_mapping_time_to_market",
+                        )
+                    with col_b:
+                        sales_ramp_length = st.number_input(
+                            "Sales ramp length (years)",
+                            min_value=0,
+                            value=int(base_row.get("Sales ramp length (years)", 0) or 0),
+                            step=1,
+                            key="stage_mapping_ramp_length",
+                        )
+                        ramp_shape = st.selectbox(
+                            "Ramp shape",
+                            options=RAMP_SHAPE_OPTIONS,
+                            index=RAMP_SHAPE_OPTIONS.index(
+                                base_row.get("Ramp shape", RAMP_SHAPE_OPTIONS[0])
+                                if base_row.get("Ramp shape", RAMP_SHAPE_OPTIONS[0]) in RAMP_SHAPE_OPTIONS
+                                else RAMP_SHAPE_OPTIONS[0]
+                            ),
+                            key="stage_mapping_ramp_shape",
+                        )
+                    with col_c:
+                        rd_remaining = st.number_input(
+                            "R&D remaining pre-launch (USD)",
+                            min_value=0.0,
+                            value=float(base_row.get("R&D remaining pre-launch (USD)", 0.0) or 0.0),
+                            step=1_000_000.0,
+                            key="stage_mapping_rd_remaining",
+                        )
+                        rd_annual = st.number_input(
+                            "R&D annual post-launch (USD/year)",
+                            min_value=0.0,
+                            value=float(base_row.get("R&D annual post-launch (USD/year)", 0.0) or 0.0),
+                            step=1_000_000.0,
+                            key="stage_mapping_rd_annual",
+                        )
+                    if st.button("Apply quick edits", key="stage_mapping_apply_quick"):
+                        mapping_df.loc[row_idx, "Success Probability %"] = success_prob
+                        mapping_df.loc[row_idx, "Time to market (years)"] = time_to_market
+                        mapping_df.loc[row_idx, "Sales ramp length (years)"] = sales_ramp_length
+                        mapping_df.loc[row_idx, "Ramp shape"] = ramp_shape
+                        mapping_df.loc[row_idx, "R&D remaining pre-launch (USD)"] = rd_remaining
+                        mapping_df.loc[row_idx, "R&D annual post-launch (USD/year)"] = rd_annual
+                        st.success(f"Updated {stage_to_edit} defaults.")
+                with st.expander("Full mapping table (advanced)", expanded=False):
+                    st.caption(
+                        "Tip: click any cell to type directly; use Tab/Enter to move across columns."
+                    )
+                    mapping_df = st.data_editor(
+                        mapping_df,
+                        num_rows="fixed",
+                        hide_index=True,
+                        key="stage_schedule_mapping_editor",
+                        column_config={
+                            "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
+                            "Success Probability %": st.column_config.NumberColumn(
+                                "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
+                            ),
+                            "Time to market (years)": st.column_config.NumberColumn(
+                                "Time to market (years)", min_value=0, step=1
+                            ),
+                            "Sales ramp length (years)": st.column_config.NumberColumn(
+                                "Sales ramp length (years)", min_value=0, step=1
+                            ),
+                            "Ramp shape": st.column_config.SelectboxColumn(
+                                "Ramp shape", options=RAMP_SHAPE_OPTIONS
+                            ),
+                            "R&D remaining pre-launch (USD)": st.column_config.NumberColumn(
+                                "R&D remaining pre-launch (USD)", step=1_000_000.0
+                            ),
+                            "R&D annual post-launch (USD/year)": st.column_config.NumberColumn(
+                                "R&D annual post-launch (USD/year)", step=1_000_000.0
+                            ),
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0, step=1
+                                )
+                                for col in STAGE_DURATION_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_COST_WEIGHT_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_CAPEX_WEIGHT_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_TRANSITION_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, min_value=0.0, max_value=100.0, step=1.0
+                                )
+                                for col in STAGE_TRANSITION_ANNUAL_COLUMNS
+                            },
+                            **{
+                                col: st.column_config.NumberColumn(
+                                    col, step=1_000_000.0
+                                )
+                                for col in STAGE_MILESTONE_COLUMNS
+                            },
+                        },
+                    )
                 if not mapping_df.equals(previous_mapping):
                     st.session_state["stage_mapping_audit_log"].append(
                         {
