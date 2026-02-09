@@ -57,71 +57,22 @@ from valuation_codex_package import (
 )
 
 
-STAGE_OPTIONS = [
-    "Discovery",
-    "Preclinical",
-    "Phase I",
-    "Phase II",
-    "Phase III",
-    "Approval",
-    "Commercial",
-]
-
+STAGE_OPTIONS = list(STAGE_SEQUENCE)
 STAGE_TRANSITION_COLUMNS = [
-    "Discovery->Preclinical",
-    "Preclinical->Phase I",
-    "Phase I->Phase II",
-    "Phase II->Phase III",
-    "Phase III->Approval",
-    "Approval->Commercial",
+    f"{from_stage}->{to_stage}"
+    for from_stage, to_stage in zip(STAGE_SEQUENCE[:-1], STAGE_SEQUENCE[1:])
 ]
-
-STAGE_DURATION_COLUMNS = [
-    "Discovery duration (years)",
-    "Preclinical duration (years)",
-    "Phase I duration (years)",
-    "Phase II duration (years)",
-    "Phase III duration (years)",
-    "Approval duration (years)",
-    "Commercial duration (years)",
-]
-
+STAGE_DURATION_COLUMNS = [f"{stage} duration (years)" for stage in STAGE_SEQUENCE]
 STAGE_TRANSITION_ANNUAL_COLUMNS = [
-    "Discovery->Preclinical annual success %",
-    "Preclinical->Phase I annual success %",
-    "Phase I->Phase II annual success %",
-    "Phase II->Phase III annual success %",
-    "Phase III->Approval annual success %",
-    "Approval->Commercial annual success %",
+    f"{transition} annual success %" for transition in STAGE_TRANSITION_COLUMNS
 ]
 
 RAMP_SHAPE_OPTIONS = ["Linear", "S-curve", "Step"]
 
-STAGE_COST_WEIGHT_COLUMNS = [
-    "Discovery R&D weight %",
-    "Preclinical R&D weight %",
-    "Phase I R&D weight %",
-    "Phase II R&D weight %",
-    "Phase III R&D weight %",
-    "Approval R&D weight %",
-]
-
-STAGE_CAPEX_WEIGHT_COLUMNS = [
-    "Discovery CAPEX weight %",
-    "Preclinical CAPEX weight %",
-    "Phase I CAPEX weight %",
-    "Phase II CAPEX weight %",
-    "Phase III CAPEX weight %",
-    "Approval CAPEX weight %",
-]
-
+STAGE_COST_WEIGHT_COLUMNS = [f"{stage} R&D weight %" for stage in STAGE_SEQUENCE[:-1]]
+STAGE_CAPEX_WEIGHT_COLUMNS = [f"{stage} CAPEX weight %" for stage in STAGE_SEQUENCE[:-1]]
 STAGE_MILESTONE_COLUMNS = [
-    "Discovery completion milestone (USD)",
-    "Preclinical completion milestone (USD)",
-    "Phase I completion milestone (USD)",
-    "Phase II completion milestone (USD)",
-    "Phase III completion milestone (USD)",
-    "Approval completion milestone (USD)",
+    f"{stage} completion milestone (USD)" for stage in STAGE_SEQUENCE[:-1]
 ]
 
 SELECTOR_OPTIONS = [
@@ -189,6 +140,102 @@ def _default_products() -> pd.DataFrame:
         },
     ]
     return pd.DataFrame(data)
+
+
+def _stage_visibility_flags(selected_stage: str) -> Dict[str, bool]:
+    """Return visibility flags for stage-gated sections based on the pipeline stage."""
+
+    stage_index = STAGE_SEQUENCE.index(selected_stage)
+    show_precommercial = stage_index <= 4
+    show_approval_or_later = stage_index >= 5
+    show_forecast_ramp = stage_index in {0, 5, 6}
+    return {
+        "show_forecast_ramp": show_forecast_ramp,
+        "show_vaccine_sales": stage_index == 6,
+        "show_uses_sources": show_precommercial or stage_index == 5,
+        "show_relevant_market_sizes": stage_index in {1, 2, 3, 4},
+        "show_market_size_estimation": show_approval_or_later,
+        "show_revenue_estimation": show_approval_or_later,
+        "show_cost_assumptions": show_approval_or_later,
+        "show_royalties": show_approval_or_later,
+        "show_market_share": show_approval_or_later,
+        "show_rd": show_precommercial,
+        "show_capex": True,
+    }
+
+
+def _stage_mapping_sanity_checks(mapping_df: pd.DataFrame) -> List[str]:
+    """Validate stage mapping inputs for scientific and commercial plausibility."""
+
+    warnings: List[str] = []
+    if mapping_df is None or mapping_df.empty:
+        return warnings
+    for _, row in mapping_df.iterrows():
+        stage = str(row.get("Stage", "")).strip()
+        if not stage:
+            continue
+        time_to_market = row.get("Time to market (years)")
+        if pd.notna(time_to_market):
+            time_to_market = float(time_to_market)
+        else:
+            time_to_market = None
+        duration_sum = 0
+        durations = {}
+        for col in STAGE_DURATION_COLUMNS:
+            value = row.get(col)
+            if pd.isna(value):
+                continue
+            duration = max(0, int(value))
+            stage_name = col.replace(" duration (years)", "")
+            durations[stage_name] = duration
+            duration_sum += duration
+        if time_to_market is not None and duration_sum and abs(time_to_market - duration_sum) > 1:
+            warnings.append(
+                f"{stage}: time-to-market ({time_to_market:.0f}y) should align with "
+                f"the stage durations total ({duration_sum}y)."
+            )
+        for col, label in [
+            ("Success Probability %", "success probability"),
+            ("R&D remaining pre-launch (USD)", "R&D remaining"),
+            ("R&D annual post-launch (USD/year)", "R&D annual post-launch"),
+        ]:
+            value = row.get(col)
+            if pd.isna(value):
+                continue
+            if col == "Success Probability %" and not (0 <= float(value) <= 100):
+                warnings.append(f"{stage}: {label} should be between 0% and 100%.")
+        for weight_cols, label in [
+            (STAGE_COST_WEIGHT_COLUMNS, "R&D weight"),
+            (STAGE_CAPEX_WEIGHT_COLUMNS, "CAPEX weight"),
+        ]:
+            weight_total = 0.0
+            for col in weight_cols:
+                value = row.get(col)
+                if pd.isna(value):
+                    continue
+                weight_total += float(value)
+            if weight_total and abs(weight_total - 100.0) > 5.0:
+                warnings.append(
+                    f"{stage}: {label} totals {weight_total:.0f}%. Target ~100% so spend allocation is coherent."
+                )
+        if stage in {"Approval", "Commercial"}:
+            if durations.get("Discovery", 0) or durations.get("Preclinical", 0):
+                warnings.append(
+                    f"{stage}: early-stage durations should typically be 0 once in {stage}."
+                )
+            if stage == "Commercial" and time_to_market not in (0, None):
+                warnings.append(
+                    f"{stage}: time-to-market should be 0 for commercial assets."
+                )
+    return warnings
+
+
+def _render_section_warnings(title: str, warnings: List[str]) -> None:
+    if not warnings:
+        return
+    st.warning(f"{title}: please review the inputs below for scientific, commercial, or financial validity.")
+    for warning in warnings:
+        st.write(f"• {warning}")
 
 
 def _template_library() -> Dict[str, pd.DataFrame]:
@@ -4298,8 +4345,8 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
                 sheet.add_image(xlsx_image(image), "A1")
 
             _add_chart_sheet("Financial Statements Charts", "financial_statements_chart")
-            _add_chart_sheet("Financial Statements Charts", "dashboard_chart")
-            _add_chart_sheet("Financial Statements Charts", "dashboard_fcff_bar")
+            _add_chart_sheet("Dashboard Charts", "dashboard_chart")
+            _add_chart_sheet("Dashboard Charts", "dashboard_fcff_bar")
             _add_chart_sheet("Advanced Analytics Charts", "analytics_decomposition")
             _add_chart_sheet("Advanced Analytics Charts", "analytics_segmentation")
             _add_chart_sheet("Advanced Analytics Charts", "analytics_tornado")
@@ -5367,27 +5414,18 @@ def main() -> None:
                 st.markdown("**Selected template**")
                 st.markdown(f"- {selected_stage}")
                 st.caption("Select a stage to align asset setup and scenario inputs.")
-                stage_index = STAGE_SEQUENCE.index(selected_stage)
-                show_discovery = stage_index == 0
-                show_preclinical = stage_index == 1
-                show_phase_i = stage_index == 2
-                show_phase_ii = stage_index == 3
-                show_phase_iii = stage_index == 4
-                show_approval = stage_index == 5
-                show_commercial = stage_index == 6
-                show_precommercial = stage_index <= 4
-                show_approval_or_later = stage_index >= 5
-                show_forecast_ramp = show_discovery or show_approval_or_later
-                show_vaccine_sales = show_commercial
-                show_uses_sources = show_precommercial or show_approval
-                show_relevant_market_sizes = stage_index in {1, 2, 3, 4}
-                show_market_size_estimation = show_approval_or_later
-                show_revenue_estimation = show_approval_or_later
-                show_cost_assumptions = show_approval_or_later
-                show_royalties = show_approval_or_later
-                show_market_share = show_approval_or_later
-                show_rd = show_precommercial
-                show_capex = True
+                visibility = _stage_visibility_flags(selected_stage)
+                show_forecast_ramp = visibility["show_forecast_ramp"]
+                show_vaccine_sales = visibility["show_vaccine_sales"]
+                show_uses_sources = visibility["show_uses_sources"]
+                show_relevant_market_sizes = visibility["show_relevant_market_sizes"]
+                show_market_size_estimation = visibility["show_market_size_estimation"]
+                show_revenue_estimation = visibility["show_revenue_estimation"]
+                show_cost_assumptions = visibility["show_cost_assumptions"]
+                show_royalties = visibility["show_royalties"]
+                show_market_share = visibility["show_market_share"]
+                show_rd = visibility["show_rd"]
+                show_capex = visibility["show_capex"]
 
             with st.expander("Stage-to-schedule mapping", expanded=False):
                 st.caption(
@@ -5416,16 +5454,163 @@ def main() -> None:
                     "stage_schedule_mapping",
                     _default_stage_schedule_mapping,
                 )
-                if "stage_mapping_edit" not in st.session_state:
-                    st.session_state["stage_mapping_edit"] = False
-                if st.session_state["stage_mapping_edit"]:
-                    if st.button("Done", key="stage_mapping_done_btn"):
-                        st.session_state["stage_mapping_edit"] = False
+                previous_mapping = mapping_df.copy()
+                st.markdown("**Quick edit by stage**")
+                stage_to_edit = st.selectbox(
+                    "Select stage to edit",
+                    options=STAGE_OPTIONS,
+                    key="stage_mapping_quick_stage",
+                )
+                row_mask = mapping_df["Stage"].astype(str) == str(stage_to_edit)
+                if not row_mask.any():
+                    st.warning("Selected stage not found in the mapping table.")
                 else:
-                    if st.button("Edit", key="stage_mapping_edit_btn"):
-                        st.session_state["stage_mapping_edit"] = True
-                if st.session_state["stage_mapping_edit"]:
-                    previous_mapping = mapping_df.copy()
+                    row_idx = mapping_df.index[row_mask][0]
+                    base_row = mapping_df.loc[row_idx]
+                    updates: Dict[str, float | int | str] = {}
+
+                    def _field_key(col_name: str) -> str:
+                        safe = (
+                            col_name.lower()
+                            .replace(" ", "_")
+                            .replace("%", "pct")
+                            .replace("/", "_")
+                            .replace("(", "")
+                            .replace(")", "")
+                            .replace("-", "_")
+                        )
+                        return f"stage_mapping_{safe}"
+
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        updates["Success Probability %"] = st.number_input(
+                            "Success Probability %",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float(base_row.get("Success Probability %", 0.0) or 0.0),
+                            step=1.0,
+                            key=_field_key("Success Probability %"),
+                        )
+                        updates["Time to market (years)"] = st.number_input(
+                            "Time to market (years)",
+                            min_value=0,
+                            value=int(base_row.get("Time to market (years)", 0) or 0),
+                            step=1,
+                            key=_field_key("Time to market (years)"),
+                        )
+                    with col_b:
+                        updates["Sales ramp length (years)"] = st.number_input(
+                            "Sales ramp length (years)",
+                            min_value=0,
+                            value=int(base_row.get("Sales ramp length (years)", 0) or 0),
+                            step=1,
+                            key=_field_key("Sales ramp length (years)"),
+                        )
+                        updates["Ramp shape"] = st.selectbox(
+                            "Ramp shape",
+                            options=RAMP_SHAPE_OPTIONS,
+                            index=RAMP_SHAPE_OPTIONS.index(
+                                base_row.get("Ramp shape", RAMP_SHAPE_OPTIONS[0])
+                                if base_row.get("Ramp shape", RAMP_SHAPE_OPTIONS[0]) in RAMP_SHAPE_OPTIONS
+                                else RAMP_SHAPE_OPTIONS[0]
+                            ),
+                            key=_field_key("Ramp shape"),
+                        )
+                    with col_c:
+                        updates["R&D remaining pre-launch (USD)"] = st.number_input(
+                            "R&D remaining pre-launch (USD)",
+                            min_value=0.0,
+                            value=float(base_row.get("R&D remaining pre-launch (USD)", 0.0) or 0.0),
+                            step=1_000_000.0,
+                            key=_field_key("R&D remaining pre-launch (USD)"),
+                        )
+                        updates["R&D annual post-launch (USD/year)"] = st.number_input(
+                            "R&D annual post-launch (USD/year)",
+                            min_value=0.0,
+                            value=float(base_row.get("R&D annual post-launch (USD/year)", 0.0) or 0.0),
+                            step=1_000_000.0,
+                            key=_field_key("R&D annual post-launch (USD/year)"),
+                        )
+
+                    with st.expander("Stage durations", expanded=True):
+                        duration_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_DURATION_COLUMNS):
+                            with duration_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0,
+                                    value=int(base_row.get(col, 0) or 0),
+                                    step=1,
+                                    key=_field_key(col),
+                                )
+
+                    with st.expander("Transition probabilities", expanded=False):
+                        trans_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_TRANSITION_COLUMNS):
+                            with trans_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_field_key(col),
+                                )
+                        annual_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_TRANSITION_ANNUAL_COLUMNS):
+                            with annual_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_field_key(col),
+                                )
+
+                    with st.expander("R&D and CAPEX allocation", expanded=False):
+                        rd_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_COST_WEIGHT_COLUMNS):
+                            with rd_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_field_key(col),
+                                )
+                        capex_cols = st.columns(3)
+                        for idx, col in enumerate(STAGE_CAPEX_WEIGHT_COLUMNS):
+                            with capex_cols[idx % 3]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_field_key(col),
+                                )
+
+                    with st.expander("Milestones", expanded=False):
+                        milestone_cols = st.columns(2)
+                        for idx, col in enumerate(STAGE_MILESTONE_COLUMNS):
+                            with milestone_cols[idx % 2]:
+                                updates[col] = st.number_input(
+                                    col,
+                                    min_value=0.0,
+                                    value=float(base_row.get(col, 0.0) or 0.0),
+                                    step=1_000_000.0,
+                                    key=_field_key(col),
+                                )
+                    if st.button("Apply quick edits", key="stage_mapping_apply_quick"):
+                        for col, value in updates.items():
+                            mapping_df.loc[row_idx, col] = value
+                        st.success(f"Updated {stage_to_edit} defaults.")
+                with st.expander("Full mapping table (advanced)", expanded=False):
+                    st.caption(
+                        "Tip: click any cell to type directly; use Tab/Enter to move across columns."
+                    )
                     mapping_df = st.data_editor(
                         mapping_df,
                         num_rows="fixed",
@@ -5489,16 +5674,22 @@ def main() -> None:
                             },
                         },
                     )
-                    if not mapping_df.equals(previous_mapping):
-                        st.session_state["stage_mapping_audit_log"].append(
-                            {
-                                "timestamp": pd.Timestamp.utcnow().isoformat(),
-                                "updated_by": audit_owner,
-                                "note": "Stage mapping updated",
-                            }
-                        )
-                else:
-                    st.dataframe(mapping_df, use_container_width=True, hide_index=True)
+                if not mapping_df.equals(previous_mapping):
+                    st.session_state["stage_mapping_audit_log"].append(
+                        {
+                            "timestamp": pd.Timestamp.utcnow().isoformat(),
+                            "updated_by": audit_owner,
+                            "note": "Stage mapping updated",
+                        }
+                    )
+                mapping_warnings = _stage_mapping_sanity_checks(mapping_df)
+                if mapping_warnings:
+                    st.warning(
+                        "Scientific/commercial check: please review the items below so stage inputs "
+                        "remain realistic and internally consistent."
+                    )
+                    for warning in mapping_warnings:
+                        st.write(f"• {warning}")
                 st.session_state["stage_schedule_mapping"] = mapping_df
                 with st.expander("Mapping audit trail", expanded=False):
                     audit_log = st.session_state.get("stage_mapping_audit_log", [])
@@ -5669,6 +5860,10 @@ def main() -> None:
                         uses_total = float(uses_df.get("Amount", pd.Series(dtype=float)).sum())
                         st.session_state["uses_total"] = uses_total
                         st.metric("Total uses", f"{uses_total:,.0f}")
+                        uses_warnings = []
+                        if (pd.to_numeric(uses_df.get("Amount", pd.Series(dtype=float)), errors="coerce") < 0).any():
+                            uses_warnings.append("Uses contain negative amounts; use positive values.")
+                        _render_section_warnings("Uses", uses_warnings)
                         if {"ID_vaccine", "Vaccine name", "Amount"}.issubset(uses_df.columns):
                             uses_by_vaccine = (
                                 uses_df.groupby(["ID_vaccine", "Vaccine name"], dropna=False)["Amount"]
@@ -5740,6 +5935,10 @@ def main() -> None:
                         sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
                         st.session_state["sources_total"] = sources_total
                         st.metric("Total sources", f"{sources_total:,.0f}")
+                        sources_warnings = []
+                        if (pd.to_numeric(sources_df.get("Amount", pd.Series(dtype=float)), errors="coerce") < 0).any():
+                            sources_warnings.append("Sources contain negative amounts; use positive values.")
+                        _render_section_warnings("Sources", sources_warnings)
                     delta = sources_total - uses_total
                     st.info(f"Funding gap (sources - uses): {delta:,.0f}")
 
@@ -5784,6 +5983,12 @@ def main() -> None:
                     )
                     st.session_state["debt_schedule_table"] = debt_schedule_df
                     st.caption("Edit debt drawdowns; repayments and interest are calculated from the rate.")
+                    debt_warnings = []
+                    if (pd.to_numeric(debt_schedule_df.get("Debt drawdowns", pd.Series(dtype=float)), errors="coerce") < 0).any():
+                        debt_warnings.append("Debt drawdowns should be zero or positive.")
+                    if debt_interest_rate < 0 or debt_interest_rate > 1:
+                        debt_warnings.append("Debt interest rate should be between 0% and 100%.")
+                    _render_section_warnings("Debt schedule", debt_warnings)
                     funding_gap = funding_required - uses_total
                     st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
                     if abs(funding_gap) > 1.0:
@@ -5877,6 +6082,10 @@ def main() -> None:
                             "Value": st.column_config.NumberColumn("Value", step=1_000_000.0),
                         },
                     )
+                    market_warnings = []
+                    if (pd.to_numeric(market_df.get("Value", pd.Series(dtype=float)), errors="coerce") <= 0).any():
+                        market_warnings.append("Relevant market sizes should be greater than zero.")
+                    _render_section_warnings("Relevant market sizes", market_warnings)
 
             with st.expander("New equity issued"):
                 new_equity = st.number_input(
@@ -5986,6 +6195,16 @@ def main() -> None:
                             }
                         )
                     )
+                    market_size_warnings = []
+                    if (market_size <= 0).any():
+                        market_size_warnings.append("Market size (# customers) should be greater than zero.")
+                    if (avg_spend <= 0).any():
+                        market_size_warnings.append("Average spend should be greater than zero.")
+                    if (sam_pct > 100).any() or (sam_pct < 0).any():
+                        market_size_warnings.append("Serviceable Available Market % should be 0–100%.")
+                    if (som_pct > 100).any() or (som_pct < 0).any():
+                        market_size_warnings.append("Serviceable Obtainable Market % should be 0–100%.")
+                    _render_section_warnings("Market size estimation", market_size_warnings)
 
             if show_revenue_estimation:
                 with st.expander("Vaccines revenue estimation", expanded=True):
@@ -6048,6 +6267,16 @@ def main() -> None:
                             }
                         )
                     )
+                    revenue_warnings = []
+                    if (patent_customers < 0).any():
+                        revenue_warnings.append("Patent customers per year should be zero or positive.")
+                    if (patent_price < 0).any():
+                        revenue_warnings.append("Patent price should be zero or positive.")
+                    if (revenue_df["Patent revenue target (USD)"] < 0).any():
+                        revenue_warnings.append("Patent revenue targets should be zero or positive.")
+                    if (revenue_df["Post patent revenue target (USD)"] < 0).any():
+                        revenue_warnings.append("Post-patent revenue targets should be zero or positive.")
+                    _render_section_warnings("Revenue estimation", revenue_warnings)
 
             if show_cost_assumptions:
                 with st.expander("Vaccine cost assumptions", expanded=True):
@@ -6099,6 +6328,18 @@ def main() -> None:
                         if col in cost_display.columns
                     }
                     st.dataframe(cost_display.style.format({**percent_fmt, **currency_fmt}))
+                    cost_warnings = []
+                    for label, series in [
+                        ("COGS patent % of sales", cogs_patent),
+                        ("COGS post % of sales", cogs_post),
+                        ("Marketing annual % of sales", marketing_pct),
+                        ("Royalties cost % of sales", royalty_pct),
+                    ]:
+                        if (series < 0).any() or (series > 1).any():
+                            cost_warnings.append(f"{label} should be between 0% and 100%.")
+                    if (cost_df["G&A total (USD)"] < 0).any():
+                        cost_warnings.append("G&A total should be zero or positive.")
+                    _render_section_warnings("Cost assumptions", cost_warnings)
 
             if show_rd:
                 with st.expander("Vaccines research & development (R&D)", expanded=True):
@@ -6128,6 +6369,15 @@ def main() -> None:
                         if col not in ["ID_vaccine", "Vaccine name", "Cost accounting (capitalisation)"]
                     }
                     st.dataframe(rd_display.style.format(rd_fmt))
+                    rd_warnings = []
+                    for col in [
+                        "Pre-GTM spent to date (USD)",
+                        "Pre-GTM remaining (USD)",
+                        "Post-GTM annual cost (USD/year)",
+                    ]:
+                        if (pd.to_numeric(rd_df.get(col, pd.Series(dtype=float)), errors="coerce") < 0).any():
+                            rd_warnings.append(f"{col} should be zero or positive.")
+                    _render_section_warnings("R&D assumptions", rd_warnings)
 
             if show_capex:
                 with st.expander("Vaccine CAPEX assumptions", expanded=True):
@@ -6186,6 +6436,12 @@ def main() -> None:
                     capex_post = capex_df.get(capex_post_cols, pd.DataFrame()).apply(
                         pd.to_numeric, errors="coerce"
                     )
+                    capex_warnings = []
+                    if (capex_pre < 0).any().any():
+                        capex_warnings.append("Pre-GTM CAPEX entries should be zero or positive.")
+                    if (capex_post < 0).any().any():
+                        capex_warnings.append("Post-GTM CAPEX entries should be zero or positive.")
+                    _render_section_warnings("CAPEX assumptions", capex_warnings)
                     capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
                     capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
                     if not shared_pools_df.empty:
