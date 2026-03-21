@@ -89,6 +89,9 @@ class Product:
 
     @staticmethod
     def _rolling_amortization(additions: pd.Series, life: int) -> pd.Series:
+        if life is None or not np.isfinite(life):
+            return pd.Series(0.0, index=additions.index)
+        life = int(life)
         if life <= 0:
             return pd.Series(0.0, index=additions.index)
         weights = np.ones(life) / life
@@ -107,6 +110,10 @@ class Product:
     def build_revenue_series(self) -> pd.Series:
         years = self.model_config.years
         cfg = self.config
+        try:
+            ramp_factors = list(self.model_config.sales_ramp_factors or [])
+        except TypeError:
+            ramp_factors = []
         revenue = pd.Series(0.0, index=years, name=f"{cfg.name}_revenue")
         if not cfg.include_in_consolidation:
             return revenue
@@ -123,19 +130,17 @@ class Product:
             if in_patent:
                 base_target = cfg.patent_revenue_target
                 growth_rate = cfg.market_growth_patent
-                years_since_growth_start = max(
-                    0, years_since_launch - len(self.model_config.sales_ramp_factors)
-                )
+                years_since_growth_start = max(0, years_since_launch - len(ramp_factors))
             else:
                 base_target = cfg.post_patent_revenue_target
                 growth_rate = cfg.market_growth_post
                 years_since_growth_start = max(0, year - (patent_end + 1))
 
-            ramp = (
-                self.model_config.sales_ramp_factors[years_since_launch]
-                if years_since_launch < len(self.model_config.sales_ramp_factors)
-                else 1.0
-            )
+            if ramp_factors:
+                ramp_index = min(years_since_launch, len(ramp_factors) - 1)
+                ramp = ramp_factors[ramp_index]
+            else:
+                ramp = 1.0
 
             target_with_growth = base_target * ((1 + growth_rate) ** years_since_growth_start)
             revenue.iloc[i] = ramp * target_with_growth
@@ -212,8 +217,8 @@ class Product:
     def build_probability_weighted_table(self) -> pd.DataFrame:
         df = self.build_cashflow_table().copy()
         p = self.config.success_prob
-        for col in ["revenue", "ebit", "ebitda", "nopat", "fcff"]:
-            df[col] = df[col] * p
+        numeric_cols = df.select_dtypes(include=["number"]).columns
+        df.loc[:, numeric_cols] = df.loc[:, numeric_cols] * p
         return df
 
 
@@ -261,7 +266,7 @@ class Portfolio:
             cons_df = cons_df.add(wdf[base_cols], fill_value=0.0)
 
         wc = self.model_config.working_capital_pct_sales * cons_df["revenue"]
-        wc_diff = wc.diff().fillna(wc)
+        wc_diff = wc.diff().fillna(0.0)
         cons_df["delta_wc"] = -wc_diff
         cons_df["fcff_after_wc"] = cons_df["fcff"] + cons_df["delta_wc"]
 
@@ -296,7 +301,7 @@ class ValuationEngine:
 
     def _discounted_cash_flows(self, fcff: pd.Series) -> pd.DataFrame:
         years = fcff.index.values
-        t = np.arange(len(years))
+        t = np.arange(1, len(years) + 1)
         df = pd.DataFrame(index=years)
         df["t"] = t
         df["fcff"] = fcff.values
@@ -308,7 +313,8 @@ class ValuationEngine:
         last_year = cons_df.index[-1]
         last_ebitda = cons_df.loc[last_year, "ebitda"]
         multiple = self.model_config.ev_ebitda_multiple
-        terminal_ev = multiple * last_ebitda
+        terminal_ebitda = max(0.0, float(last_ebitda))
+        terminal_ev = multiple * terminal_ebitda
 
         t_last = dcf_df.loc[last_year, "t"]
         dcf_df.loc[last_year, "terminal_value"] = terminal_ev
@@ -413,6 +419,13 @@ class ScenarioEngine:
             cfg_dict["post_patent_revenue_target"] *= scenario.revenue_multiplier
             cfg_dict["cogs_patent"] *= scenario.cost_multiplier
             cfg_dict["cogs_post"] *= scenario.cost_multiplier
+            cfg_dict["sales_marketing_pct"] *= scenario.cost_multiplier
+            cfg_dict["gna_pct"] *= scenario.cost_multiplier
+            cfg_dict["royalty_pct"] *= scenario.cost_multiplier
+            cfg_dict["rd_remaining_pre_launch"] *= scenario.cost_multiplier
+            cfg_dict["rd_annual_post_launch"] *= scenario.cost_multiplier
+            cfg_dict["capex_remaining_pre_launch"] *= scenario.cost_multiplier
+            cfg_dict["capex_annual_post_launch"] *= scenario.cost_multiplier
             cfg_dict["success_prob"] = max(
                 0.0, min(1.0, cfg_dict["success_prob"] * scenario.success_prob_multiplier)
             )
@@ -469,16 +482,33 @@ class MonteCarloEngine:
         n_sims: int = 1000,
         revenue_sigma: float = 0.1,
         cost_sigma: float = 0.05,
+        revenue_dist: str = "normal",
+        cost_dist: str = "normal",
+        revenue_min: float = 0.8,
+        revenue_max: float = 1.2,
+        cost_min: float = 0.8,
+        cost_max: float = 1.2,
         random_seed: Optional[int] = None,
     ) -> pd.Series:
         rng = np.random.default_rng(random_seed)
         vals = []
 
+        def _sample_scale(dist: str, sigma: float, min_val: float, max_val: float) -> float:
+            dist = dist.lower()
+            if dist == "lognormal":
+                mu = -0.5 * sigma**2
+                return float(rng.lognormal(mean=mu, sigma=sigma))
+            if dist == "uniform":
+                low = min(min_val, max_val)
+                high = max(min_val, max_val)
+                return float(rng.uniform(low, high))
+            return float(rng.normal(1.0, sigma))
+
         for _ in range(n_sims):
             model_cfg = self.base_portfolio.model_config
             new_products: List[Product] = []
-            rev_scale = rng.normal(1.0, revenue_sigma)
-            cogs_scale = rng.normal(1.0, cost_sigma)
+            rev_scale = _sample_scale(revenue_dist, revenue_sigma, revenue_min, revenue_max)
+            cogs_scale = _sample_scale(cost_dist, cost_sigma, cost_min, cost_max)
 
             for prod in self.base_portfolio.products:
                 cfg_dict = asdict(prod.config)
@@ -595,10 +625,12 @@ class ForecastEngine:
         if base_value <= 0:
             return 0.0
         horizon = len(forecast_values)
-        avg_forecast = float(np.mean(forecast_values))
-        if avg_forecast <= 0:
+        if horizon <= 0:
             return 0.0
-        return (avg_forecast / base_value) ** (1 / max(horizon, 1)) - 1
+        terminal_value = float(forecast_values[-1])
+        if terminal_value <= 0:
+            return 0.0
+        return (terminal_value / base_value) ** (1 / horizon) - 1
 
     def apply_price_forecast_to_products(
         self,

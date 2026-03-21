@@ -14,6 +14,9 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 try:
     import plotly.graph_objects as go
@@ -1170,6 +1173,163 @@ def _build_ratio_table(cons: pd.DataFrame) -> pd.DataFrame:
     return ratios.fillna(0.0)
 
 
+def _build_vaccine_break_even_inputs(model_cfg: Optional[ModelConfig]) -> pd.DataFrame:
+    if model_cfg is None:
+        return pd.DataFrame()
+    dev_df = st.session_state.get("vaccine_development_table", pd.DataFrame()).copy()
+    if dev_df.empty or "ID_vaccine" not in dev_df.columns:
+        return pd.DataFrame()
+
+    revenue_df = st.session_state.get("vaccine_revenue_table", pd.DataFrame()).copy()
+    if "Patent revenue target (USD)" not in revenue_df.columns:
+        revenue_df["Patent revenue target (USD)"] = _coerce_numeric(
+            revenue_df.get("Patent customers per year", pd.Series(dtype=float))
+        ) * _coerce_numeric(revenue_df.get("Patent price (USD/customer)", pd.Series(dtype=float)))
+    if "Post patent revenue target (USD)" not in revenue_df.columns:
+        revenue_df["Post patent revenue target (USD)"] = _coerce_numeric(
+            revenue_df.get("Post patent customers per year", pd.Series(dtype=float))
+        ) * _coerce_numeric(revenue_df.get("Post patent price (USD/customer)", pd.Series(dtype=float)))
+
+    cost_df = st.session_state.get("vaccine_cost_table", pd.DataFrame()).copy()
+    gna_cols = [
+        "Indirect staff cost (USD)",
+        "Electricity (USD)",
+        "Depreciation (USD)",
+        "Interest & amortization (USD)",
+    ]
+    if "G&A total (USD)" not in cost_df.columns:
+        cost_df["G&A total (USD)"] = cost_df[gna_cols].sum(axis=1)
+    if "Patent operating cost %" not in cost_df.columns:
+        cost_df["Patent operating cost %"] = (
+            _coerce_numeric(cost_df.get("COGS patent % of sales", pd.Series(dtype=float)))
+            + _coerce_numeric(cost_df.get("Marketing annual % of sales", pd.Series(dtype=float)))
+            + _coerce_numeric(cost_df.get("Royalties cost % of sales", pd.Series(dtype=float)))
+        )
+
+    rd_df = st.session_state.get("vaccine_rd_table", pd.DataFrame()).copy()
+    if "Pre-GTM total (USD)" not in rd_df.columns:
+        rd_df["Pre-GTM total (USD)"] = _coerce_numeric(
+            rd_df.get("Pre-GTM spent to date (USD)", pd.Series(dtype=float))
+        ) + _coerce_numeric(rd_df.get("Pre-GTM remaining (USD)", pd.Series(dtype=float)))
+
+    capex_df = st.session_state.get("vaccine_capex_table", pd.DataFrame()).copy()
+    if "Total Pre-GTM capex (USD)" not in capex_df.columns:
+        capex_df["Total Pre-GTM capex (USD)"] = _coerce_numeric(
+            capex_df.get("Pre-GTM capex spent (USD)", pd.Series(dtype=float))
+        ) + _coerce_numeric(capex_df.get("Pre-GTM capex remaining (USD)", pd.Series(dtype=float)))
+
+    merged = dev_df.merge(revenue_df, on=["ID_vaccine", "Vaccine name"], how="left")
+    merged = merged.merge(cost_df, on=["ID_vaccine", "Vaccine name"], how="left")
+    merged = merged.merge(rd_df, on=["ID_vaccine", "Vaccine name"], how="left")
+    merged = merged.merge(capex_df, on=["ID_vaccine", "Vaccine name"], how="left")
+
+    inputs = []
+    for _, row in merged.iterrows():
+        price_candidates = _coerce_numeric(
+            pd.Series(
+                [
+                    row.get("Patent price (USD/customer)"),
+                    row.get("Post patent price (USD/customer)"),
+                ]
+            ),
+            0.0,
+        )
+        unit_price = next((float(value) for value in price_candidates if float(value) > 0.0), 0.0)
+        units_per_year = _coerce_numeric(pd.Series([row.get("Patent customers per year")]), 0.0).iloc[0]
+        if not unit_price:
+            unit_price = _coerce_numeric(pd.Series([row.get("Patent revenue target (USD)")]), 0.0).iloc[0]
+            unit_price = unit_price / units_per_year if units_per_year else 0.0
+        operating_cost_pct = float(row.get("Patent operating cost %", 0.0) or 0.0) / 100.0
+        unit_variable_cost = unit_price * operating_cost_pct
+        unit_fixed_cost = float(row.get("G&A total (USD)", 0.0) or 0.0) + float(
+            row.get("Post-GTM annual cost (USD/year)", 0.0) or 0.0
+        ) + float(row.get("Post-GTM yearly capex (USD)", 0.0) or 0.0)
+
+        inputs.append(
+            {
+                "ID_vaccine": row.get("ID_vaccine"),
+                "Vaccine name": row.get("Vaccine name"),
+                "Unit price (USD)": unit_price,
+                "Unit variable cost (USD)": unit_variable_cost,
+                "Unit fixed cost (USD/year)": unit_fixed_cost,
+                "Units per year": units_per_year,
+            }
+        )
+
+    return pd.DataFrame(inputs)
+
+
+def _build_vaccine_break_even_table(
+    model_cfg: Optional[ModelConfig],
+    *,
+    inputs_df: Optional[pd.DataFrame] = None,
+    ai_assist: Optional[bool] = None,
+    ai_target_years: Optional[int] = None,
+) -> pd.DataFrame:
+    if model_cfg is None:
+        return pd.DataFrame()
+
+    base_inputs = _build_vaccine_break_even_inputs(model_cfg)
+    if base_inputs.empty:
+        return pd.DataFrame()
+
+    if inputs_df is None:
+        stored_inputs = st.session_state.get("vaccine_break_even_inputs")
+        if isinstance(stored_inputs, pd.DataFrame) and not stored_inputs.empty:
+            inputs_df = stored_inputs
+        else:
+            inputs_df = base_inputs
+
+    inputs_df = inputs_df.copy()
+    if "Vaccine name" in base_inputs.columns:
+        inputs_df = inputs_df.merge(
+            base_inputs[["Vaccine name", "ID_vaccine"]],
+            on="Vaccine name",
+            how="left",
+            suffixes=("", "_base"),
+        )
+        if "ID_vaccine_base" in inputs_df.columns:
+            inputs_df["ID_vaccine"] = inputs_df["ID_vaccine"].combine_first(inputs_df["ID_vaccine_base"])
+            inputs_df = inputs_df.drop(columns=["ID_vaccine_base"], errors="ignore")
+
+    unit_price = _coerce_numeric(inputs_df.get("Unit price (USD)", pd.Series(dtype=float)))
+    unit_variable = _coerce_numeric(inputs_df.get("Unit variable cost (USD)", pd.Series(dtype=float)))
+    unit_fixed = _coerce_numeric(inputs_df.get("Unit fixed cost (USD/year)", pd.Series(dtype=float)))
+    units_per_year = _coerce_numeric(inputs_df.get("Units per year", pd.Series(dtype=float)))
+
+    margin = unit_price - unit_variable
+    contribution_pct = np.where(unit_price != 0, margin / unit_price, 0.0)
+    break_even_units = np.where(margin > 0, unit_fixed / margin, np.nan)
+    break_even_revenue = break_even_units * unit_price
+    break_even_unit_cost = np.where(units_per_year > 0, unit_variable + unit_fixed / units_per_year, np.nan)
+
+    results = inputs_df[["ID_vaccine", "Vaccine name"]].copy()
+    results["Unit price (USD)"] = unit_price
+    results["Unit variable cost (USD)"] = unit_variable
+    results["Unit fixed cost (USD/year)"] = unit_fixed
+    results["Units per year"] = units_per_year
+    results["Unit contribution margin (USD)"] = margin
+    results["Contribution margin %"] = contribution_pct
+    results["Break-even units"] = break_even_units
+    results["Break-even revenue (USD)"] = break_even_revenue
+    results["Break-even unit cost (USD)"] = break_even_unit_cost
+
+    if ai_assist is None:
+        ai_assist = bool(st.session_state.get("break_even_ai_assist", True))
+    if ai_target_years is None:
+        ai_target_years = int(st.session_state.get("break_even_ai_target_years", 3))
+
+    if ai_assist:
+        required_price = np.where(
+            units_per_year > 0,
+            unit_variable + unit_fixed / (units_per_year * max(ai_target_years, 1)),
+            np.nan,
+        )
+        results["AI suggested unit price (USD)"] = required_price
+
+    return results
+
+
 def _evaluate_portfolio_shock(
     portfolio: Portfolio,
     *,
@@ -1652,18 +1812,234 @@ def _default_scenario_pack(portfolio: Optional[Portfolio]) -> List[dict]:
     return scenarios
 
 
+def _format_excel_sheet(ws, df: pd.DataFrame, *, freeze_panes: str = "B2") -> None:
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    max_row = df.shape[0] + 1
+    max_col = df.shape[1] + 1
+
+    for col_idx in range(1, max_col + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+
+    ws.freeze_panes = freeze_panes
+    ws.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
+
+    for col_idx, col_name in enumerate(df.columns, start=2):
+        col_letter = get_column_letter(col_idx)
+        if any(token in col_name.lower() for token in ("pct", "margin", "prob", "%")):
+            number_format = "0.0%"
+        else:
+            number_format = "#,##0.00"
+        for row in range(2, max_row + 1):
+            ws.cell(row=row, column=col_idx).number_format = number_format
+
+        values = [str(col_name)]
+        for row in range(2, max_row + 1):
+            values.append(str(ws.cell(row=row, column=col_idx).value or ""))
+        width = min(max(len(v) for v in values) + 2, 40)
+        ws.column_dimensions[col_letter].width = width
+
+    index_letter = get_column_letter(1)
+    index_values = [str(df.index.name or "")] + [str(v) for v in df.index]
+    ws.column_dimensions[index_letter].width = min(max(len(v) for v in index_values) + 2, 26)
+
+
+def _format_excel_table(
+    ws,
+    df: pd.DataFrame,
+    *,
+    start_row: int,
+    start_col: int = 1,
+) -> None:
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    max_row = start_row + df.shape[0]
+    max_col = start_col + df.shape[1] - 1
+
+    for col_idx in range(start_col, max_col + 1):
+        cell = ws.cell(row=start_row, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+
+    for offset, col_name in enumerate(df.columns):
+        col_idx = start_col + offset
+        col_letter = get_column_letter(col_idx)
+        if any(token in str(col_name).lower() for token in ("pct", "margin", "prob", "%")):
+            number_format = "0.0%"
+        else:
+            number_format = "#,##0.00"
+        for row in range(start_row + 1, max_row + 1):
+            ws.cell(row=row, column=col_idx).number_format = number_format
+
+        values = [str(col_name)]
+        for row in range(start_row + 1, max_row + 1):
+            values.append(str(ws.cell(row=row, column=col_idx).value or ""))
+        width = min(max(len(v) for v in values) + 2, 40)
+        ws.column_dimensions[col_letter].width = width
+
+
+def _add_line_chart(
+    ws,
+    *,
+    title: str,
+    data_min_col: int,
+    data_max_col: int,
+    data_max_row: int,
+    category_col: int = 1,
+    anchor: str = "H2",
+) -> None:
+    chart = LineChart()
+    chart.title = title
+    chart.y_axis.title = "Value"
+    chart.x_axis.title = "Year"
+    data = Reference(ws, min_col=data_min_col, max_col=data_max_col, min_row=1, max_row=data_max_row)
+    categories = Reference(ws, min_col=category_col, min_row=2, max_row=data_max_row)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+    chart.height = 12
+    chart.width = 22
+    ws.add_chart(chart, anchor)
+
+
+def _add_bar_chart(
+    ws,
+    *,
+    title: str,
+    data_min_col: int,
+    data_max_col: int,
+    data_max_row: int,
+    category_col: int = 1,
+    anchor: str = "H2",
+) -> None:
+    chart = BarChart()
+    chart.title = title
+    chart.y_axis.title = "Value"
+    chart.x_axis.title = "Scenario"
+    data = Reference(ws, min_col=data_min_col, max_col=data_max_col, min_row=1, max_row=data_max_row)
+    categories = Reference(ws, min_col=category_col, min_row=2, max_row=data_max_row)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+    chart.height = 12
+    chart.width = 22
+    ws.add_chart(chart, anchor)
+
+
 def _build_financial_excel(
     cons: pd.DataFrame,
     perf_df: pd.DataFrame,
     position_df: pd.DataFrame,
     cash_flow_df: pd.DataFrame,
+    model_cfg: Optional[ModelConfig] = None,
 ) -> bytes:
     output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
         cons.to_excel(writer, sheet_name="Consolidated forecast")
         perf_df.to_excel(writer, sheet_name="Financial performance")
         position_df.to_excel(writer, sheet_name="Financial position")
         cash_flow_df.to_excel(writer, sheet_name="Cash flows")
+        dashboard_cols = [col for col in ["revenue", "ebitda", "fcff_after_wc"] if col in cons.columns]
+        dashboard_df = cons[dashboard_cols].copy()
+        dashboard_df.to_excel(writer, sheet_name="Dashboard")
+
+        analytics_df = _build_ratio_table(cons)
+        if not analytics_df.empty:
+            analytics_df.to_excel(writer, sheet_name="Advanced analytics")
+        break_even_df = _build_vaccine_break_even_table(model_cfg)
+        break_even_start_row = None
+        if not break_even_df.empty:
+            if analytics_df.empty:
+                break_even_start_row = 1
+                break_even_df.to_excel(writer, sheet_name="Advanced analytics", index=False)
+            else:
+                start_row = analytics_df.shape[0] + 3
+                break_even_start_row = start_row + 1
+                break_even_df.to_excel(
+                    writer,
+                    sheet_name="Advanced analytics",
+                    startrow=start_row,
+                    index=False,
+                )
+
+        scenario_cols = [col for col in ["revenue", "ebitda", "fcff_after_wc"] if col in cons.columns]
+        scenario_df = pd.DataFrame()
+        if scenario_cols:
+            last_year = cons.index[-1]
+            base_values = cons.loc[last_year, scenario_cols]
+            scenario_df = pd.DataFrame(
+                {
+                    "Downside (-10%)": base_values * 0.9,
+                    "Base": base_values,
+                    "Upside (+10%)": base_values * 1.1,
+                }
+            ).T
+            scenario_df.to_excel(writer, sheet_name="Scenario analysis")
+
+        workbook = writer.book
+        for name, df in {
+            "Consolidated forecast": cons,
+            "Financial performance": perf_df,
+            "Financial position": position_df,
+            "Cash flows": cash_flow_df,
+            "Dashboard": dashboard_df,
+        }.items():
+            ws = workbook[name]
+            _format_excel_sheet(ws, df)
+
+        if not analytics_df.empty:
+            ws = workbook["Advanced analytics"]
+            _format_excel_sheet(ws, analytics_df)
+        if break_even_start_row is not None:
+            ws = workbook["Advanced analytics"]
+            title_row = break_even_start_row - 1
+            if title_row > 1:
+                ws.cell(row=title_row, column=1).value = "Vaccine break-even analysis"
+                ws.cell(row=title_row, column=1).font = Font(bold=True)
+            _format_excel_table(ws, break_even_df, start_row=break_even_start_row)
+
+        if not scenario_df.empty:
+            ws = workbook["Scenario analysis"]
+            _format_excel_sheet(ws, scenario_df)
+
+        if not dashboard_df.empty:
+            ws = workbook["Dashboard"]
+            max_row = dashboard_df.shape[0] + 1
+            _add_line_chart(
+                ws,
+                title="Key Metrics",
+                data_min_col=2,
+                data_max_col=1 + dashboard_df.shape[1],
+                data_max_row=max_row,
+            )
+
+        if not analytics_df.empty:
+            ws = workbook["Advanced analytics"]
+            max_row = analytics_df.shape[0] + 1
+            _add_line_chart(
+                ws,
+                title="Margin Trends",
+                data_min_col=2,
+                data_max_col=1 + analytics_df.shape[1],
+                data_max_row=max_row,
+                anchor="H2",
+            )
+
+        if not scenario_df.empty:
+            ws = workbook["Scenario analysis"]
+            max_row = scenario_df.shape[0] + 1
+            _add_bar_chart(
+                ws,
+                title="Scenario Comparison",
+                data_min_col=2,
+                data_max_col=1 + scenario_df.shape[1],
+                data_max_row=max_row,
+                anchor="H2",
+            )
     return output.getvalue()
 
 
@@ -1743,11 +2119,89 @@ def _rag_blueprint_markdown() -> str:
     )
 
 
+def _build_ai_commentary(
+    snapshot_summary: Dict[str, Any],
+    perf_df: Optional[pd.DataFrame],
+    position_df: Optional[pd.DataFrame],
+    cash_flow_df: Optional[pd.DataFrame],
+    cons_df: Optional[pd.DataFrame],
+) -> List[str]:
+    comments: List[str] = []
+
+    def _format_value(value: Any) -> str:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return "n/a"
+        if isinstance(value, (int, float)):
+            return f"{value:,.0f}"
+        return str(value)
+
+    if snapshot_summary:
+        npv = snapshot_summary.get("npv")
+        irr = snapshot_summary.get("irr")
+        revenue = snapshot_summary.get("revenue_annual")
+        opex = snapshot_summary.get("opex_annual")
+        comments.append(
+            f"Snapshot: NPV {_format_value(npv)}, IRR {_format_value(irr)}, "
+            f"Annual revenue {_format_value(revenue)}, Annual opex {_format_value(opex)}."
+        )
+        if npv is not None:
+            comments.append(
+                f"NPV indicates a {'positive' if npv >= 0 else 'negative'} valuation trend."
+            )
+        if revenue is not None and opex is not None:
+            comments.append(
+                f"Annual revenue vs opex suggests a gross operating spread of {_format_value(revenue - opex)}."
+            )
+
+    if perf_df is not None and not perf_df.empty:
+        revenue_series = perf_df.get("Revenue")
+        ebitda_series = perf_df.get("EBITDA")
+        if revenue_series is not None:
+            avg_revenue = float(revenue_series.mean())
+            comments.append(f"Performance: average revenue over the plan is {avg_revenue:,.0f}.")
+        if revenue_series is not None and ebitda_series is not None:
+            margin = float((ebitda_series.sum() / revenue_series.sum()) if revenue_series.sum() else 0.0)
+            comments.append(f"Performance: average EBITDA margin is {margin:.1%}.")
+
+    if position_df is not None and not position_df.empty:
+        total_assets = position_df.get("Total assets")
+        total_equity = position_df.get("Total equity")
+        if total_assets is not None:
+            end_assets = float(total_assets.iloc[-1])
+            comments.append(f"Position: ending total assets are {end_assets:,.0f}.")
+        if total_equity is not None:
+            end_equity = float(total_equity.iloc[-1])
+            comments.append(f"Position: ending total equity is {end_equity:,.0f}.")
+
+    if cash_flow_df is not None and not cash_flow_df.empty:
+        net_cash = cash_flow_df.get("Net change in cash")
+        if net_cash is not None:
+            cumulative_cash = float(net_cash.sum())
+            comments.append(f"Cash flow: cumulative net cash change is {cumulative_cash:,.0f}.")
+
+    if cons_df is not None and not cons_df.empty:
+        peak_revenue = float(cons_df["revenue"].max()) if "revenue" in cons_df.columns else None
+        total_fcff = float(cons_df["fcff_after_wc"].sum()) if "fcff_after_wc" in cons_df.columns else None
+        if peak_revenue is not None:
+            comments.append(f"Financial statements: peak revenue reaches {peak_revenue:,.0f}.")
+        if total_fcff is not None:
+            comments.append(f"Financial statements: total FCFF after WC sums to {total_fcff:,.0f}.")
+
+    if not comments:
+        comments.append("Insufficient data to generate AI commentary.")
+    return comments
+
+
 def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
     snapshot_summary = bundle_payload["snapshot"]["financial_snapshot"]
     scenarios = snapshot_summary.get("scenarios") or []
     sensitivities = snapshot_summary.get("sensitivities") or []
     last_report = bundle_payload.get("last_report") or {}
+    perf_df = bundle_payload.get("financial_performance")
+    position_df = bundle_payload.get("financial_position")
+    cash_flow_df = bundle_payload.get("cash_flows")
+    cons_df = bundle_payload.get("financial_statements")
+    ai_commentary = _build_ai_commentary(snapshot_summary, perf_df, position_df, cash_flow_df, cons_df)
     summary_rows = [
         {"Metric": "Project ID", "Value": bundle_payload["snapshot"]["project_id"]},
         {"Metric": "Currency", "Value": snapshot_summary.get("currency")},
@@ -1765,6 +2219,11 @@ def _build_export_payload(bundle_payload: Dict[str, Any]) -> Dict[str, Any]:
         "sensitivities": sensitivities,
         "last_report": last_report,
         "ai_config": bundle_payload["ai_config"],
+        "financial_performance": perf_df,
+        "financial_position": position_df,
+        "cash_flows": cash_flow_df,
+        "financial_statements": cons_df,
+        "ai_commentary": ai_commentary,
     }
 
 
@@ -1783,6 +2242,12 @@ def _build_chart_tables(
     tables["financial_statements_chart"] = cons_display
     tables["dashboard_chart"] = cons[["revenue", "ebitda", "fcff_after_wc"]]
     tables["dashboard_fcff_bar"] = cons[["fcff_after_wc"]]
+    ratios = _build_ratio_table(cons)
+    if not ratios.empty:
+        tables["advanced_analytics_report"] = ratios
+    break_even_df = _build_vaccine_break_even_table(model_cfg)
+    if not break_even_df.empty:
+        tables["vaccine_break_even_report"] = break_even_df
 
     decomp_df = _compute_decomposition(cons)
     if decomp_df is not None:
@@ -1944,6 +2409,12 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         pd.DataFrame(payload["summary_rows"]).to_excel(writer, index=False, sheet_name="Summary")
+        if payload.get("ai_commentary"):
+            pd.DataFrame({"AI commentary": payload["ai_commentary"]}).to_excel(
+                writer,
+                index=False,
+                sheet_name="AI Commentary",
+            )
         if payload["scenarios"]:
             pd.DataFrame(payload["scenarios"]).to_excel(writer, index=False, sheet_name="Scenarios")
         if payload["sensitivities"]:
@@ -1952,6 +2423,30 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
             pd.DataFrame(
                 [{"Section": key, "Content": value} for key, value in payload["last_report"].items()]
             ).to_excel(writer, index=False, sheet_name="Last Report")
+        if payload.get("financial_statements") is not None:
+            payload["financial_statements"].to_excel(
+                writer,
+                index=True,
+                sheet_name="Financial Statements",
+            )
+        if payload.get("financial_performance") is not None:
+            payload["financial_performance"].to_excel(
+                writer,
+                index=True,
+                sheet_name="Financial Performance",
+            )
+        if payload.get("financial_position") is not None:
+            payload["financial_position"].to_excel(
+                writer,
+                index=True,
+                sheet_name="Financial Position",
+            )
+        if payload.get("cash_flows") is not None:
+            payload["cash_flows"].to_excel(
+                writer,
+                index=True,
+                sheet_name="Cash Flows",
+            )
         chart_tables = payload.get("chart_tables", {})
         for sheet_name, table in chart_tables.items():
             if not table.empty:
@@ -1962,6 +2457,22 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
 
 
 def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
+    def _add_docx_table(document, title: str, df: pd.DataFrame) -> None:
+        if df is None or df.empty:
+            return
+        document.add_heading(title, level=2)
+        table_df = df.copy()
+        table_df.insert(0, "Year", table_df.index)
+        table = document.add_table(rows=1, cols=len(table_df.columns))
+        table.style = "Light Grid"
+        hdr_cells = table.rows[0].cells
+        for idx, col_name in enumerate(table_df.columns):
+            hdr_cells[idx].text = str(col_name)
+        for _, row in table_df.iterrows():
+            row_cells = table.add_row().cells
+            for idx, value in enumerate(row):
+                row_cells[idx].text = str(value)
+
     Document = importlib.import_module("docx").Document
     docx_buffer = io.BytesIO()
     document = Document()
@@ -1973,6 +2484,10 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
     document.add_heading("Financial Snapshot", level=2)
     for row in payload["summary_rows"]:
         document.add_paragraph(f"{row['Metric']}: {row['Value']}")
+    if payload.get("ai_commentary"):
+        document.add_heading("AI Commentary", level=2)
+        for comment in payload["ai_commentary"]:
+            document.add_paragraph(f"- {comment}")
     if payload["scenarios"]:
         document.add_heading("Scenarios", level=2)
         for scenario in payload["scenarios"]:
@@ -1981,6 +2496,46 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
         document.add_heading("Sensitivities", level=2)
         for sensitivity in payload["sensitivities"]:
             document.add_paragraph(json.dumps(sensitivity, ensure_ascii=False))
+    if payload.get("financial_statements") is not None:
+        _add_docx_table(
+            document,
+            "Financial Statements",
+            payload["financial_statements"],
+        )
+    if payload.get("financial_performance") is not None:
+        _add_docx_table(
+            document,
+            "Statement of Financial Performance",
+            payload["financial_performance"],
+        )
+    if payload.get("financial_position") is not None:
+        _add_docx_table(
+            document,
+            "Statement of Financial Position",
+            payload["financial_position"],
+        )
+    if payload.get("cash_flows") is not None:
+        _add_docx_table(
+            document,
+            "Statement of Cash Flows",
+            payload["cash_flows"],
+        )
+    if payload.get("chart_tables", {}).get("advanced_analytics_report") is not None:
+        document.add_heading("Advanced analytics report", level=2)
+        analytics_df = payload["chart_tables"]["advanced_analytics_report"]
+        for year, row in analytics_df.round(4).iterrows():
+            document.add_paragraph(f"{year}: {row.to_dict()}")
+    if payload.get("chart_tables", {}).get("vaccine_break_even_report") is not None:
+        document.add_heading("Vaccine break-even analysis", level=2)
+        break_even_df = payload["chart_tables"]["vaccine_break_even_report"]
+        for _, row in break_even_df.iterrows():
+            document.add_paragraph(
+                f"{row.get('Vaccine name', '')}: unit price {row.get('Unit price (USD)')}, "
+                f"unit variable cost {row.get('Unit variable cost (USD)')}, "
+                f"unit fixed cost {row.get('Unit fixed cost (USD/year)')}, "
+                f"unit margin {row.get('Unit contribution margin (USD)')}, "
+                f"break-even units {row.get('Break-even units')}"
+            )
     document.add_heading("AI Configuration", level=2)
     for key, value in payload["ai_config"].items():
         document.add_paragraph(f"{key}: {value}")
@@ -2015,6 +2570,7 @@ def _build_word_export(payload: Dict[str, Any]) -> io.BytesIO:
 def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
     canvas = importlib.import_module("reportlab.pdfgen.canvas")
     image_reader = importlib.import_module("reportlab.lib.utils").ImageReader
+    tables = importlib.import_module("reportlab.platypus.tables")
     pdf_buffer = io.BytesIO()
     pdf_canvas = canvas.Canvas(pdf_buffer)
     pdf_canvas.setFont("Helvetica-Bold", 14)
@@ -2030,6 +2586,21 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
             pdf_canvas.showPage()
             pdf_canvas.setFont("Helvetica", 11)
             y_position = 770
+    if payload.get("ai_commentary"):
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "AI Commentary")
+        y_position -= 18
+        for comment in payload["ai_commentary"]:
+            pdf_canvas.drawString(72, y_position, f"- {comment}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
     if payload["scenarios"]:
         y_position -= 6
         if y_position <= 72:
@@ -2055,6 +2626,95 @@ def _build_pdf_export(payload: Dict[str, Any]) -> io.BytesIO:
         y_position -= 18
         for sensitivity in payload["sensitivities"]:
             pdf_canvas.drawString(72, y_position, json.dumps(sensitivity, ensure_ascii=False))
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    def _draw_pdf_table(title: str, df: pd.DataFrame) -> None:
+        nonlocal y_position, pdf_canvas
+        if df is None or df.empty:
+            return
+        y_position -= 6
+        if y_position <= 200:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, title)
+        y_position -= 12
+
+        table_df = df.copy()
+        table_df.insert(0, "Year", table_df.index)
+        data = [list(table_df.columns)] + table_df.reset_index(drop=True).values.tolist()
+        table = tables.Table(data, repeatRows=1)
+        style = tables.TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), "#1F4E78"),
+                ("TEXTCOLOR", (0, 0), (-1, 0), "#FFFFFF"),
+                ("GRID", (0, 0), (-1, -1), 0.25, "#CCCCCC"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ]
+        )
+        table.setStyle(style)
+        width, height = table.wrap(450, y_position - 72)
+        if y_position - height <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+            pdf_canvas.drawString(72, y_position, title)
+            y_position -= 12
+            width, height = table.wrap(450, y_position - 72)
+        table.drawOn(pdf_canvas, 72, y_position - height)
+        y_position -= height + 18
+
+    perf_df = payload.get("financial_performance")
+    if perf_df is not None:
+        _draw_pdf_table("Statement of Financial Performance", perf_df)
+    cons_df = payload.get("financial_statements")
+    if cons_df is not None:
+        _draw_pdf_table("Financial Statements", cons_df)
+    position_df = payload.get("financial_position")
+    if position_df is not None:
+        _draw_pdf_table("Statement of Financial Position", position_df)
+    cash_flow_df = payload.get("cash_flows")
+    if cash_flow_df is not None:
+        _draw_pdf_table("Statement of Cash Flows", cash_flow_df)
+    analytics_df = payload.get("chart_tables", {}).get("advanced_analytics_report")
+    if analytics_df is not None:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Advanced analytics report")
+        y_position -= 18
+        for year, row in analytics_df.round(4).iterrows():
+            pdf_canvas.drawString(72, y_position, f"{year}: {row.to_dict()}")
+            y_position -= 16
+            if y_position <= 72:
+                pdf_canvas.showPage()
+                pdf_canvas.setFont("Helvetica", 11)
+                y_position = 770
+    break_even_df = payload.get("chart_tables", {}).get("vaccine_break_even_report")
+    if break_even_df is not None:
+        y_position -= 6
+        if y_position <= 72:
+            pdf_canvas.showPage()
+            pdf_canvas.setFont("Helvetica", 11)
+            y_position = 770
+        pdf_canvas.drawString(72, y_position, "Vaccine break-even analysis")
+        y_position -= 18
+        for _, row in break_even_df.iterrows():
+            pdf_canvas.drawString(
+                72,
+                y_position,
+                f"{row.get('Vaccine name', '')}: unit price {row.get('Unit price (USD)')}, "
+                f"unit variable cost {row.get('Unit variable cost (USD)')}, "
+                f"unit fixed cost {row.get('Unit fixed cost (USD/year)')}, "
+                f"unit margin {row.get('Unit contribution margin (USD)')}, "
+                f"break-even units {row.get('Break-even units')}",
+            )
             y_position -= 16
             if y_position <= 72:
                 pdf_canvas.showPage()
@@ -2475,10 +3135,24 @@ def _render_rag_assistant_page() -> None:
         st.success("Bundle ready. Download below.")
 
     if st.session_state.get("rag_bundle_ready"):
+        valuation_result = st.session_state.get("valuation_result")
+        model_cfg = st.session_state.get("model_config")
+        perf_df = None
+        position_df = None
+        cash_flow_df = None
+        cons_df = None
+        if valuation_result is not None and model_cfg is not None:
+            cons = valuation_result.consolidated
+            cons_df = cons.copy()
+            perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
         bundle_payload = {
             "snapshot": snapshot_payload,
             "ai_config": st.session_state.get("rag_ai_config", {}),
             "last_report": st.session_state.get("rag_last_report", {}),
+            "financial_performance": perf_df,
+            "financial_position": position_df,
+            "cash_flows": cash_flow_df,
+            "financial_statements": cons_df,
         }
         export_payload = _build_export_payload(bundle_payload)
         chart_tables = _build_chart_tables(
@@ -2518,18 +3192,16 @@ def main() -> None:
     (
         config_tab,
         financial_tab,
-        dashboard_tab,
         analytics_tab,
-        scenario_tab,
+        dashboard_scenario_tab,
         vc_tab,
         rag_tab,
     ) = st.tabs(
         [
             "Model configuration",
             "Financial statements",
-            "Dashboard",
             "Advanced analytics",
-            "Scenario analysis",
+            "Dashboard & Scenarios",
             "VC helper",
             "RAG Assistant",
         ]
@@ -2550,6 +3222,10 @@ def main() -> None:
             with col3:
                 inflation = st.number_input("Inflation assumption", value=0.02, min_value=0.0, max_value=0.25, step=0.005)
                 base_fx = st.text_input("Reporting FX pair", value="USD/EUR")
+            auto_sync_vaccine_sales = st.checkbox(
+                "Rebuild Vaccine Sales table when assumptions change",
+                value=True,
+            )
             st.caption("Set the macro baseline for the consolidated forecast and disclosures.")
 
         with st.expander("Forecast assumptions", expanded=True):
@@ -2563,6 +3239,17 @@ def main() -> None:
             st.caption("Ramp factors feed revenue build-ups across every product.")
 
         with st.expander("Vaccine sales"):
+            assumptions_changed = (
+                st.session_state.get("vaccine_sales_first_year") != int(first_year)
+                or st.session_state.get("vaccine_sales_n_years") != int(n_years)
+            )
+            if auto_sync_vaccine_sales and assumptions_changed:
+                st.session_state["vaccine_sales_table"] = _default_vaccine_sales_table(
+                    int(first_year),
+                    int(n_years),
+                )
+            st.session_state["vaccine_sales_first_year"] = int(first_year)
+            st.session_state["vaccine_sales_n_years"] = int(n_years)
             vaccine_df = _render_product_assumption_table(
                 session_key="vaccine_sales_table",
                 default_factory=lambda: _default_vaccine_sales_table(int(first_year), int(n_years)),
@@ -2589,6 +3276,12 @@ def main() -> None:
             )
 
         with st.expander("Uses and sources of funds"):
+            funding_required = float(st.session_state.get("funding_required", 250_000_000.0))
+            planned_new_equity = float(st.session_state.get("planned_new_equity", 200_000_000.0))
+            auto_funding_required = st.checkbox(
+                "Auto-calculate funding required from model outputs",
+                value=True,
+            )
             uses_col, sources_col = st.columns(2)
             with uses_col:
                 st.markdown("**Uses**")
@@ -2616,10 +3309,58 @@ def main() -> None:
                         "Amount": st.column_config.NumberColumn("Amount", step=1_000_000.0),
                     },
                 )
+                sources_other_total = 0.0
+                if {"Item", "Amount"}.issubset(sources_df.columns):
+                    source_items = sources_df["Item"].astype(str).str.strip().str.lower()
+                    sources_other_total = float(
+                        sources_df.loc[source_items != "new equity", "Amount"]
+                        .apply(pd.to_numeric, errors="coerce")
+                        .fillna(0.0)
+                        .sum()
+                    )
+                valuation_result = st.session_state.get("valuation_result")
+                burn_total = 0.0
+                wc_total = 0.0
+                if valuation_result is not None:
+                    cons = valuation_result.consolidated
+                    if "fcff_after_wc" in cons.columns:
+                        burn_total = float((-cons["fcff_after_wc"].clip(upper=0)).sum())
+                    if "delta_wc" in cons.columns:
+                        wc_total = float((-cons["delta_wc"].clip(upper=0)).sum())
+                derived_funding_required = uses_total + burn_total + wc_total
+                if auto_funding_required:
+                    funding_required = float(derived_funding_required)
+                    st.session_state["funding_required"] = funding_required
+                planned_new_equity = max(funding_required - sources_other_total, 0.0)
+                st.session_state["planned_new_equity"] = planned_new_equity
+                if {"Item", "Amount"}.issubset(sources_df.columns):
+                    mask = sources_df["Item"].astype(str).str.strip().str.lower() == "new equity"
+                    if mask.any():
+                        sources_df.loc[mask, "Amount"] = planned_new_equity
+                        st.session_state["sources_table"] = sources_df
+                    elif planned_new_equity > 0:
+                        sources_df.loc[len(sources_df)] = {
+                            "Item": "New equity",
+                            "Amount": planned_new_equity,
+                        }
+                        st.session_state["sources_table"] = sources_df
                 sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
                 st.metric("Total sources", f"{sources_total:,.0f}")
             delta = sources_total - uses_total
             st.info(f"Funding gap (sources - uses): {delta:,.0f}")
+            funding_gap = funding_required - uses_total
+            st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
+            if abs(funding_gap) > 1.0:
+                st.warning("Funding required does not match total uses.")
+            reconciliation = pd.DataFrame(
+                [
+                    {"Component": "Uses total", "Amount": uses_total},
+                    {"Component": "Cash burn (FCFF < 0)", "Amount": burn_total},
+                    {"Component": "Working capital draw", "Amount": wc_total},
+                    {"Component": "Funding required", "Amount": funding_required},
+                ]
+            )
+            st.dataframe(reconciliation.style.format({"Amount": "{:,.0f}"}))
 
         with st.expander("Risk-adjusted DCF valuation method - assumptions"):
             col_a, col_b, col_c = st.columns(3)
@@ -2635,7 +3376,11 @@ def main() -> None:
 
         with st.expander("Funding required"):
             funding_required = st.number_input(
-                "Total funding required", value=250_000_000.0, step=5_000_000.0, format="%0.0f"
+                "Total funding required",
+                value=float(st.session_state.get("funding_required", 250_000_000.0)),
+                step=5_000_000.0,
+                format="%0.0f",
+                key="funding_required",
             )
 
         with st.expander("Shareholders / Investors"):
@@ -2652,7 +3397,37 @@ def main() -> None:
                     "Investment": st.column_config.NumberColumn("Investment", step=1_000_000.0),
                 },
             )
-            st.metric("Total ownership reported", f"{shareholders_df['Ownership %'].sum():.0%}")
+            investment = pd.to_numeric(
+                shareholders_df.get("Investment", pd.Series(dtype=float)), errors="coerce"
+            ).fillna(0.0)
+            planned_new_equity = float(st.session_state.get("planned_new_equity", 0.0))
+            pre_money = float(investment.sum())
+            post_money = max(pre_money + planned_new_equity, 1.0)
+            if "Shareholder" in shareholders_df.columns:
+                trimmed = shareholders_df["Shareholder"].astype(str).str.strip().str.lower()
+                new_equity_mask = trimmed == "new equity round"
+                if new_equity_mask.any():
+                    shareholders_df.loc[new_equity_mask, "Investment"] = planned_new_equity
+                elif planned_new_equity > 0:
+                    shareholders_df.loc[len(shareholders_df)] = {
+                        "Shareholder": "New equity round",
+                        "Ownership %": planned_new_equity / post_money,
+                        "Investment": planned_new_equity,
+                    }
+
+            ownership = pd.to_numeric(
+                shareholders_df.get("Investment", pd.Series(dtype=float)), errors="coerce"
+            ).fillna(0.0) / post_money
+            shareholders_df["Ownership %"] = ownership
+            st.session_state["shareholders_table"] = shareholders_df
+            st.metric("Total ownership (post-money)", f"{shareholders_df['Ownership %'].sum():.0%}")
+            if valuation_result is not None:
+                shareholders_df["Equity value (rNPV)"] = shareholders_df["Ownership %"] * valuation_result.rnpv
+                st.dataframe(
+                    shareholders_df.style.format(
+                        {"Ownership %": "{:.1%}", "Investment": "{:,.0f}", "Equity value (rNPV)": "{:,.0f}"}
+                    )
+                )
 
         with st.expander("Relevant market sizes"):
             market_df = _render_product_assumption_table(
@@ -2668,7 +3443,11 @@ def main() -> None:
 
         with st.expander("New equity issued"):
             new_equity = st.number_input(
-                "Planned new equity", value=200_000_000.0, step=5_000_000.0, format="%0.0f"
+                "Planned new equity",
+                value=planned_new_equity,
+                step=5_000_000.0,
+                format="%0.0f",
+                key="planned_new_equity",
             )
 
         with st.expander("Selectors"):
@@ -3077,6 +3856,7 @@ def main() -> None:
                                 perf_df,
                                 position_df,
                                 cash_flow_df,
+                                model_cfg,
                             )
                         st.session_state["financial_excel_bytes"] = excel_bytes
                 if excel_bytes:
@@ -3093,11 +3873,12 @@ def main() -> None:
                 if not excel_bytes:
                     st.info("Click 'Prepare Excel Model' to generate the workbook for download.")
 
-    with dashboard_tab:
-        st.subheader("Dashboard")
+    with dashboard_scenario_tab:
+        st.subheader("Dashboard & scenarios")
         if valuation_result is None or model_cfg is None:
             st.info("Configure and run the model to see dashboard metrics.")
         else:
+            st.markdown("**Dashboard snapshot**")
             cons = valuation_result.consolidated
             kpi_cols = st.columns(4)
             kpi_cols[0].metric("Portfolio rNPV", f"{valuation_result.rnpv:,.0f} {model_cfg.currency}")
@@ -3110,6 +3891,177 @@ def main() -> None:
             st.area_chart(chart_data)
             st.bar_chart(cons["fcff_after_wc"], use_container_width=True)
 
+        st.markdown("**Scenario analysis**")
+        if portfolio is None:
+            st.info("Configure the model in the first tab to enable scenarios.")
+        else:
+            preset_col, name_col = st.columns([3, 2])
+            with preset_col:
+                st.markdown("**Scenario presets**")
+                preset_buttons = st.columns(4)
+
+                def _apply_preset(
+                    *,
+                    rev: float,
+                    cost: float,
+                    dr: float,
+                    prob: float,
+                ) -> None:
+                    st.session_state["scenario_rev_mult"] = rev
+                    st.session_state["scenario_cost_mult"] = cost
+                    st.session_state["scenario_dr_shift"] = dr
+                    st.session_state["scenario_prob_mult"] = prob
+
+                if preset_buttons[0].button("Base", key="scenario_preset_base"):
+                    _apply_preset(rev=1.0, cost=1.0, dr=0.0, prob=1.0)
+                if preset_buttons[1].button("Upside", key="scenario_preset_upside"):
+                    _apply_preset(rev=1.2, cost=0.9, dr=-0.01, prob=1.1)
+                if preset_buttons[2].button("Downside", key="scenario_preset_downside"):
+                    _apply_preset(rev=0.8, cost=1.1, dr=0.01, prob=0.9)
+                if preset_buttons[3].button("Trial failure", key="scenario_preset_failure"):
+                    _apply_preset(rev=0.6, cost=1.3, dr=0.03, prob=0.75)
+
+            with name_col:
+                scenario_name = st.text_input("Scenario name", value="Custom scenario", key="scenario_name")
+
+            col1, col2, col3, col4 = st.columns(4)
+            rev_mult = col1.slider(
+                "Revenue multiplier",
+                0.25,
+                2.5,
+                st.session_state.get("scenario_rev_mult", 1.0),
+                key="scenario_rev_mult",
+            )
+            cost_mult = col2.slider(
+                "Cost multiplier",
+                0.5,
+                2.0,
+                st.session_state.get("scenario_cost_mult", 1.0),
+                key="scenario_cost_mult",
+            )
+            dr_shift = col3.slider(
+                "Discount rate shift",
+                -0.05,
+                0.1,
+                st.session_state.get("scenario_dr_shift", 0.0),
+                key="scenario_dr_shift",
+            )
+            prob_mult = col4.slider(
+                "Success prob multiplier",
+                0.5,
+                1.5,
+                st.session_state.get("scenario_prob_mult", 1.0),
+                key="scenario_prob_mult",
+            )
+            scenario = Scenario(
+                name=scenario_name or "Custom scenario",
+                revenue_multiplier=float(rev_mult),
+                cost_multiplier=float(cost_mult),
+                discount_rate_shift=float(dr_shift),
+                success_prob_multiplier=float(prob_mult),
+            )
+            scen_results = ScenarioEngine(portfolio).run_scenarios([scenario])
+
+            scenario_result = _evaluate_portfolio_shock(
+                portfolio,
+                revenue_multiplier=float(rev_mult),
+                cost_multiplier=float(cost_mult),
+                discount_shift=float(dr_shift),
+                success_prob_multiplier=float(prob_mult),
+            )
+            if scenario_result is not None and valuation_result is not None:
+                base_cons = valuation_result.consolidated
+                base_rnpv = valuation_result.rnpv
+                base_ebitda = base_cons["ebitda"].sum()
+                scen_cons = scenario_result.consolidated
+                scen_rnpv = scenario_result.rnpv
+                scen_ebitda = scen_cons["ebitda"].sum()
+                delta_cols = st.columns(4)
+                delta_cols[0].metric("Scenario rNPV", f"{scen_rnpv:,.0f}", f"{scen_rnpv - base_rnpv:+,.0f}")
+                delta_cols[1].metric(
+                    "Scenario EBITDA",
+                    f"{scen_ebitda:,.0f}",
+                    f"{scen_ebitda - base_ebitda:+,.0f}",
+                )
+                delta_cols[2].metric(
+                    "Revenue delta",
+                    f"{scen_cons['revenue'].sum():,.0f}",
+                    f"{scen_cons['revenue'].sum() - base_cons['revenue'].sum():+,.0f}",
+                )
+                delta_cols[3].metric(
+                    "FCFF delta",
+                    f"{scen_cons['fcff_after_wc'].sum():,.0f}",
+                    f"{scen_cons['fcff_after_wc'].sum() - base_cons['fcff_after_wc'].sum():+,.0f}",
+                )
+
+                overlay_df = pd.DataFrame(
+                    {
+                        "Base revenue": base_cons["revenue"],
+                        "Scenario revenue": scen_cons["revenue"],
+                        "Base EBITDA": base_cons["ebitda"],
+                        "Scenario EBITDA": scen_cons["ebitda"],
+                        "Base FCFF": base_cons["fcff_after_wc"],
+                        "Scenario FCFF": scen_cons["fcff_after_wc"],
+                    }
+                )
+                st.markdown("**Scenario overlay vs base**")
+                st.line_chart(overlay_df)
+
+            st.markdown("**Scenario result**")
+            st.dataframe(scen_results.style.format({"rnpv": "{:.0f}", "ebitda_value": "{:.0f}"}))
+
+            st.markdown("**Multi-scenario comparison**")
+            if "scenario_basket" not in st.session_state:
+                st.session_state["scenario_basket"] = []
+            basket_col1, basket_col2 = st.columns([1, 1])
+            if basket_col1.button("Add to comparison", key="scenario_add_to_basket"):
+                st.session_state["scenario_basket"].append(
+                    {
+                        "name": scenario.name,
+                        "revenue_multiplier": float(rev_mult),
+                        "cost_multiplier": float(cost_mult),
+                        "discount_rate_shift": float(dr_shift),
+                        "success_prob_multiplier": float(prob_mult),
+                    }
+                )
+            if basket_col2.button("Clear comparison", key="scenario_clear_basket"):
+                st.session_state["scenario_basket"] = []
+
+            basket = st.session_state.get("scenario_basket", [])
+            if basket:
+                scenario_list = [Scenario(**entry) for entry in basket]
+                basket_results = ScenarioEngine(portfolio).run_scenarios(scenario_list)
+                st.dataframe(
+                    basket_results.style.format({"rnpv": "{:.0f}", "ebitda_value": "{:.0f}"})
+                )
+            else:
+                st.caption("Add scenarios to compare multiple cases side-by-side.")
+
+            st.markdown("**Tornado sensitivity (interactive)**")
+            if valuation_result is not None:
+                tornado_df = _tornado_dataframe(portfolio, valuation_result.rnpv)
+                if tornado_df.empty:
+                    st.info("Unable to compute tornado deltas.")
+                else:
+                    st.dataframe(tornado_df.style.format({"rnpv": "{:.0f}", "Delta": "{:+,.0f}"}))
+            else:
+                st.info("Run a valuation to unlock tornado sensitivities.")
+
+            st.markdown("**Goal seek (scenario)**")
+            target_rnpv = st.number_input(
+                "Target rNPV",
+                value=float(valuation_result.rnpv) if valuation_result is not None else 0.0,
+                key="scenario_goal_seek_target",
+            )
+            if st.button("Solve revenue multiplier", key="scenario_goal_seek"):
+                multiplier, achieved = _goal_seek_revenue_multiplier(portfolio, float(target_rnpv))
+                if achieved is not None:
+                    st.success(
+                        f"Revenue multiplier {multiplier:.2f} approximates the goal (achieved rNPV {achieved:,.0f})."
+                    )
+                else:
+                    st.warning("Goal seek failed—try adjusting the target or assumptions.")
+
     with analytics_tab:
         st.subheader("Advanced financial analytics")
         if valuation_result is None or model_cfg is None or portfolio is None:
@@ -3120,6 +4072,78 @@ def main() -> None:
             ratios = _build_ratio_table(cons)
             st.markdown("**Margin & intensity analysis**")
             st.dataframe(ratios.style.format("{:.1%}"))
+            st.markdown("**Vaccine break-even analysis (interactive)**")
+            base_inputs = _build_vaccine_break_even_inputs(model_cfg)
+            if base_inputs.empty:
+                st.info("Add vaccine assumptions to unlock break-even analytics.")
+            else:
+                if "vaccine_break_even_inputs" not in st.session_state:
+                    st.session_state["vaccine_break_even_inputs"] = base_inputs
+                else:
+                    current_inputs = st.session_state["vaccine_break_even_inputs"]
+                    if isinstance(current_inputs, pd.DataFrame):
+                        missing = set(base_inputs["Vaccine name"]) - set(current_inputs.get("Vaccine name", []))
+                        if missing:
+                            st.session_state["vaccine_break_even_inputs"] = pd.concat(
+                                [
+                                    current_inputs,
+                                    base_inputs[base_inputs["Vaccine name"].isin(missing)],
+                                ],
+                                ignore_index=True,
+                            )
+                ai_cols = st.columns(2)
+                ai_assist = ai_cols[0].toggle(
+                    "AI/ML assist: suggest unit prices for target break-even",
+                    value=st.session_state.get("break_even_ai_assist", True),
+                    key="break_even_ai_assist",
+                )
+                ai_target_years = ai_cols[1].slider(
+                    "Target break-even horizon (years)",
+                    1,
+                    10,
+                    st.session_state.get("break_even_ai_target_years", 3),
+                    key="break_even_ai_target_years",
+                )
+                st.caption(
+                    "Adjust unit price and cost inputs to see contribution margin, break-even units, "
+                    "and AI-assisted price suggestions based on the target horizon."
+                )
+                edited_inputs = st.data_editor(
+                    st.session_state["vaccine_break_even_inputs"],
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    column_config={
+                        "Unit price (USD)": st.column_config.NumberColumn(format="$%0.2f", step=1.0),
+                        "Unit variable cost (USD)": st.column_config.NumberColumn(format="$%0.2f", step=1.0),
+                        "Unit fixed cost (USD/year)": st.column_config.NumberColumn(format="$%0.0f", step=1000.0),
+                        "Units per year": st.column_config.NumberColumn(format="%0.0f", step=1.0),
+                    },
+                    key="vaccine_break_even_editor",
+                )
+                st.session_state["vaccine_break_even_inputs"] = edited_inputs
+                break_even_df = _build_vaccine_break_even_table(
+                    model_cfg,
+                    inputs_df=edited_inputs,
+                    ai_assist=ai_assist,
+                    ai_target_years=ai_target_years,
+                )
+                st.markdown("**Break-even outputs**")
+                st.dataframe(
+                    break_even_df.style.format(
+                        {
+                            "Unit price (USD)": "{:,.2f}",
+                            "Unit variable cost (USD)": "{:,.2f}",
+                            "Unit fixed cost (USD/year)": "{:,.0f}",
+                            "Units per year": "{:,.0f}",
+                            "Unit contribution margin (USD)": "{:,.2f}",
+                            "Contribution margin %": "{:.1%}",
+                            "Break-even units": "{:,.0f}",
+                            "Break-even revenue (USD)": "{:,.0f}",
+                            "Break-even unit cost (USD)": "{:,.2f}",
+                            "AI suggested unit price (USD)": "{:,.2f}",
+                        }
+                    )
+                )
 
             with st.expander("Sensitivity & stress testing", expanded=True):
                 sens_cols = st.columns(3)
@@ -3196,15 +4220,35 @@ def main() -> None:
             with st.expander("Monte Carlo & probabilistic valuation", expanded=False):
                 mc_cols = st.columns(4)
                 n_sims = mc_cols[0].number_input("Simulations", min_value=100, max_value=5000, value=1000, step=100)
-                rev_sigma = mc_cols[1].number_input("Revenue sigma", min_value=0.01, max_value=0.5, value=0.15, step=0.01)
-                cost_sigma = mc_cols[2].number_input("Cost sigma", min_value=0.01, max_value=0.5, value=0.1, step=0.01)
+                rev_dist = mc_cols[1].selectbox("Revenue distribution", ["Normal", "Lognormal", "Uniform"])
+                cost_dist = mc_cols[2].selectbox("Cost distribution", ["Normal", "Lognormal", "Uniform"])
                 seed = mc_cols[3].number_input("Random seed", min_value=0, value=42)
+
+                sigma_cols = st.columns(2)
+                rev_sigma = sigma_cols[0].number_input(
+                    "Revenue sigma", min_value=0.01, max_value=0.5, value=0.15, step=0.01
+                )
+                cost_sigma = sigma_cols[1].number_input(
+                    "Cost sigma", min_value=0.01, max_value=0.5, value=0.1, step=0.01
+                )
+                rev_bounds = st.columns(2)
+                rev_min = rev_bounds[0].number_input("Revenue min (uniform)", value=0.8, step=0.05)
+                rev_max = rev_bounds[1].number_input("Revenue max (uniform)", value=1.2, step=0.05)
+                cost_bounds = st.columns(2)
+                cost_min = cost_bounds[0].number_input("Cost min (uniform)", value=0.8, step=0.05)
+                cost_max = cost_bounds[1].number_input("Cost max (uniform)", value=1.2, step=0.05)
 
                 if st.button("Run Monte Carlo simulation"):
                     sims = MonteCarloEngine(portfolio).simulate(
                         n_sims=int(n_sims),
                         revenue_sigma=float(rev_sigma),
                         cost_sigma=float(cost_sigma),
+                        revenue_dist=str(rev_dist).lower(),
+                        cost_dist=str(cost_dist).lower(),
+                        revenue_min=float(rev_min),
+                        revenue_max=float(rev_max),
+                        cost_min=float(cost_min),
+                        cost_max=float(cost_max),
                         random_seed=int(seed),
                     )
                     st.session_state["mc_results"] = sims
@@ -3312,8 +4356,13 @@ def main() -> None:
             with st.expander("Time-series & ML forecasting", expanded=False):
                 ts_metric = st.selectbox("Series to forecast", ["revenue", "ebitda"], key="forecast_metric")
                 method = st.selectbox("Forecast model", ["ARIMA", "Prophet", "LSTM"], key="forecast_method")
-                horizon_max = max(5, int(model_cfg.n_years))
+                try:
+                    horizon_years = int(model_cfg.n_years)
+                except (TypeError, ValueError):
+                    horizon_years = 5
+                horizon_max = max(5, horizon_years)
                 horizon_default = min(10, horizon_max)
+                horizon_default = max(5, int(horizon_default))
                 horizon = st.slider("Forecast steps", 5, horizon_max, horizon_default)
                 if st.button("Run time-series model"):
                     fe = ForecastEngine(model_cfg)
@@ -3390,28 +4439,6 @@ def main() -> None:
                     st.line_chart(ml_mult_df.set_index("Year"))
                 else:
                     st.caption("Install scikit-learn to run ML-driven multiple predictions.")
-
-    with scenario_tab:
-        st.subheader("Scenario analysis")
-        if portfolio is None:
-            st.info("Configure the model in the first tab to enable scenarios.")
-        else:
-            col1, col2, col3, col4 = st.columns(4)
-            rev_mult = col1.slider("Revenue multiplier", 0.25, 2.5, 1.0)
-            cost_mult = col2.slider("Cost multiplier", 0.5, 2.0, 1.0)
-            dr_shift = col3.slider("Discount rate shift", -0.05, 0.1, 0.0)
-            prob_mult = col4.slider("Success prob multiplier", 0.5, 1.5, 1.0)
-            scenario = Scenario(
-                name="Custom scenario",
-                revenue_multiplier=float(rev_mult),
-                cost_multiplier=float(cost_mult),
-                discount_rate_shift=float(dr_shift),
-                success_prob_multiplier=float(prob_mult),
-            )
-            scen_results = ScenarioEngine(portfolio).run_scenarios([scenario])
-            st.dataframe(
-                scen_results.style.format({"rnpv": "{:.0f}", "ebitda_value": "{:.0f}"})
-            )
 
     with vc_tab:
         st.subheader("VC method helper")
