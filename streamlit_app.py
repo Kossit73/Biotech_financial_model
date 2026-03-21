@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+from io import BytesIO
 from dataclasses import asdict, fields
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 
 try:
@@ -1506,6 +1509,7 @@ def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
             "Growth": growth,
         }
     )
+    features = features.replace([np.inf, -np.inf], np.nan).fillna(0.0)
     multiples = (cons["ebitda"].rolling(3).mean().fillna(method="bfill") + 1) / 1_000_000
     model = LinearRegression()
     model.fit(features.values, multiples.values)
@@ -1513,85 +1517,496 @@ def _machine_learning_multiple(cons: pd.DataFrame) -> Optional[pd.DataFrame]:
     return pd.DataFrame({"Year": cons.index, "Predicted multiple": pred})
 
 
+def _compute_irr(cashflows: List[float]) -> Optional[float]:
+    if not cashflows or all(cf >= 0 for cf in cashflows) or all(cf <= 0 for cf in cashflows):
+        return None
+
+    def npv(rate: float) -> float:
+        return sum(cf / ((1 + rate) ** idx) for idx, cf in enumerate(cashflows))
+
+    low, high = -0.9, 1.0
+    npv_low, npv_high = npv(low), npv(high)
+    attempts = 0
+    while npv_low * npv_high > 0 and attempts < 10:
+        high += 1.0
+        npv_high = npv(high)
+        attempts += 1
+    if npv_low * npv_high > 0:
+        return None
+
+    for _ in range(60):
+        mid = (low + high) / 2
+        npv_mid = npv(mid)
+        if abs(npv_mid) < 1e-6:
+            return mid
+        if npv_low * npv_mid <= 0:
+            high = mid
+            npv_high = npv_mid
+        else:
+            low = mid
+            npv_low = npv_mid
+    return (low + high) / 2
+
+
+def _compute_payback_years(years: List[int], cashflows: List[float]) -> Optional[float]:
+    if not years or not cashflows or len(years) != len(cashflows):
+        return None
+    cumulative = 0.0
+    for idx, (year, cf) in enumerate(zip(years, cashflows)):
+        prev_cumulative = cumulative
+        cumulative += cf
+        if cumulative >= 0 and idx > 0:
+            prev_year = years[idx - 1]
+            if cf == 0:
+                return float(year - years[0])
+            fraction = (0 - prev_cumulative) / cf
+            return (prev_year + fraction * (year - prev_year)) - years[0]
+    return None
+
+
+def _build_snapshot_from_result(
+    model_cfg: ModelConfig,
+    valuation_result: ValuationResult,
+    scenarios: Optional[List[dict]] = None,
+    sensitivities: Optional[List[dict]] = None,
+) -> dict:
+    cons = valuation_result.consolidated
+    dcf = valuation_result.dcf_table
+    cashflows = dcf["fcff"].tolist()
+    if "terminal_value" in dcf.columns:
+        cashflows[-1] += float(dcf["terminal_value"].fillna(0.0).iloc[-1])
+    irr = _compute_irr(cashflows)
+    payback = _compute_payback_years(cons.index.tolist(), cashflows)
+    capex_total = -float(cons["capex_cash"].sum()) if "capex_cash" in cons.columns else None
+    opex_components = [
+        "sales_marketing",
+        "gna",
+        "royalty",
+        "rd_cash",
+    ]
+    opex_available = [col for col in opex_components if col in cons.columns]
+    opex_annual = None
+    if opex_available:
+        opex_annual = -float(cons[opex_available].sum(axis=1).mean())
+    revenue_annual = float(cons["revenue"].mean()) if "revenue" in cons.columns else None
+    snapshot = {
+        "currency": model_cfg.currency,
+        "npv": valuation_result.rnpv,
+        "irr": irr,
+        "dscr_min": None,
+        "payback_years": payback,
+        "capex_total": capex_total,
+        "opex_annual": opex_annual,
+        "revenue_annual": revenue_annual,
+        "scenarios": scenarios or [],
+        "sensitivities": sensitivities or [],
+        "assumptions": {
+            "discount_rate": model_cfg.discount_rate,
+            "tax_rate": model_cfg.tax_rate,
+            "working_capital_pct": model_cfg.working_capital_pct_sales,
+            "inflation_rate": getattr(model_cfg, "inflation_rate", None),
+        },
+    }
+    return snapshot
+
+
+def _default_scenario_pack(portfolio: Optional[Portfolio]) -> List[dict]:
+    if portfolio is None:
+        return []
+    base = ValuationEngine(portfolio).run()
+    upside = _evaluate_portfolio_shock(
+        portfolio,
+        revenue_multiplier=1.15,
+        cost_multiplier=0.95,
+        discount_shift=-0.01,
+        success_prob_multiplier=1.1,
+    )
+    downside = _evaluate_portfolio_shock(
+        portfolio,
+        revenue_multiplier=0.85,
+        cost_multiplier=1.05,
+        discount_shift=0.02,
+        success_prob_multiplier=0.9,
+    )
+    scenarios = [
+        {"name": "Base", "npv": base.rnpv, "irr": None},
+    ]
+    if upside is not None:
+        scenarios.append({"name": "Upside", "npv": upside.rnpv, "irr": None})
+    if downside is not None:
+        scenarios.append({"name": "Downside", "npv": downside.rnpv, "irr": None})
+    return scenarios
+
+
+def _build_financial_excel(
+    cons: pd.DataFrame,
+    perf_df: pd.DataFrame,
+    position_df: pd.DataFrame,
+    cash_flow_df: pd.DataFrame,
+) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        cons.to_excel(writer, sheet_name="Consolidated forecast")
+        perf_df.to_excel(writer, sheet_name="Financial performance")
+        position_df.to_excel(writer, sheet_name="Financial position")
+        cash_flow_df.to_excel(writer, sheet_name="Cash flows")
+    return output.getvalue()
+
+
+def _rag_section_outline() -> List[str]:
+    return [
+        "Executive Summary",
+        "Project Description & Scope",
+        "Market & Demand Analysis",
+        "Technical & Operations",
+        "Legal, Permitting & Environmental",
+        "Implementation Plan",
+        "Financial Analysis",
+        "Risk Assessment & Mitigations",
+        "Conclusion & Recommendation",
+        "Appendices",
+    ]
+
+
+def _rag_blueprint_markdown() -> str:
+    return (
+        "# RAG Feasibility Study Generator\n"
+        "\n"
+        "A production-ready blueprint (plus reference code) for a Retrieval-Augmented Generation (RAG) "
+        "system that ingests up to 1 GB of project materials and automatically drafts a comprehensive "
+        "feasibility study grounded in your financial model outputs and accompanying documents.\n"
+        "\n"
+        "## 0) RAC: Model-Integrated Design (RAG inside the Financial Model)\n"
+        "- **What changed**: The Excel workbook is the system of record and orchestrator. The "
+        "Retrieval–Aggregation–Composer (RAC) service is triggered from the model to collect results "
+        "directly from defined cells/ranges and to ingest up to 1 GB of external evidence.\n"
+        "- **Why this pattern**: Single source of truth, fewer manual steps, and repeatable runs tied to "
+        "workbook hash + timestamp.\n"
+        "\n"
+        "## 1) High-level Architecture\n"
+        "1. Upload & Ingest: stream large files to disk, parse text, chunk, embed, store in FAISS.\n"
+        "2. Financial Model Extraction: load Excel and extract standardized metrics/tables.\n"
+        "3. Retrieval: dense + reranker, optional hybrid.\n"
+        "4. Planning & Generation: section-by-section prompts grounded by snapshot + retrieved passages.\n"
+        "5. Audit: attach provenance and snapshot metadata for reproducibility.\n"
+        "\n"
+        "## 2) Data Model & Financial Schema\n"
+        "Store project artifacts under `projects/<project_id>/` with uploads, parsed text, index, and a "
+        "financial snapshot JSON. Snapshot keys include NPV/IRR/DSCR, capex/opex, scenarios, and "
+        "sensitivities.\n"
+        "\n"
+        "## 3) Prompt Strategy & Section Templates\n"
+        "Use a strict system prompt that forbids unsupported claims and enforces inline citations. "
+        "Each section receives the financial snapshot and top-k contextual passages.\n"
+        "\n"
+        "## 4) Reference Implementation (FastAPI + FAISS + Sentence-Transformers)\n"
+        "The API exposes `/collect`, `/ingest`, and `/generate` endpoints. `/ingest` streams large "
+        "uploads, `/collect` stores a validated snapshot, and `/generate` composes the feasibility "
+        "study.\n"
+        "\n"
+        "## 5) Quality, Auditing & Reproducibility\n"
+        "- Enforce citations and reject unsupported claims.\n"
+        "- Record workbook hash + timestamp.\n"
+        "- Run numeric sanity checks (IRR bounds, DSCR thresholds).\n"
+        "\n"
+        "## 6) Deployment Notes (1 GB uploads)\n"
+        "- Stream uploads to disk; avoid in-memory buffers.\n"
+        "- Use Nginx `client_max_body_size 1024m` and disable proxy buffering.\n"
+        "- Run uvicorn with multiple workers and fast local storage.\n"
+        "\n"
+        "## 7) Section-specific Retrieval Queries\n"
+        "- Executive Summary: decision drivers, showstoppers\n"
+        "- Market: market size, demand forecast, price assumptions\n"
+        "- Technical: process design, throughput, yield\n"
+        "- Legal/Env: permits, EIA/ESIA, land rights\n"
+        "- Implementation: schedule, capex phasing\n"
+        "- Financial: NPV, IRR, DSCR, sensitivities\n"
+        "- Risk/ESG: risk register, mitigations\n"
+        "\n"
+        "## 8) Appendices & Outputs\n"
+        "Include the financial snapshot, sensitivity matrices, scenarios, and an audit trail mapping "
+        "sources to citations.\n"
+    )
+
+
 def _render_rag_assistant_page() -> None:
     st.subheader("RAG Assistant")
-    st.write(
-        "Turn your valuation workbook into an evidence-backed investment memo. "
-        "The RAG Assistant gathers model outputs, ingests external research, and drafts "
-        "a report that highlights risks, catalysts, and valuation proof points."
+
+    rag_key_prefix = "rag_assistant"
+    st.markdown("## Upload reference documents")
+    project_id = st.session_state.get(
+        f"{rag_key_prefix}_project_id",
+        os.environ.get("RAG_PROJECT_ID", "default-project"),
     )
-
-    with st.container(border=True):
-        hero_cols = st.columns([2, 1])
-        with hero_cols[0]:
-            st.markdown("### What you can do")
-            st.markdown(
-                "- **Capture a model snapshot** with key KPIs and scenario outputs.\n"
-                "- **Ingest evidence packs** (clinical readouts, market research, diligence).\n"
-                "- **Generate a feasibility report** with citations and risk callouts."
-            )
-            st.markdown("**Best for:** investor memos, internal IC reviews, and diligence briefs.")
-        with hero_cols[1]:
-            st.markdown("### Readiness checklist")
-            st.metric("Model snapshot", "Ready")
-            st.metric("Evidence library", "Awaiting upload")
-            st.metric("Report draft", "Not generated")
-
-    st.markdown("### Launch plan")
-    step_cols = st.columns(3)
-    step_cols[0].markdown("**1. Collect**\n\nSend the financial snapshot to the `/collect` endpoint.")
-    step_cols[1].markdown("**2. Ingest**\n\nUpload supporting documents to `/ingest`.")
-    step_cols[2].markdown("**3. Generate**\n\nTrigger `/generate` to build `report.md`.")
-    st.info(
-        "Once the report is generated, the assistant can summarize risks, highlight catalysts, "
-        "and trace each claim back to a supporting document."
+    rag_host = st.session_state.get(
+        f"{rag_key_prefix}_rag_host",
+        os.environ.get("RAG_HOST", "http://localhost:8000"),
     )
+    st.caption("Set RAG_HOST and RAG_PROJECT_ID env vars to override defaults.")
 
-    with st.expander("View sample snapshot payload", expanded=False):
-        snapshot_payload = {
-            "project_id": "example-project",
-            "financial_snapshot": {
-                "currency": "USD",
-                "npv": 54000000,
-                "irr": 0.19,
-                "dscr_min": 1.35,
-                "payback_years": 5.6,
-                "capex_total": 120000000,
-                "opex_annual": 8500000,
-                "revenue_annual": 23500000,
-                "scenarios": [
-                    {"name": "Base", "npv": 54000000, "irr": 0.19},
-                    {"name": "Downside", "npv": 30000000, "irr": 0.14},
-                    {"name": "Upside", "npv": 78000000, "irr": 0.24},
-                ],
-            },
-            "cell_map": {
-                "npv": "Assumptions!B12",
-                "irr": "Assumptions!B13",
-                "dscr_min": "Debt!F22",
-            },
-            "workbook_hash": "sha256-hash-here",
+    uploads = st.file_uploader(
+        "Upload reference documents",
+        accept_multiple_files=True,
+        key=f"{rag_key_prefix}_uploads",
+    )
+    if uploads:
+        st.caption(f"{len(uploads)} document(s) ready for indexing.")
+
+    st.markdown("## AI & Machine Learning Configuration")
+    enable_ai = st.checkbox("Enable AI enhancements", value=True, key=f"{rag_key_prefix}_enable_ai")
+    provider = st.selectbox(
+        "Provider",
+        ["OpenAI", "Azure OpenAI", "Anthropic", "Vertex", "Other"],
+        key=f"{rag_key_prefix}_provider",
+    )
+    model_name = st.text_input(
+        "Model",
+        value="gpt-4o-mini",
+        key=f"{rag_key_prefix}_model",
+    )
+    forecast_horizon = st.number_input(
+        "Forecast horizon (years)",
+        min_value=1,
+        max_value=50,
+        value=10,
+        key=f"{rag_key_prefix}_forecast_horizon",
+    )
+    ml_methods = st.multiselect(
+        "Machine learning method",
+        ["Linear regression", "Compound annual growth", "ARIMA", "Prophet", "LSTM"],
+        default=["Linear regression"],
+        key=f"{rag_key_prefix}_ml_methods",
+    )
+    generative_features = st.multiselect(
+        "Generative features",
+        ["Executive summary", "Risk review", "Cash flow highlights", "ESG review", "Market overview"],
+        default=["Executive summary", "Risk review", "Cash flow highlights"],
+        key=f"{rag_key_prefix}_gen_features",
+    )
+    api_key = st.text_input(
+        "API key",
+        type="password",
+        key=f"{rag_key_prefix}_api_key",
+    )
+    if st.button("Save AI configuration", key=f"{rag_key_prefix}_save_config"):
+        st.session_state["rag_ai_config"] = {
+            "enable_ai": enable_ai,
+            "provider": provider,
+            "model": model_name,
+            "forecast_horizon": forecast_horizon,
+            "ml_methods": ml_methods,
+            "generative_features": generative_features,
+            "api_key_set": bool(api_key),
         }
-        st.code(snapshot_payload, language="json")
-        st.download_button(
-            "Download sample JSON",
-            data=json.dumps(snapshot_payload, indent=2),
-            file_name="rag_snapshot_sample.json",
-            mime="application/json",
-            use_container_width=True,
+        st.success("AI configuration saved.")
+
+    st.markdown("## AI Insights")
+    model_cfg = st.session_state.get("model_config")
+    valuation_result = st.session_state.get("valuation_result")
+    portfolio = st.session_state.get("portfolio")
+
+    if "rag_snapshot" not in st.session_state:
+        if model_cfg is not None and valuation_result is not None:
+            default_scenarios = _default_scenario_pack(portfolio)
+            st.session_state["rag_snapshot"] = _build_snapshot_from_result(
+                model_cfg,
+                valuation_result,
+                scenarios=default_scenarios,
+            )
+        else:
+            st.session_state["rag_snapshot"] = {
+                "currency": "USD",
+                "npv": None,
+                "irr": None,
+                "dscr_min": None,
+                "payback_years": None,
+                "capex_total": None,
+                "opex_annual": None,
+                "revenue_annual": None,
+                "scenarios": [],
+                "sensitivities": [],
+                "assumptions": {},
+            }
+
+    if st.button("Refresh snapshot from latest model", key=f"{rag_key_prefix}_refresh_snapshot"):
+        if model_cfg is None or valuation_result is None:
+            st.warning("Run the model workspace to generate a snapshot.")
+        else:
+            st.session_state["rag_snapshot"] = _build_snapshot_from_result(
+                model_cfg,
+                valuation_result,
+                scenarios=_default_scenario_pack(portfolio),
+            )
+
+    snapshot_state = st.session_state["rag_snapshot"]
+    with st.expander("Snapshot inputs", expanded=False):
+        snap_cols = st.columns(3)
+        snapshot_state["currency"] = snap_cols[0].text_input(
+            "Currency",
+            value=snapshot_state.get("currency") or "USD",
+            key=f"{rag_key_prefix}_currency",
+        )
+        snapshot_state["npv"] = snap_cols[1].number_input(
+            "NPV",
+            value=float(snapshot_state["npv"]) if snapshot_state.get("npv") is not None else 0.0,
+            step=1000000.0,
+            key=f"{rag_key_prefix}_npv",
+        )
+        snapshot_state["irr"] = snap_cols[2].number_input(
+            "IRR",
+            value=float(snapshot_state["irr"]) if snapshot_state.get("irr") is not None else 0.0,
+            step=0.01,
+            format="%.4f",
+            key=f"{rag_key_prefix}_irr",
         )
 
-    st.markdown("### Service endpoints")
-    st.code(
-        "\n".join(
-            [
-                "POST http://<rag-host>/collect",
-                "POST http://<rag-host>/ingest",
-                "POST http://<rag-host>/generate",
-            ]
-        ),
-        language="bash",
+        snap_cols2 = st.columns(3)
+        snapshot_state["dscr_min"] = snap_cols2[0].number_input(
+            "Minimum DSCR",
+            value=float(snapshot_state.get("dscr_min") or 0.0),
+            step=0.1,
+            format="%.2f",
+            key=f"{rag_key_prefix}_dscr_min",
+        )
+        snapshot_state["payback_years"] = snap_cols2[1].number_input(
+            "Payback (years)",
+            value=float(snapshot_state.get("payback_years") or 0.0),
+            step=0.1,
+            format="%.2f",
+            key=f"{rag_key_prefix}_payback_years",
+        )
+        snapshot_state["capex_total"] = snap_cols2[2].number_input(
+            "Total capex",
+            value=float(snapshot_state.get("capex_total") or 0.0),
+            step=1000000.0,
+            key=f"{rag_key_prefix}_capex_total",
+        )
+
+        snap_cols3 = st.columns(2)
+        snapshot_state["opex_annual"] = snap_cols3[0].number_input(
+            "Annual opex",
+            value=float(snapshot_state.get("opex_annual") or 0.0),
+            step=100000.0,
+            key=f"{rag_key_prefix}_opex_annual",
+        )
+        snapshot_state["revenue_annual"] = snap_cols3[1].number_input(
+            "Annual revenue",
+            value=float(snapshot_state.get("revenue_annual") or 0.0),
+            step=100000.0,
+            key=f"{rag_key_prefix}_revenue_annual",
+        )
+
+        scenarios_df = pd.DataFrame(snapshot_state.get("scenarios") or [])
+        scenarios_df = st.data_editor(
+            scenarios_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "name": st.column_config.TextColumn("Scenario"),
+                "npv": st.column_config.NumberColumn("NPV"),
+                "irr": st.column_config.NumberColumn("IRR"),
+            },
+            key=f"{rag_key_prefix}_scenarios_editor",
+        )
+        snapshot_state["scenarios"] = scenarios_df.to_dict(orient="records")
+
+    snapshot_payload = {
+        "project_id": project_id,
+        "financial_snapshot": snapshot_state,
+        "workbook_hash": snapshot_state.get("workbook_hash"),
+    }
+
+    has_uploads = bool(uploads)
+    has_indexed = bool(st.session_state.get("rag_last_ingest"))
+    insight_cols = st.columns(3)
+    if insight_cols[0].button(
+        "Index documents",
+        key=f"{rag_key_prefix}_index_docs",
+        disabled=not has_uploads,
+    ):
+        files = [("files", (u.name, u.getvalue(), u.type or "application/octet-stream")) for u in uploads]
+        try:
+            response = requests.post(
+                f"{rag_host.rstrip('/')}/ingest",
+                params={"project_id": project_id},
+                files=files,
+                timeout=120,
+            )
+            response.raise_for_status()
+            st.session_state["rag_last_ingest"] = response.json()
+            st.success(response.json())
+        except requests.RequestException as exc:
+            if isinstance(exc, requests.ConnectionError):
+                st.warning(
+                    "RAG service unreachable. Start the service or update RAG_HOST to a reachable URL."
+                )
+            else:
+                st.error(f"Failed to ingest files: {exc}")
+    if not has_uploads:
+        st.caption("Upload reference documents to enable indexing.")
+
+    if insight_cols[1].button("Clear indexed documents", key=f"{rag_key_prefix}_clear_index"):
+        st.session_state.pop("rag_last_ingest", None)
+        st.session_state.pop("rag_last_report", None)
+        st.info("Local index metadata cleared. Clear the backend index from the service if needed.")
+
+    if insight_cols[2].button(
+        "Run AI insights",
+        key=f"{rag_key_prefix}_run_ai",
+        disabled=not has_indexed,
+    ):
+        outline = _rag_section_outline()
+        try:
+            response = requests.post(
+                f"{rag_host.rstrip('/')}/generate",
+                json={"project_id": project_id, "section_outline": outline},
+                timeout=180,
+            )
+            response.raise_for_status()
+            st.session_state["rag_last_report"] = response.json()
+            st.success(response.json())
+        except requests.RequestException as exc:
+            if isinstance(exc, requests.ConnectionError):
+                st.warning(
+                    "RAG service unreachable. Start the service or update RAG_HOST to a reachable URL."
+                )
+            else:
+                st.error(f"Failed to run AI insights: {exc}")
+    if not has_indexed:
+        st.caption("Index documents before running AI insights.")
+
+    question = st.text_input(
+        "Ask a question",
+        key=f"{rag_key_prefix}_question",
     )
+    if st.button("Search", key=f"{rag_key_prefix}_search"):
+        if not question:
+            st.warning("Enter a question to search.")
+        else:
+            st.info("Search requires a backend endpoint (e.g. /search). Configure it to enable results.")
+
+    st.markdown("## Business Plan Downloads")
+    st.caption(
+        "Generate a consolidated business plan bundle that includes the full financial report and snapshot."
+    )
+    if st.button("Prepare business plan bundle", key=f"{rag_key_prefix}_bundle"):
+        st.session_state["rag_bundle_ready"] = True
+        st.success("Bundle ready. Download below.")
+
+    if st.session_state.get("rag_bundle_ready"):
+        bundle_payload = {
+            "snapshot": snapshot_payload,
+            "ai_config": st.session_state.get("rag_ai_config", {}),
+            "last_report": st.session_state.get("rag_last_report", {}),
+        }
+        st.download_button(
+            "Download business plan bundle (JSON)",
+            data=json.dumps(bundle_payload, indent=2),
+            file_name=f"{project_id}_business_plan_bundle.json",
+            mime="application/json",
+            use_container_width=True,
+            key=f"{rag_key_prefix}_bundle_download",
+        )
 
 def main() -> None:
     st.set_page_config(
@@ -1609,19 +2024,6 @@ def main() -> None:
     portfolio: Portfolio | None = None
     valuation_result = None
 
-    page_choice = st.sidebar.radio(
-        "Navigate",
-        ["Model workspace", "RAG Assistant"],
-        index=0,
-    )
-
-    if page_choice == "RAG Assistant":
-        _render_rag_assistant_page()
-        st.caption(
-            "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
-        )
-        return
-
     (
         config_tab,
         financial_tab,
@@ -1629,6 +2031,7 @@ def main() -> None:
         analytics_tab,
         scenario_tab,
         vc_tab,
+        rag_tab,
     ) = st.tabs(
         [
             "Model configuration",
@@ -1637,6 +2040,7 @@ def main() -> None:
             "Advanced analytics",
             "Scenario analysis",
             "VC helper",
+            "RAG Assistant",
         ]
     )
 
@@ -2126,6 +2530,9 @@ def main() -> None:
             st.info("Add at least one product with a name to run valuations.")
         else:
             valuation_result = ValuationEngine(portfolio).run()
+            st.session_state["model_config"] = model_cfg
+            st.session_state["portfolio"] = portfolio
+            st.session_state["valuation_result"] = valuation_result
             st.success(
                 f"Run complete: portfolio rNPV = {valuation_result.rnpv:,.0f} {model_cfg.currency}."
             )
@@ -2162,6 +2569,33 @@ def main() -> None:
             st.dataframe(
                 cash_flow_df.style.format({col: "{:.0f}" for col in cash_flow_df.columns})
             )
+            st.markdown("**Excel Model Download**")
+            excel_bytes = st.session_state.get("financial_excel_bytes")
+            download_container = st.container()
+            with download_container:
+                if not excel_bytes:
+                    if st.button("Prepare Excel Model", key="prepare_financial_excel"):
+                        with st.spinner("Preparing Excel workbook..."):
+                            excel_bytes = _build_financial_excel(
+                                cons,
+                                perf_df,
+                                position_df,
+                                cash_flow_df,
+                            )
+                        st.session_state["financial_excel_bytes"] = excel_bytes
+                if excel_bytes:
+                    st.download_button(
+                        "Download Excel Model",
+                        data=excel_bytes,
+                        file_name="Financial_Report.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_financial_excel",
+                    )
+                    if st.button("Clear Prepared Excel", key="clear_financial_excel"):
+                        st.session_state.pop("financial_excel_bytes", None)
+                        excel_bytes = None
+                if not excel_bytes:
+                    st.info("Click 'Prepare Excel Model' to generate the workbook for download.")
 
     with dashboard_tab:
         st.subheader("Dashboard")
@@ -2293,6 +2727,7 @@ def main() -> None:
                         "Probabilistic valuation percentiles:",
                         sims.quantile([0.1, 0.25, 0.5, 0.75, 0.9]).to_dict(),
                     )
+
                 else:
                     st.info("Run the simulation to unlock probabilistic metrics.")
 
@@ -2512,6 +2947,9 @@ def main() -> None:
                 }
             )
             st.table(vc_df)
+
+    with rag_tab:
+        _render_rag_assistant_page()
 
     st.caption(
         "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
