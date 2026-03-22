@@ -888,6 +888,11 @@ def _apply_yearly_increment(
     selected_idx: Optional[int],
 ) -> pd.DataFrame:
     st.markdown("**Yearly Increment Helper**")
+    st.caption(
+        "Apply a fixed change or % growth from the selected row onward. "
+        "'Increment per year' is the step size (or growth rate when compounding). "
+        "'Years to apply' controls how many consecutive rows are updated."
+    )
     if df.empty or selected_idx is None:
         st.caption("Select a row to apply increments.")
         return df
@@ -1122,6 +1127,8 @@ def _render_product_assumption_table(
         df = _apply_yearly_increment(session_key, df, selected_idx)
 
     df = st.session_state.get(session_key, df)
+    if session_key == "vaccine_sales_table":
+        df = _recompute_vaccine_sales_implied_revenue(df)
     edited_df = st.data_editor(
         df,
         num_rows="dynamic",
@@ -1129,6 +1136,8 @@ def _render_product_assumption_table(
         key=f"{session_key}_editor",
         column_config=column_config,
     )
+    if session_key == "vaccine_sales_table":
+        edited_df = _recompute_vaccine_sales_implied_revenue(edited_df)
     st.session_state[session_key] = edited_df
     _validate_selection(edited_df, select_key, id_column)
     return edited_df
@@ -1170,6 +1179,16 @@ def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(default)
 
 
+def _recompute_vaccine_sales_implied_revenue(df: pd.DataFrame) -> pd.DataFrame:
+    if "Doses (M)" not in df.columns or "Price per dose" not in df.columns:
+        return df
+    doses = pd.to_numeric(df["Doses (M)"], errors="coerce").fillna(0.0)
+    price = pd.to_numeric(df["Price per dose"], errors="coerce").fillna(0.0)
+    df = df.copy()
+    df["Implied revenue"] = doses * 1e6 * price
+    return df
+
+
 def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
     """Render a reusable schedule editor with manual controls.
 
@@ -1199,6 +1218,10 @@ def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
 
     with toolbar_cols[3]:
         with st.expander("Yearly Increment Helper"):
+            st.caption(
+                "Seed a ramp schedule from a starting point. 'Increment per year' is a fixed step, "
+                "and 'Number of periods' controls how many rows are generated."
+            )
             start_year = st.number_input(
                 "Start year offset", min_value=0, value=0, key=f"{session_key}_start"
             )
@@ -4487,11 +4510,14 @@ def main() -> None:
                     ),
                 },
             )
-            doses = pd.to_numeric(vaccine_df.get("Doses (M)", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
-            price = pd.to_numeric(vaccine_df.get("Price per dose", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
-            vaccine_df["Implied revenue"] = doses * 1e6 * price
+            vaccine_df = _recompute_vaccine_sales_implied_revenue(vaccine_df)
             st.session_state["vaccine_sales_table"] = vaccine_df
             with st.expander("Yearly Increment Helper", expanded=False):
+                st.caption(
+                    "Apply a fixed step or % growth to a vaccine's yearly doses/price. "
+                    "'Increment per year' is the step size (or growth rate when compounding). "
+                    "'Number of years' controls how many matching rows are updated from the start year."
+                )
                 if {"ID_vaccine", "Year"}.issubset(vaccine_df.columns):
                     vaccine_ids = (
                         vaccine_df["ID_vaccine"].dropna().astype(str).unique().tolist()
@@ -4542,16 +4568,21 @@ def main() -> None:
                             >= int(start_year)
                         )
                         if mask.any():
-                            base_value = pd.to_numeric(
-                                df.loc[mask, target_col].iloc[0], errors="coerce"
+                            subset = df.loc[mask, ["Year", target_col]].copy()
+                            subset["Year"] = (
+                                pd.to_numeric(subset["Year"], errors="coerce")
+                                .fillna(int(start_year))
+                                .astype(int)
                             )
-                            if pd.isna(base_value):
-                                base_value = 0.0
-                            years = pd.to_numeric(
-                                df.loc[mask, "Year"], errors="coerce"
-                            ).astype(int)
-                            years_sorted = years.sort_values()
-                            for i, year in enumerate(years_sorted[: int(periods)]):
+                            subset[target_col] = pd.to_numeric(
+                                subset[target_col], errors="coerce"
+                            ).fillna(0.0)
+                            subset = subset.sort_values("Year")
+                            if subset.empty:
+                                st.warning("No matching rows found for the selected vaccine/year range.")
+                                st.stop()
+                            base_value = float(subset[target_col].iloc[0])
+                            for i, year in enumerate(subset["Year"].iloc[: int(periods)]):
                                 if use_compound:
                                     value = float(base_value) * ((1 + increment) ** i)
                                 else:
@@ -4561,7 +4592,9 @@ def main() -> None:
                                     & (df["Year"] == year),
                                     target_col,
                                 ] = value
+                            df = _recompute_vaccine_sales_implied_revenue(df)
                             st.session_state["vaccine_sales_table"] = df
+                            vaccine_df = df
                             st.success("Increment applied to selected vaccine/year range.")
                         else:
                             st.warning("No matching rows found for the selected vaccine/year range.")
@@ -4589,7 +4622,14 @@ def main() -> None:
                     sales_by_vaccine = (
                         vaccine_df.groupby("ID_vaccine")["Implied revenue"].mean().to_dict()
                     )
-                    desired_targets = revenue_table["ID_vaccine"].map(sales_by_vaccine).fillna(0.0)
+                    desired_targets = revenue_table["ID_vaccine"].map(sales_by_vaccine)
+                    if "Vaccine name" in vaccine_df.columns and "Vaccine name" in revenue_table.columns:
+                        sales_by_name = (
+                            vaccine_df.groupby("Vaccine name")["Implied revenue"].mean().to_dict()
+                        )
+                        name_targets = revenue_table["Vaccine name"].map(sales_by_name)
+                        desired_targets = desired_targets.fillna(name_targets)
+                    desired_targets = desired_targets.fillna(0.0)
                     revenue_table["Patent customers per year"] = (
                         desired_targets / price_series
                     ).fillna(0.0)
