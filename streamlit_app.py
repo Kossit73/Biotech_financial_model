@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from openpyxl import load_workbook
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -82,6 +83,245 @@ SELECTOR_OPTIONS = [
     "Aggressive expansion",
     "Defensive posture",
 ]
+
+
+def _inject_app_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --bio-ink: #0f172a;
+            --bio-muted: #475569;
+            --bio-brand: #14532d;
+            --bio-brand-soft: #e9f7ef;
+            --bio-panel: rgba(255, 255, 255, 0.9);
+        }
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(187, 247, 208, 0.30), transparent 33%),
+                radial-gradient(circle at top right, rgba(191, 219, 254, 0.22), transparent 28%),
+                linear-gradient(180deg, #f6fbf7 0%, #f4f6fb 58%, #edf5f3 100%);
+        }
+        .block-container {
+            padding-top: 1.35rem;
+            padding-bottom: 3rem;
+            max-width: 1450px;
+        }
+        .designer-hero {
+            margin-bottom: 1.2rem;
+            padding: 1.8rem 1.9rem;
+            border-radius: 28px;
+            border: 1px solid rgba(20, 83, 45, 0.12);
+            background:
+                linear-gradient(135deg, rgba(233, 247, 239, 0.96), rgba(255, 255, 255, 0.94)),
+                linear-gradient(135deg, rgba(20, 83, 45, 0.05), rgba(30, 64, 175, 0.07));
+            box-shadow: 0 24px 48px rgba(15, 23, 42, 0.08);
+        }
+        .designer-kicker {
+            margin: 0 0 0.45rem 0;
+            font-size: 0.78rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--bio-brand);
+            font-weight: 700;
+        }
+        .designer-title {
+            margin: 0;
+            font-size: clamp(2rem, 2.8vw, 3.15rem);
+            line-height: 1.02;
+            color: var(--bio-ink);
+            font-weight: 800;
+        }
+        .designer-copy {
+            max-width: 55rem;
+            margin: 0.7rem 0 0 0;
+            color: var(--bio-muted);
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+        .designer-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+            margin-top: 1rem;
+        }
+        .designer-badge {
+            padding: 0.42rem 0.78rem;
+            border-radius: 999px;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            background: rgba(255, 255, 255, 0.92);
+            color: var(--bio-brand);
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
+        div[data-baseweb="tab-list"] {
+            gap: 0.55rem;
+            margin-bottom: 1rem;
+        }
+        div[data-baseweb="tab-list"] button {
+            min-height: 3rem;
+            border-radius: 999px;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            background: rgba(255, 255, 255, 0.72);
+            color: var(--bio-muted);
+            padding: 0.25rem 1rem;
+        }
+        div[data-baseweb="tab-list"] button[aria-selected="true"] {
+            background: linear-gradient(135deg, #14532d, #1d4ed8);
+            color: white;
+            border-color: transparent;
+            box-shadow: 0 12px 24px rgba(29, 78, 216, 0.16);
+        }
+        div[data-testid="stMetric"],
+        div[data-testid="stDataFrame"],
+        div[data-testid="stExpander"] {
+            border-radius: 20px;
+        }
+        div[data-testid="stMetric"] {
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            background: var(--bio-panel);
+            padding: 0.6rem 0.7rem;
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_model_hero() -> None:
+    badges = "".join(
+        f'<span class="designer-badge">{label}</span>'
+        for label in (
+            "Portfolio valuation",
+            "Professional workbook",
+            "Scenario stress testing",
+            "RAG support",
+        )
+    )
+    st.markdown(
+        f"""
+        <section class="designer-hero">
+            <p class="designer-kicker">Pipeline valuation studio</p>
+            <h1 class="designer-title">Biotech Financial Model</h1>
+            <p class="designer-copy">
+                Configure the asset mix, stage assumptions, and portfolio economics in a cleaner
+                executive shell, then export an investor-grade workbook instead of flat worksheets.
+            </p>
+            <div class="designer-badges">{badges}</div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _style_workbook_sheet(ws, *, accent: str, accent_soft: str, is_overview: bool = False) -> None:
+    ws.sheet_view.showGridLines = False
+    if is_overview:
+        ws.freeze_panes = "A6"
+    elif ws.max_row > 1:
+        ws.freeze_panes = "A2"
+        for cell in ws[1]:
+            cell.fill = PatternFill("solid", fgColor=accent)
+            cell.font = Font(color="FFFFFF", bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.auto_filter.ref = ws.dimensions
+        for row_idx in range(2, min(ws.max_row, 120) + 1):
+            if row_idx % 2 == 0:
+                for cell in ws[row_idx]:
+                    cell.fill = PatternFill("solid", fgColor=accent_soft)
+    for col_idx in range(1, ws.max_column + 1):
+        max_length = 0
+        for row_idx in range(1, min(ws.max_row, 80) + 1):
+            value = ws.cell(row=row_idx, column=col_idx).value
+            if value is None:
+                continue
+            max_length = max(max_length, len(str(value)))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_length + 2, 14), 36)
+
+
+def _format_overview_value(value: object) -> object:
+    if isinstance(value, (int, float, np.floating)) and np.isfinite(value):
+        amount = float(value)
+        if abs(amount) <= 1.0 and amount != 0:
+            return f"{amount:.1%}"
+        if abs(amount) >= 1_000_000:
+            return f"${amount / 1_000_000:,.2f}M"
+        if abs(amount) >= 1_000:
+            return f"${amount / 1_000:,.1f}K"
+        return f"{amount:,.2f}"
+    return value
+
+
+def _style_professional_workbook(
+    workbook_bytes: bytes,
+    *,
+    cons: pd.DataFrame,
+    model_cfg: Optional[ModelConfig],
+) -> bytes:
+    workbook = load_workbook(BytesIO(workbook_bytes))
+    accent = "14532D"
+    accent_soft = "E9F7EF"
+    if "Overview" in workbook.sheetnames:
+        del workbook["Overview"]
+    overview = workbook.create_sheet("Overview", 0)
+    overview["A1"] = "Biotech Financial Model"
+    overview["A1"].font = Font(size=20, bold=True, color="0F172A")
+    overview["A2"] = "Executive overview for portfolio valuation, statements, advanced analytics, and scenario comparison."
+    overview["A2"].font = Font(size=11, color="475569")
+    overview["A4"] = "Executive Snapshot"
+    overview["A4"].font = Font(size=12, bold=True, color=accent)
+    overview["A5"] = "Metric"
+    overview["B5"] = "Value"
+    for cell in overview[5]:
+        cell.fill = PatternFill("solid", fgColor=accent)
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    summary_rows: List[Tuple[str, object]] = []
+    if cons is not None and not cons.empty:
+        latest = cons.iloc[-1]
+        for label, column in (
+            ("Latest Revenue", "revenue"),
+            ("Latest EBITDA", "ebitda"),
+            ("Latest FCFF", "fcff_after_wc"),
+        ):
+            if column in latest.index and pd.notna(latest[column]):
+                summary_rows.append((label, _format_overview_value(float(latest[column]))))
+    if model_cfg is not None:
+        summary_rows.append(("Tax Rate", _format_overview_value(getattr(model_cfg, "tax_rate", ""))))
+        summary_rows.append(("Discount Rate", _format_overview_value(getattr(model_cfg, "discount_rate", ""))))
+    summary_rows.append(("Included Sheets", len(workbook.sheetnames)))
+    for row_idx, (label, value) in enumerate(summary_rows[:8], start=6):
+        overview.cell(row=row_idx, column=1, value=label)
+        overview.cell(row=row_idx, column=2, value=value)
+    overview["D4"] = "Workbook Notes"
+    overview["D4"].font = Font(size=12, bold=True, color=accent)
+    notes = [
+        "Portfolio valuation outputs sit alongside board-ready statements and scenario views.",
+        "Advanced analytics, margin trends, and break-even analysis remain available on dedicated tabs.",
+        "Use the workbook as the investor hand-off version of the live model run.",
+    ]
+    for row_idx, note in enumerate(notes, start=5):
+        overview.cell(row=row_idx, column=4, value=f"• {note}")
+    overview.column_dimensions["A"].width = 26
+    overview.column_dimensions["B"].width = 18
+    overview.column_dimensions["D"].width = 58
+
+    for sheet in workbook.worksheets:
+        _style_workbook_sheet(
+            sheet,
+            accent=accent,
+            accent_soft=accent_soft,
+            is_overview=sheet.title == "Overview",
+        )
+
+    output = BytesIO()
+    workbook.save(output)
+    return _style_professional_workbook(
+        output.getvalue(),
+        cons=cons,
+        model_cfg=model_cfg,
+    )
 
 
 def _default_products() -> pd.DataFrame:
@@ -5360,11 +5600,8 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="collapsed",
     )
-    st.title("Biotech")
-    st.write(
-        "Configure a portfolio, run discounted cash flow valuations, and explore VC "
-        "method estimates or stress scenarios."
-    )
+    _inject_app_theme()
+    _render_model_hero()
 
     model_cfg: ModelConfig | None = None
     portfolio: Portfolio | None = None
