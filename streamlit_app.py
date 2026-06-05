@@ -7793,5 +7793,90 @@ def main() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Scenario state hooks — called by the parent NumQuants shell.
+# ---------------------------------------------------------------------------
+
+# DataFrames stored directly in session_state (serialised by the parent app's
+# _serialize() helper). Portfolio and ValuationResult are derived objects and
+# are rebuilt from these tables on the next render — no need to save them.
+_BIOTECH_DF_KEYS = [
+    "product_table",
+    "stage_schedule_mapping",
+    "vaccine_sales_table",
+    "vaccine_development_table",
+    "vaccine_revenue_table",
+    "vaccine_cost_table",
+    "vaccine_rd_table",
+    "vaccine_capex_table",
+    "vaccine_royalty_table",
+    "vaccine_market_share_table",
+    "market_size_estimation",
+    "uses_table",
+    "sources_table",
+    "shareholders_table",
+    "debt_schedule_table",
+]
+
+_BIOTECH_SCALAR_KEYS = [
+    "stage_mapping_auto_apply",
+    "stage_mapping_overwrite",
+    "scenario_basket",
+    "scenario_rev_mult",
+    "scenario_cost_mult",
+    "scenario_dr_shift",
+    "scenario_prob_mult",
+    "vaccine_sales_first_year",
+    "vaccine_sales_n_years",
+]
+
+
+def get_state() -> dict:
+    """Snapshot all user-editable inputs.
+
+    ModelConfig is serialised via dataclasses.asdict() so it round-trips through
+    JSON cleanly. Portfolio and ValuationResult are omitted — they are rebuilt
+    from product_table + model_config on the next render.
+    """
+    import streamlit as _st
+    state: dict = {}
+
+    # ModelConfig dataclass → plain dict
+    model_cfg = _st.session_state.get("model_config")
+    if model_cfg is not None:
+        from dataclasses import asdict as _asdict
+        try:
+            state["model_config"] = _asdict(model_cfg)
+        except TypeError:
+            pass  # not a dataclass, skip
+
+    # DataFrames and scalars
+    for key in _BIOTECH_DF_KEYS + _BIOTECH_SCALAR_KEYS:
+        val = _st.session_state.get(key)
+        if val is not None:
+            state[key] = val
+
+    return state
+
+
+def set_state(state: dict) -> None:
+    """Restore a previously saved state snapshot.
+
+    Reconstructs ModelConfig from its saved dict. DataFrames are written
+    directly to session_state; portfolio is rebuilt by main() on next render.
+    """
+    import streamlit as _st
+
+    if "model_config" in state:
+        try:
+            _st.session_state["model_config"] = ModelConfig(**state["model_config"])
+        except (TypeError, KeyError):
+            pass  # schema changed; leave unset so main() uses defaults
+
+    for key in _BIOTECH_DF_KEYS + _BIOTECH_SCALAR_KEYS:
+        if key in state:
+            _st.session_state[key] = state[key]
+
+
 if __name__ == "__main__":
     main()
