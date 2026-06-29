@@ -186,6 +186,16 @@ def _inject_app_theme() -> None:
             padding: 0.6rem 0.7rem;
             box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
         }
+        .stage-mapping-editor-controls + div[data-testid="stHorizontalBlock"] > div:nth-child(2) > div {
+            padding: 0.55rem;
+            border-radius: 18px;
+            border: 1px solid rgba(29, 78, 216, 0.22);
+            background: linear-gradient(135deg, rgba(219, 234, 254, 0.95), rgba(233, 247, 239, 0.98));
+            box-shadow: 0 14px 30px rgba(29, 78, 216, 0.12);
+        }
+        .stage-mapping-editor-controls + div[data-testid="stHorizontalBlock"] > div:nth-child(2) button {
+            width: 100%;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -333,53 +343,53 @@ def _default_products() -> pd.DataFrame:
     data = [
         {
             "name": "AgSeed-101",
-            "stage": "Phase II",
-            "success_prob": 0.35,
-            "sales_ramp_length": 5,
+            "stage": "Approval",
+            "success_prob": 1.0,
+            "sales_ramp_length": 3,
             "sales_ramp_shape": "Linear",
             "include_in_consolidation": True,
-            "time_to_market": 4,
-            "patent_years": 15,
-            "patent_revenue_target": 120_000_000,
-            "post_patent_revenue_target": 60_000_000,
-            "market_growth_patent": 0.04,
-            "market_growth_post": 0.0,
-            "cogs_patent": 0.32,
-            "cogs_post": 0.5,
-            "labor_pct": 0.14,
-            "overhead_pct": 0.09,
-            "material_pct": 0.11,
-            "sales_marketing_pct": 0.18,
-            "gna_pct": 0.12,
-            "rd_remaining_pre_launch": 180_000_000,
-            "rd_annual_post_launch": 12_000_000,
-            "capex_remaining_pre_launch": 55_000_000,
-            "capex_annual_post_launch": 6_500_000,
+            "time_to_market": 1,
+            "patent_years": 18,
+            "patent_revenue_target": 220_000_000,
+            "post_patent_revenue_target": 180_000_000,
+            "market_growth_patent": 0.03,
+            "market_growth_post": 0.01,
+            "cogs_patent": 0.26,
+            "cogs_post": 0.32,
+            "labor_pct": 0.09,
+            "overhead_pct": 0.06,
+            "material_pct": 0.07,
+            "sales_marketing_pct": 0.12,
+            "gna_pct": 0.08,
+            "rd_remaining_pre_launch": 80_000_000,
+            "rd_annual_post_launch": 6_000_000,
+            "capex_remaining_pre_launch": 25_000_000,
+            "capex_annual_post_launch": 2_500_000,
         },
         {
             "name": "BioYield-Plus",
-            "stage": "Phase III",
-            "success_prob": 0.55,
-            "sales_ramp_length": 5,
-            "sales_ramp_shape": "Linear",
+            "stage": "Commercial",
+            "success_prob": 1.0,
+            "sales_ramp_length": 1,
+            "sales_ramp_shape": "Step",
             "include_in_consolidation": True,
-            "time_to_market": 2,
-            "patent_years": 17,
-            "patent_revenue_target": 200_000_000,
-            "post_patent_revenue_target": 95_000_000,
+            "time_to_market": 0,
+            "patent_years": 20,
+            "patent_revenue_target": 300_000_000,
+            "post_patent_revenue_target": 240_000_000,
             "market_growth_patent": 0.03,
             "market_growth_post": 0.01,
-            "cogs_patent": 0.28,
-            "cogs_post": 0.45,
-            "labor_pct": 0.12,
-            "overhead_pct": 0.08,
-            "material_pct": 0.1,
-            "sales_marketing_pct": 0.16,
-            "gna_pct": 0.1,
-            "rd_remaining_pre_launch": 90_000_000,
-            "rd_annual_post_launch": 8_000_000,
-            "capex_remaining_pre_launch": 35_000_000,
-            "capex_annual_post_launch": 4_500_000,
+            "cogs_patent": 0.24,
+            "cogs_post": 0.30,
+            "labor_pct": 0.08,
+            "overhead_pct": 0.05,
+            "material_pct": 0.06,
+            "sales_marketing_pct": 0.11,
+            "gna_pct": 0.07,
+            "rd_remaining_pre_launch": 0.0,
+            "rd_annual_post_launch": 4_000_000,
+            "capex_remaining_pre_launch": 0.0,
+            "capex_annual_post_launch": 2_000_000,
         },
     ]
     return pd.DataFrame(data)
@@ -607,26 +617,21 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
 
 def _default_vaccine_sales_table(first_year: int = 2024, horizon_years: int = 5) -> pd.DataFrame:
     years = [first_year + i for i in range(max(horizon_years, 1))]
-    def _extend(values: List[float], target_len: int) -> List[float]:
-        if len(values) >= target_len:
-            return values[:target_len]
-        if not values:
-            return [0.0] * target_len
-        return values + [values[-1]] * (target_len - len(values))
-
-    doses = _extend([5, 7, 10, 12, 12], len(years))
-    prices = _extend([25, 26, 27, 27, 28], len(years))
-    vaccine_rows = _default_vaccine_revenue_table()[["ID_vaccine", "Vaccine name"]]
+    vaccine_rows = _default_vaccine_revenue_table()[
+        ["ID_vaccine", "Vaccine name", "Patent customers per year", "Patent price (USD/customer)"]
+    ]
     rows: List[Dict[str, Any]] = []
     for _, vaccine in vaccine_rows.iterrows():
-        for idx, year in enumerate(years):
+        doses = float(vaccine.get("Patent customers per year", 0.0) or 0.0) / 1e6
+        price = float(vaccine.get("Patent price (USD/customer)", 0.0) or 0.0)
+        for year in years:
             rows.append(
                 {
                     "ID_vaccine": vaccine["ID_vaccine"],
                     "Vaccine name": vaccine["Vaccine name"],
                     "Year": year,
-                    "Doses (M)": doses[idx],
-                    "Price per dose": prices[idx],
+                    "Doses (M)": doses,
+                    "Price per dose": price,
                     "Comments": "",
                 }
             )
@@ -675,14 +680,20 @@ def _default_uses_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Item": "Clinical trials",
-            "Amount": 150_000_000,
+            "Item": "Final approval, launch readiness, and market access",
+            "Amount": 110_000_000,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "Item": "Commercial capacity, channels, and support programs",
+            "Amount": 90_000_000,
         },
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Item": "Manufacturing scale-up",
-            "Amount": 90_000_000,
+            "Item": "Working capital buffer and contingency",
+            "Amount": 50_000_000,
         },
     ]
     return pd.DataFrame(data)
@@ -709,8 +720,9 @@ def _blank_use_row(df: pd.DataFrame) -> Dict:
 
 def _default_sources_table() -> pd.DataFrame:
     data = [
-        {"Item": "Existing cash", "Amount": 40_000_000},
-        {"Item": "New equity", "Amount": 200_000_000},
+        {"Item": "Existing cash", "Amount": 35_000_000},
+        {"Item": "Strategic grant", "Amount": 10_000_000},
+        {"Item": "New equity", "Amount": 85_000_000},
     ]
     return pd.DataFrame(data)
 
@@ -726,16 +738,16 @@ def _default_shareholders_table() -> pd.DataFrame:
             "Security": "Common",
             "Seniority": 3,
             "Ownership %": 0.35,
-            "Investment": 25_000_000,
+            "Investment": 30_000_000,
             "Liquidation preference (x)": 0.0,
             "Participating preferred": False,
         },
         {
-            "Shareholder": "Series A fund",
+            "Shareholder": "Growth fund",
             "Security": "Preferred",
             "Seniority": 1,
-            "Ownership %": 0.4,
-            "Investment": 80_000_000,
+            "Ownership %": 0.65,
+            "Investment": 55_000_000,
             "Liquidation preference (x)": 1.0,
             "Participating preferred": False,
         },
@@ -757,8 +769,8 @@ def _blank_shareholder_row(df: pd.DataFrame) -> Dict:
 
 def _default_market_sizes_table() -> pd.DataFrame:
     data = [
-        {"Segment": "Global vaccine market", "Value": 80_000_000_000},
-        {"Segment": "Target indication", "Value": 12_000_000_000},
+        {"Segment": "Crop protection biologics", "Value": 2_750_000_000},
+        {"Segment": "Soil and yield enhancement platforms", "Value": 3_750_000_000},
     ]
     return pd.DataFrame(data)
 
@@ -772,25 +784,25 @@ def _default_vaccine_development_table(first_year: int = 2024) -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Stage": "Phase II",
-            "Success Probability %": 35.0,
+            "Stage": "Approval",
+            "Success Probability %": 100.0,
             "Consolidation": True,
-            "First year forecast": first_year + 2,
-            "Time to market": 4,
-            "Market entry year": first_year + 6,
-            "Patent duration years": 15,
-            "End patent year": first_year + 20,
+            "First year forecast": first_year,
+            "Time to market": 1,
+            "Market entry year": first_year + 1,
+            "Patent duration years": 18,
+            "End patent year": first_year + 18,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Stage": "Phase III",
-            "Success Probability %": 55.0,
+            "Stage": "Commercial",
+            "Success Probability %": 100.0,
             "Consolidation": True,
-            "First year forecast": first_year + 1,
-            "Time to market": 2,
-            "Market entry year": first_year + 3,
-            "Patent duration years": 17,
+            "First year forecast": first_year,
+            "Time to market": 0,
+            "Market entry year": first_year,
+            "Patent duration years": 20,
             "End patent year": first_year + 19,
         },
     ]
@@ -802,20 +814,20 @@ def _default_market_size_estimation_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Market size (# customers)": 5_000_000,
-            "Average spend (USD/customer)": 120,
-            "Serviceable Available Market (% TAM)": 60.0,
-            "Serviceable Available Market (% Market size)": 45.0,
-            "Serviceable Obtainable Market (%)": 25.0,
+            "Market size (# customers)": 7_000_000,
+            "Average spend (USD/customer)": 65,
+            "Serviceable Available Market (% TAM)": 80.0,
+            "Serviceable Available Market (% Market size)": 70.0,
+            "Serviceable Obtainable Market (%)": 55.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Market size (# customers)": 8_000_000,
-            "Average spend (USD/customer)": 150,
-            "Serviceable Available Market (% TAM)": 55.0,
-            "Serviceable Available Market (% Market size)": 35.0,
-            "Serviceable Obtainable Market (%)": 18.0,
+            "Market size (# customers)": 6_500_000,
+            "Average spend (USD/customer)": 75,
+            "Serviceable Available Market (% TAM)": 80.0,
+            "Serviceable Available Market (% Market size)": 75.0,
+            "Serviceable Obtainable Market (%)": 70.0,
         },
     ]
     return pd.DataFrame(data)
@@ -826,17 +838,17 @@ def _default_vaccine_revenue_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Patent customers per year": 3_000_000,
-            "Patent price (USD/customer)": 50,
-            "Post patent customer adj. %": 80.0,
-            "Post patent price adj. %": 85.0,
+            "Patent customers per year": 4_000_000,
+            "Patent price (USD/customer)": 55,
+            "Post patent customer adj. %": 90.0,
+            "Post patent price adj. %": 91.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Patent customers per year": 4_200_000,
-            "Patent price (USD/customer)": 65,
-            "Post patent customer adj. %": 75.0,
+            "Patent customers per year": 5_000_000,
+            "Patent price (USD/customer)": 60,
+            "Post patent customer adj. %": 100.0,
             "Post patent price adj. %": 80.0,
         },
     ]
@@ -849,13 +861,13 @@ def _default_royalty_table() -> pd.DataFrame:
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
             "Monetization model": "Product Sale",
-            "Royalty rate (%)": 5.0,
+            "Royalty rate (%)": 0.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Monetization model": "Licensing",
-            "Royalty rate (%)": 6.5,
+            "Monetization model": "Product Sale",
+            "Royalty rate (%)": 0.0,
         },
     ]
     return pd.DataFrame(data)
@@ -866,26 +878,26 @@ def _default_market_share_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Relevant market type": "Global row crops",
-            "Relevant market size (USD)": 4_500_000_000,
-            "Revenue target - patent %": 12.0,
-            "Revenue target - post %": 8.0,
-            "Market share patent %": 6.0,
-            "Market share post %": 4.0,
-            "Market growth %": 5.0,
-            "Sales growth %": 8.0,
+            "Relevant market type": "Crop protection biologics",
+            "Relevant market size (USD)": 2_750_000_000,
+            "Revenue target - patent %": 8.0,
+            "Revenue target - post %": 6.55,
+            "Market share patent %": 5.5,
+            "Market share post %": 4.5,
+            "Market growth %": 1.5,
+            "Sales growth %": 3.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Relevant market type": "Specialty crops",
-            "Relevant market size (USD)": 3_200_000_000,
-            "Revenue target - patent %": 15.0,
-            "Revenue target - post %": 10.0,
-            "Market share patent %": 7.5,
-            "Market share post %": 5.0,
-            "Market growth %": 4.0,
-            "Sales growth %": 6.0,
+            "Relevant market type": "Soil and yield enhancement platforms",
+            "Relevant market size (USD)": 3_750_000_000,
+            "Revenue target - patent %": 8.0,
+            "Revenue target - post %": 6.4,
+            "Market share patent %": 6.0,
+            "Market share post %": 4.8,
+            "Market growth %": 1.5,
+            "Sales growth %": 3.0,
         },
     ]
     return pd.DataFrame(data)
@@ -896,28 +908,28 @@ def _default_vaccine_cost_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "COGS patent % of sales": 32.0,
-            "COGS post % of sales": 48.0,
-            "Marketing annual % of sales": 18.0,
-            "Marketing launch cost (USD)": 25_000_000,
-            "Indirect staff cost (USD)": 8_500_000,
-            "Electricity (USD)": 1_800_000,
-            "Depreciation (USD)": 3_200_000,
+            "COGS patent % of sales": 26.0,
+            "COGS post % of sales": 32.0,
+            "Marketing annual % of sales": 12.0,
+            "Marketing launch cost (USD)": 10_000_000,
+            "Indirect staff cost (USD)": 10_000_000,
+            "Electricity (USD)": 1_600_000,
+            "Depreciation (USD)": 4_000_000,
             "Interest & amortization (USD)": 2_000_000,
-            "Royalties cost % of sales": 4.0,
+            "Royalties cost % of sales": 0.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "COGS patent % of sales": 28.0,
-            "COGS post % of sales": 45.0,
-            "Marketing annual % of sales": 16.0,
-            "Marketing launch cost (USD)": 30_000_000,
-            "Indirect staff cost (USD)": 6_750_000,
-            "Electricity (USD)": 1_400_000,
-            "Depreciation (USD)": 2_750_000,
-            "Interest & amortization (USD)": 1_500_000,
-            "Royalties cost % of sales": 3.5,
+            "COGS patent % of sales": 24.0,
+            "COGS post % of sales": 30.0,
+            "Marketing annual % of sales": 11.0,
+            "Marketing launch cost (USD)": 8_000_000,
+            "Indirect staff cost (USD)": 12_000_000,
+            "Electricity (USD)": 1_500_000,
+            "Depreciation (USD)": 4_500_000,
+            "Interest & amortization (USD)": 3_000_000,
+            "Royalties cost % of sales": 0.0,
         },
     ]
     return pd.DataFrame(data)
@@ -928,18 +940,18 @@ def _default_vaccine_rd_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Cost accounting (capitalisation)": "50% capitalised",
-            "Pre-GTM spent to date (USD)": 120_000_000,
-            "Pre-GTM remaining (USD)": 60_000_000,
-            "Post-GTM annual cost (USD/year)": 12_000_000,
+            "Cost accounting (capitalisation)": "55% capitalised",
+            "Pre-GTM spent to date (USD)": 60_000_000,
+            "Pre-GTM remaining (USD)": 80_000_000,
+            "Post-GTM annual cost (USD/year)": 6_000_000,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Cost accounting (capitalisation)": "40% capitalised",
-            "Pre-GTM spent to date (USD)": 80_000_000,
-            "Pre-GTM remaining (USD)": 40_000_000,
-            "Post-GTM annual cost (USD/year)": 9_500_000,
+            "Cost accounting (capitalisation)": "45% capitalised",
+            "Pre-GTM spent to date (USD)": 150_000_000,
+            "Pre-GTM remaining (USD)": 0.0,
+            "Post-GTM annual cost (USD/year)": 4_000_000,
         },
     ]
     return pd.DataFrame(data)
@@ -950,34 +962,34 @@ def _default_vaccine_capex_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 35_000_000,
-            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 3_500_000,
-            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 12_000_000,
-            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 900_000,
-            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 6_000_000,
-            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 800_000,
-            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 4_000_000,
-            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 500_000,
-            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 15_000_000,
-            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 1_200_000,
-            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 8_000_000,
-            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 700_000,
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 8_000_000,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 700_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 4_000_000,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 350_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 2_000_000,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 200_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 1_500_000,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 150_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 5_500_000,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 600_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 4_000_000,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 500_000,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 22_000_000,
-            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 2_800_000,
-            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 8_000_000,
-            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 650_000,
-            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 4_000_000,
-            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 550_000,
-            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 3_000_000,
-            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 400_000,
-            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 9_000_000,
-            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 900_000,
-            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 5_000_000,
-            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 450_000,
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 0.0,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 600_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 0.0,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 250_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 0.0,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 150_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 0.0,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 150_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 0.0,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 500_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 0.0,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 350_000,
         },
     ]
     return pd.DataFrame(data)
@@ -2287,12 +2299,66 @@ def _apply_stage_schedule_defaults(
     return updated
 
 
+def _stage_mapping_editor_token(value: str) -> str:
+    token = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+    return token or "field"
+
+
+def _stage_mapping_input_key(stage: str, revision: int, column: str) -> str:
+    return (
+        "stage_mapping_editor_"
+        f"{_stage_mapping_editor_token(stage)}_{revision}_{_stage_mapping_editor_token(column)}"
+    )
+
+
+def _build_stage_mapping_candidate_row(
+    base_row: pd.Series,
+    updates: Dict[str, Any],
+) -> pd.Series:
+    candidate = base_row.copy()
+    for col, value in updates.items():
+        candidate.loc[col] = value
+
+    stage_value = normalize_stage_label(candidate.get("Stage")) or normalize_stage_label(base_row.get("Stage"))
+    if stage_value:
+        candidate.loc["Stage"] = stage_value
+
+    derived_time = _compute_time_to_market_from_durations(
+        str(candidate.get("Stage") or ""),
+        _stage_duration_years_from_row(candidate),
+    )
+    if derived_time is None:
+        derived_time = max(0, int(_as_float(candidate.get("Time to market (years)"), 0.0)))
+    candidate.loc["Time to market (years)"] = int(derived_time)
+    return candidate
+
+
+def _stage_mapping_row_warnings(
+    mapping_df: pd.DataFrame,
+    row_idx: int,
+    candidate_row: pd.Series,
+) -> List[str]:
+    preview_df = mapping_df.copy()
+    for col in preview_df.columns:
+        if col in candidate_row.index:
+            preview_df.at[row_idx, col] = candidate_row.get(col)
+
+    stage_label = normalize_stage_label(candidate_row.get("Stage"))
+    if not stage_label:
+        return _stage_mapping_sanity_checks(preview_df)
+
+    prefix = f"{stage_label}:"
+    return [warning for warning in _stage_mapping_sanity_checks(preview_df) if warning.startswith(prefix)]
+
+
 def _default_debt_schedule(first_year: int, n_years: int) -> pd.DataFrame:
     years = list(range(int(first_year), int(first_year) + int(n_years)))
+    seed_drawdowns = [60_000_000.0, 20_000_000.0, 20_000_000.0, 20_000_000.0]
+    drawdowns = seed_drawdowns[: len(years)] + [0.0] * max(0, len(years) - len(seed_drawdowns))
     return pd.DataFrame(
         {
             "Year": years,
-            "Debt drawdowns": [0.0] * len(years),
+            "Debt drawdowns": drawdowns,
             "Manual debt repayments": [0.0] * len(years),
         }
     )
@@ -2686,12 +2752,21 @@ def _apply_detail_assumption_overrides(
     stage_weights = updated.get("stage_cost_weights") or {}
     rd_remaining = float(updated.get("rd_remaining_pre_launch") or 0.0)
     if stage_weights and rd_remaining > 0:
-        total_weight = sum(float(weight) for weight in stage_weights.values() if float(weight) > 0)
+        current_stage = str(updated.get("stage") or "").strip()
+        if current_stage in STAGE_SEQUENCE:
+            remaining_stages = set(STAGE_SEQUENCE[STAGE_SEQUENCE.index(current_stage) : -1])
+        else:
+            remaining_stages = set(stage_weights.keys())
+        relevant_weights = {
+            stage: float(weight)
+            for stage, weight in stage_weights.items()
+            if stage in remaining_stages and float(weight) > 0
+        }
+        total_weight = sum(relevant_weights.values())
         if total_weight > 0:
             updated["trial_costs_by_phase"] = {
-                stage: rd_remaining * (float(weight) / total_weight)
-                for stage, weight in stage_weights.items()
-                if float(weight) > 0
+                stage: rd_remaining * (weight / total_weight)
+                for stage, weight in relevant_weights.items()
             }
 
     return updated
@@ -6407,232 +6482,294 @@ def main() -> None:
                     _default_stage_schedule_mapping,
                 )
                 previous_mapping = mapping_df.copy()
-                st.markdown("**Quick edit by stage**")
-                stage_to_edit = st.selectbox(
-                    "Select stage to edit",
-                    options=STAGE_OPTIONS,
-                    key="stage_mapping_quick_stage",
-                )
-                row_mask = mapping_df["Stage"].astype(str) == str(stage_to_edit)
-                if not row_mask.any():
-                    st.warning("Selected stage not found in the mapping table.")
-                else:
-                    row_idx = mapping_df.index[row_mask][0]
-                    base_row = mapping_df.loc[row_idx]
-                    updates: Dict[str, float | int | str] = {}
-
-                    def _field_key(col_name: str) -> str:
-                        safe = (
-                            col_name.lower()
-                            .replace(" ", "_")
-                            .replace("%", "pct")
-                            .replace("/", "_")
-                            .replace("(", "")
-                            .replace(")", "")
-                            .replace("-", "_")
-                        )
-                        return f"stage_mapping_{safe}"
-
-                    col_a, col_b, col_c = st.columns(3)
-                    with col_a:
-                        updates["Success Probability %"] = st.number_input(
-                            "Success Probability %",
-                            min_value=0.0,
-                            max_value=100.0,
-                            value=float(base_row.get("Success Probability %", 0.0) or 0.0),
-                            step=1.0,
-                            key=_field_key("Success Probability %"),
-                        )
-                        updates["Time to market (years)"] = st.number_input(
-                            "Time to market (years)",
-                            min_value=0,
-                            value=int(base_row.get("Time to market (years)", 0) or 0),
-                            step=1,
-                            key=_field_key("Time to market (years)"),
-                        )
-                    with col_b:
-                        updates["Sales ramp length (years)"] = st.number_input(
-                            "Sales ramp length (years)",
-                            min_value=0,
-                            value=int(base_row.get("Sales ramp length (years)", 0) or 0),
-                            step=1,
-                            key=_field_key("Sales ramp length (years)"),
-                        )
-                        updates["Ramp shape"] = st.selectbox(
-                            "Ramp shape",
-                            options=RAMP_SHAPE_OPTIONS,
-                            index=RAMP_SHAPE_OPTIONS.index(
-                                base_row.get("Ramp shape", RAMP_SHAPE_OPTIONS[0])
-                                if base_row.get("Ramp shape", RAMP_SHAPE_OPTIONS[0]) in RAMP_SHAPE_OPTIONS
-                                else RAMP_SHAPE_OPTIONS[0]
-                            ),
-                            key=_field_key("Ramp shape"),
-                        )
-                    with col_c:
-                        updates["R&D remaining pre-launch (USD)"] = st.number_input(
-                            "R&D remaining pre-launch (USD)",
-                            min_value=0.0,
-                            value=float(base_row.get("R&D remaining pre-launch (USD)", 0.0) or 0.0),
-                            step=1_000_000.0,
-                            key=_field_key("R&D remaining pre-launch (USD)"),
-                        )
-                        updates["R&D annual post-launch (USD/year)"] = st.number_input(
-                            "R&D annual post-launch (USD/year)",
-                            min_value=0.0,
-                            value=float(base_row.get("R&D annual post-launch (USD/year)", 0.0) or 0.0),
-                            step=1_000_000.0,
-                            key=_field_key("R&D annual post-launch (USD/year)"),
-                        )
-
-                    with st.expander("Stage durations", expanded=True):
-                        duration_cols = st.columns(3)
-                        for idx, col in enumerate(STAGE_DURATION_COLUMNS):
-                            with duration_cols[idx % 3]:
-                                updates[col] = st.number_input(
-                                    col,
-                                    min_value=0,
-                                    value=int(base_row.get(col, 0) or 0),
-                                    step=1,
-                                    key=_field_key(col),
-                                )
-
-                    with st.expander("Transition probabilities", expanded=False):
-                        trans_cols = st.columns(3)
-                        for idx, col in enumerate(STAGE_TRANSITION_COLUMNS):
-                            with trans_cols[idx % 3]:
-                                updates[col] = st.number_input(
-                                    col,
-                                    min_value=0.0,
-                                    max_value=100.0,
-                                    value=float(base_row.get(col, 0.0) or 0.0),
-                                    step=1.0,
-                                    key=_field_key(col),
-                                )
-                        annual_cols = st.columns(3)
-                        for idx, col in enumerate(STAGE_TRANSITION_ANNUAL_COLUMNS):
-                            with annual_cols[idx % 3]:
-                                updates[col] = st.number_input(
-                                    col,
-                                    min_value=0.0,
-                                    max_value=100.0,
-                                    value=float(base_row.get(col, 0.0) or 0.0),
-                                    step=1.0,
-                                    key=_field_key(col),
-                                )
-
-                    with st.expander("R&D and CAPEX allocation", expanded=False):
-                        rd_cols = st.columns(3)
-                        for idx, col in enumerate(STAGE_COST_WEIGHT_COLUMNS):
-                            with rd_cols[idx % 3]:
-                                updates[col] = st.number_input(
-                                    col,
-                                    min_value=0.0,
-                                    max_value=100.0,
-                                    value=float(base_row.get(col, 0.0) or 0.0),
-                                    step=1.0,
-                                    key=_field_key(col),
-                                )
-                        capex_cols = st.columns(3)
-                        for idx, col in enumerate(STAGE_CAPEX_WEIGHT_COLUMNS):
-                            with capex_cols[idx % 3]:
-                                updates[col] = st.number_input(
-                                    col,
-                                    min_value=0.0,
-                                    max_value=100.0,
-                                    value=float(base_row.get(col, 0.0) or 0.0),
-                                    step=1.0,
-                                    key=_field_key(col),
-                                )
-
-                    with st.expander("Milestones", expanded=False):
-                        milestone_cols = st.columns(2)
-                        for idx, col in enumerate(STAGE_MILESTONE_COLUMNS):
-                            with milestone_cols[idx % 2]:
-                                updates[col] = st.number_input(
-                                    col,
-                                    min_value=0.0,
-                                    value=float(base_row.get(col, 0.0) or 0.0),
-                                    step=1_000_000.0,
-                                    key=_field_key(col),
-                                )
-                    if st.button("Apply quick edits", key="stage_mapping_apply_quick"):
-                        for col, value in updates.items():
-                            mapping_df.loc[row_idx, col] = value
-                        st.success(f"Updated {stage_to_edit} defaults.")
-                with st.expander("Full mapping table (advanced)", expanded=False):
+                with st.expander("Edit stage mapping", expanded=True):
                     st.caption(
-                        "Tip: click any cell to type directly; use Tab/Enter to move across columns."
+                        "Use a structured editor for one stage at a time. "
+                        "Time to market is derived from the stage-duration inputs before save."
                     )
-                    mapping_df = st.data_editor(
+                    editor_stage_key = "stage_mapping_editor_stage"
+                    editor_revision_key = "stage_mapping_editor_revision"
+                    editor_flash_key = "stage_mapping_editor_flash"
+                    flash_message = st.session_state.pop(editor_flash_key, None)
+                    if flash_message:
+                        level, message = flash_message
+                        if level == "success":
+                            st.success(message)
+                        elif level == "warning":
+                            st.warning(message)
+                        else:
+                            st.info(message)
+
+                    st.markdown('<div class="stage-mapping-editor-controls"></div>', unsafe_allow_html=True)
+                    control_cols = st.columns([2.2, 1.15, 1.0, 3.65])
+                    selected_stage = control_cols[0].selectbox(
+                        "Select stage",
+                        options=STAGE_OPTIONS,
+                        key="stage_mapping_selected_stage",
+                    )
+                    with control_cols[1]:
+                        st.caption("Open structured editor")
+                        edit_clicked = st.button(
+                            "Edit",
+                            key="stage_mapping_edit_open",
+                            type="primary",
+                            use_container_width=True,
+                        )
+                    active_stage = st.session_state.get(editor_stage_key)
+                    if edit_clicked:
+                        st.session_state[editor_stage_key] = selected_stage
+                        st.session_state[editor_revision_key] = int(
+                            st.session_state.get(editor_revision_key, 0)
+                        ) + 1
+                        st.rerun()
+                    if control_cols[2].button(
+                        "Close",
+                        key="stage_mapping_edit_close",
+                        disabled=not active_stage,
+                    ):
+                        st.session_state.pop(editor_stage_key, None)
+                        st.session_state[editor_revision_key] = int(
+                            st.session_state.get(editor_revision_key, 0)
+                        ) + 1
+                        st.session_state[editor_flash_key] = ("info", "Edit stage mapping closed.")
+                        st.rerun()
+                    if active_stage:
+                        control_cols[3].caption(
+                            f"Editing {active_stage}. Save commits the row; discard reverts the staged changes."
+                        )
+                    else:
+                        control_cols[3].caption(
+                            "Select a stage and click Edit to open the structured editor."
+                        )
+
+                    active_stage = st.session_state.get(editor_stage_key)
+                    if active_stage:
+                        row_mask = (
+                            mapping_df["Stage"].astype(str).map(normalize_stage_label)
+                            == normalize_stage_label(active_stage)
+                        )
+                        if not row_mask.any():
+                            st.warning("Selected stage not found in the mapping table.")
+                        else:
+                            row_idx = mapping_df.index[row_mask][0]
+                            base_row = mapping_df.loc[row_idx].copy()
+                            stage_label = str(base_row.get("Stage") or active_stage)
+                            revision = int(st.session_state.get(editor_revision_key, 0))
+                            updates: Dict[str, float | int | str] = {"Stage": stage_label}
+
+                            st.markdown(f"**Editing {stage_label}**")
+                            core_cols = st.columns(3)
+                            with core_cols[0]:
+                                updates["Success Probability %"] = st.number_input(
+                                    "Success Probability %",
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get("Success Probability %", 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_stage_mapping_input_key(stage_label, revision, "Success Probability %"),
+                                )
+                            with core_cols[1]:
+                                updates["Sales ramp length (years)"] = st.number_input(
+                                    "Sales ramp length (years)",
+                                    min_value=0,
+                                    value=int(base_row.get("Sales ramp length (years)", 0) or 0),
+                                    step=1,
+                                    key=_stage_mapping_input_key(stage_label, revision, "Sales ramp length (years)"),
+                                )
+                            with core_cols[2]:
+                                current_shape = base_row.get("Ramp shape", RAMP_SHAPE_OPTIONS[0])
+                                if current_shape not in RAMP_SHAPE_OPTIONS:
+                                    current_shape = RAMP_SHAPE_OPTIONS[0]
+                                updates["Ramp shape"] = st.selectbox(
+                                    "Ramp shape",
+                                    options=RAMP_SHAPE_OPTIONS,
+                                    index=RAMP_SHAPE_OPTIONS.index(current_shape),
+                                    key=_stage_mapping_input_key(stage_label, revision, "Ramp shape"),
+                                )
+
+                            funding_cols = st.columns(2)
+                            with funding_cols[0]:
+                                updates["R&D remaining pre-launch (USD)"] = st.number_input(
+                                    "R&D remaining pre-launch (USD)",
+                                    min_value=0.0,
+                                    value=float(base_row.get("R&D remaining pre-launch (USD)", 0.0) or 0.0),
+                                    step=1_000_000.0,
+                                    key=_stage_mapping_input_key(
+                                        stage_label,
+                                        revision,
+                                        "R&D remaining pre-launch (USD)",
+                                    ),
+                                )
+                            with funding_cols[1]:
+                                updates["R&D annual post-launch (USD/year)"] = st.number_input(
+                                    "R&D annual post-launch (USD/year)",
+                                    min_value=0.0,
+                                    value=float(base_row.get("R&D annual post-launch (USD/year)", 0.0) or 0.0),
+                                    step=1_000_000.0,
+                                    key=_stage_mapping_input_key(
+                                        stage_label,
+                                        revision,
+                                        "R&D annual post-launch (USD/year)",
+                                    ),
+                                )
+
+                            with st.expander("Stage durations", expanded=True):
+                                st.caption(
+                                    "These durations drive the derived time to market for the selected stage."
+                                )
+                                duration_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_DURATION_COLUMNS):
+                                    with duration_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0,
+                                            value=int(base_row.get(col, 0) or 0),
+                                            step=1,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+
+                            with st.expander("Transition probabilities", expanded=False):
+                                trans_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_TRANSITION_COLUMNS):
+                                    with trans_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+                                annual_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_TRANSITION_ANNUAL_COLUMNS):
+                                    with annual_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+
+                            with st.expander("R&D and CAPEX allocation", expanded=False):
+                                rd_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_COST_WEIGHT_COLUMNS):
+                                    with rd_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+                                capex_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_CAPEX_WEIGHT_COLUMNS):
+                                    with capex_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+
+                            with st.expander("Milestones", expanded=False):
+                                milestone_cols = st.columns(2)
+                                for idx, col in enumerate(STAGE_MILESTONE_COLUMNS):
+                                    with milestone_cols[idx % 2]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1_000_000.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+
+                            candidate_row = _build_stage_mapping_candidate_row(base_row, updates)
+                            row_warnings = _stage_mapping_row_warnings(mapping_df, row_idx, candidate_row)
+
+                            derived_cols = st.columns([1.2, 1.2, 3.6])
+                            derived_cols[0].metric(
+                                "Derived time to market (years)",
+                                int(candidate_row.get("Time to market (years)", 0) or 0),
+                            )
+                            derived_cols[1].metric(
+                                "Saved value",
+                                int(base_row.get("Time to market (years)", 0) or 0),
+                            )
+                            derived_cols[2].caption(
+                                "The saved time-to-market value is computed from the stage-duration inputs above."
+                            )
+
+                            if row_warnings:
+                                st.warning(
+                                    "Scientific/commercial check for this stage: review the items below before saving."
+                                )
+                                for warning in row_warnings:
+                                    st.write(f"- {warning}")
+                            else:
+                                st.success("No row-level scientific/commercial warnings for this stage.")
+
+                            preview_cols = [
+                                "Stage",
+                                "Success Probability %",
+                                "Time to market (years)",
+                                "Sales ramp length (years)",
+                                "Ramp shape",
+                                "R&D remaining pre-launch (USD)",
+                                "R&D annual post-launch (USD/year)",
+                            ]
+                            st.markdown("**Save preview**")
+                            st.dataframe(
+                                pd.DataFrame([candidate_row.reindex(preview_cols)]),
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+
+                            action_cols = st.columns([1.2, 1.2, 4.6])
+                            if action_cols[0].button("Save stage", key="stage_mapping_edit_save"):
+                                updated_mapping = mapping_df.copy()
+                                for col in updated_mapping.columns:
+                                    updated_mapping.at[row_idx, col] = candidate_row.get(
+                                        col,
+                                        updated_mapping.at[row_idx, col],
+                                    )
+                                mapping_df = updated_mapping
+                                st.session_state["stage_schedule_mapping"] = mapping_df
+                                if not mapping_df.equals(previous_mapping):
+                                    st.session_state["stage_mapping_audit_log"].append(
+                                        {
+                                            "timestamp": pd.Timestamp.utcnow().isoformat(),
+                                            "updated_by": audit_owner,
+                                            "note": f"Stage mapping updated: {stage_label}",
+                                        }
+                                    )
+                                st.session_state.pop(editor_stage_key, None)
+                                st.session_state[editor_revision_key] = revision + 1
+                                st.session_state[editor_flash_key] = (
+                                    "success",
+                                    f"Saved {stage_label} stage assumptions.",
+                                )
+                                st.rerun()
+                            if action_cols[1].button("Discard edits", key="stage_mapping_edit_discard"):
+                                st.session_state.pop(editor_stage_key, None)
+                                st.session_state[editor_revision_key] = revision + 1
+                                st.session_state[editor_flash_key] = (
+                                    "info",
+                                    f"Discarded edits for {stage_label}.",
+                                )
+                                st.rerun()
+
+                st.info("Editing happens above. Use Edit stage mapping to make changes before reviewing the summary.")
+                with st.expander("Full mapping table (summary)", expanded=False):
+                    st.caption("Read-only summary. Use Edit stage mapping above to make changes.")
+                    st.dataframe(
                         mapping_df,
-                        num_rows="fixed",
                         hide_index=True,
-                        key="stage_schedule_mapping_editor",
-                        column_config={
-                            "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
-                            "Success Probability %": st.column_config.NumberColumn(
-                                "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
-                            ),
-                            "Time to market (years)": st.column_config.NumberColumn(
-                                "Time to market (years)", min_value=0, step=1
-                            ),
-                            "Sales ramp length (years)": st.column_config.NumberColumn(
-                                "Sales ramp length (years)", min_value=0, step=1
-                            ),
-                            "Ramp shape": st.column_config.SelectboxColumn(
-                                "Ramp shape", options=RAMP_SHAPE_OPTIONS
-                            ),
-                            "R&D remaining pre-launch (USD)": st.column_config.NumberColumn(
-                                "R&D remaining pre-launch (USD)", step=1_000_000.0
-                            ),
-                            "R&D annual post-launch (USD/year)": st.column_config.NumberColumn(
-                                "R&D annual post-launch (USD/year)", step=1_000_000.0
-                            ),
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0, step=1
-                                )
-                                for col in STAGE_DURATION_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0.0, max_value=100.0, step=1.0
-                                )
-                                for col in STAGE_COST_WEIGHT_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0.0, max_value=100.0, step=1.0
-                                )
-                                for col in STAGE_CAPEX_WEIGHT_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0.0, max_value=100.0, step=1.0
-                                )
-                                for col in STAGE_TRANSITION_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0.0, max_value=100.0, step=1.0
-                                )
-                                for col in STAGE_TRANSITION_ANNUAL_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, step=1_000_000.0
-                                )
-                                for col in STAGE_MILESTONE_COLUMNS
-                            },
-                        },
-                    )
-                if not mapping_df.equals(previous_mapping):
-                    st.session_state["stage_mapping_audit_log"].append(
-                        {
-                            "timestamp": pd.Timestamp.utcnow().isoformat(),
-                            "updated_by": audit_owner,
-                            "note": "Stage mapping updated",
-                        }
+                        use_container_width=True,
                     )
                 mapping_warnings = _stage_mapping_sanity_checks(mapping_df)
                 if mapping_warnings:
@@ -6641,7 +6778,7 @@ def main() -> None:
                         "remain realistic and internally consistent."
                     )
                     for warning in mapping_warnings:
-                        st.write(f"• {warning}")
+                        st.write(f"- {warning}")
                 st.session_state["stage_schedule_mapping"] = mapping_df
                 with st.expander("Mapping audit trail", expanded=False):
                     audit_log = st.session_state.get("stage_mapping_audit_log", [])
@@ -6884,9 +7021,14 @@ def main() -> None:
                                     "Amount": planned_new_equity,
                                 }
                                 st.session_state["sources_table"] = sources_df
-                        sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
+                        sources_table_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
+                        sources_total = sources_table_total + debt_draw_total
                         st.session_state["sources_total"] = sources_total
                         st.metric("Total sources", f"{sources_total:,.0f}")
+                        if debt_draw_total:
+                            st.caption(
+                                f"Includes scheduled debt drawdowns of {debt_draw_total:,.0f} from the debt schedule."
+                            )
                         sources_warnings = []
                         if (pd.to_numeric(sources_df.get("Amount", pd.Series(dtype=float)), errors="coerce") < 0).any():
                             sources_warnings.append("Sources contain negative amounts; use positive values.")
