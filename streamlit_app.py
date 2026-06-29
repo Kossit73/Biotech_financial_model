@@ -6,6 +6,8 @@ import json
 import io
 import importlib
 import os
+import re
+from contextlib import contextmanager
 from io import BytesIO
 from dataclasses import asdict, fields
 from typing import Callable, Dict, List, Optional, Tuple
@@ -14,6 +16,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from openpyxl import load_workbook
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -44,6 +47,7 @@ from valuation_codex_package import (
     Product,
     ProductConfig,
     STAGE_SEQUENCE,
+    normalize_stage_label,
     Scenario,
     ScenarioEngine,
     ForecastEngine,
@@ -57,71 +61,22 @@ from valuation_codex_package import (
 )
 
 
-STAGE_OPTIONS = [
-    "Discovery",
-    "Preclinical",
-    "Phase I",
-    "Phase II",
-    "Phase III",
-    "Approval",
-    "Commercial",
-]
-
+STAGE_OPTIONS = list(STAGE_SEQUENCE)
 STAGE_TRANSITION_COLUMNS = [
-    "Discovery->Preclinical",
-    "Preclinical->Phase I",
-    "Phase I->Phase II",
-    "Phase II->Phase III",
-    "Phase III->Approval",
-    "Approval->Commercial",
+    f"{from_stage}->{to_stage}"
+    for from_stage, to_stage in zip(STAGE_SEQUENCE[:-1], STAGE_SEQUENCE[1:])
 ]
-
-STAGE_DURATION_COLUMNS = [
-    "Discovery duration (years)",
-    "Preclinical duration (years)",
-    "Phase I duration (years)",
-    "Phase II duration (years)",
-    "Phase III duration (years)",
-    "Approval duration (years)",
-    "Commercial duration (years)",
-]
-
+STAGE_DURATION_COLUMNS = [f"{stage} duration (years)" for stage in STAGE_SEQUENCE]
 STAGE_TRANSITION_ANNUAL_COLUMNS = [
-    "Discovery->Preclinical annual success %",
-    "Preclinical->Phase I annual success %",
-    "Phase I->Phase II annual success %",
-    "Phase II->Phase III annual success %",
-    "Phase III->Approval annual success %",
-    "Approval->Commercial annual success %",
+    f"{transition} annual success %" for transition in STAGE_TRANSITION_COLUMNS
 ]
 
 RAMP_SHAPE_OPTIONS = ["Linear", "S-curve", "Step"]
 
-STAGE_COST_WEIGHT_COLUMNS = [
-    "Discovery R&D weight %",
-    "Preclinical R&D weight %",
-    "Phase I R&D weight %",
-    "Phase II R&D weight %",
-    "Phase III R&D weight %",
-    "Approval R&D weight %",
-]
-
-STAGE_CAPEX_WEIGHT_COLUMNS = [
-    "Discovery CAPEX weight %",
-    "Preclinical CAPEX weight %",
-    "Phase I CAPEX weight %",
-    "Phase II CAPEX weight %",
-    "Phase III CAPEX weight %",
-    "Approval CAPEX weight %",
-]
-
+STAGE_COST_WEIGHT_COLUMNS = [f"{stage} R&D weight %" for stage in STAGE_SEQUENCE[:-1]]
+STAGE_CAPEX_WEIGHT_COLUMNS = [f"{stage} CAPEX weight %" for stage in STAGE_SEQUENCE[:-1]]
 STAGE_MILESTONE_COLUMNS = [
-    "Discovery completion milestone (USD)",
-    "Preclinical completion milestone (USD)",
-    "Phase I completion milestone (USD)",
-    "Phase II completion milestone (USD)",
-    "Phase III completion milestone (USD)",
-    "Approval completion milestone (USD)",
+    f"{stage} completion milestone (USD)" for stage in STAGE_SEQUENCE[:-1]
 ]
 
 SELECTOR_OPTIONS = [
@@ -133,62 +88,417 @@ SELECTOR_OPTIONS = [
 ]
 
 
+def _inject_app_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --bio-ink: #0f172a;
+            --bio-muted: #475569;
+            --bio-brand: #14532d;
+            --bio-brand-soft: #e9f7ef;
+            --bio-panel: rgba(255, 255, 255, 0.9);
+        }
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(187, 247, 208, 0.30), transparent 33%),
+                radial-gradient(circle at top right, rgba(191, 219, 254, 0.22), transparent 28%),
+                linear-gradient(180deg, #f6fbf7 0%, #f4f6fb 58%, #edf5f3 100%);
+        }
+        .block-container {
+            padding-top: 1.35rem;
+            padding-bottom: 3rem;
+            max-width: 1450px;
+        }
+        .designer-hero {
+            margin-bottom: 1.2rem;
+            padding: 1.8rem 1.9rem;
+            border-radius: 28px;
+            border: 1px solid rgba(20, 83, 45, 0.12);
+            background:
+                linear-gradient(135deg, rgba(233, 247, 239, 0.96), rgba(255, 255, 255, 0.94)),
+                linear-gradient(135deg, rgba(20, 83, 45, 0.05), rgba(30, 64, 175, 0.07));
+            box-shadow: 0 24px 48px rgba(15, 23, 42, 0.08);
+        }
+        .designer-kicker {
+            margin: 0 0 0.45rem 0;
+            font-size: 0.78rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--bio-brand);
+            font-weight: 700;
+        }
+        .designer-title {
+            margin: 0;
+            font-size: clamp(2rem, 2.8vw, 3.15rem);
+            line-height: 1.02;
+            color: var(--bio-ink);
+            font-weight: 800;
+        }
+        .designer-copy {
+            max-width: 55rem;
+            margin: 0.7rem 0 0 0;
+            color: var(--bio-muted);
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+        .designer-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+            margin-top: 1rem;
+        }
+        .designer-badge {
+            padding: 0.42rem 0.78rem;
+            border-radius: 999px;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            background: rgba(255, 255, 255, 0.92);
+            color: var(--bio-brand);
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
+        div[data-baseweb="tab-list"] {
+            gap: 0.55rem;
+            margin-bottom: 1rem;
+        }
+        div[data-baseweb="tab-list"] button {
+            min-height: 3rem;
+            border-radius: 999px;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            background: rgba(255, 255, 255, 0.72);
+            color: var(--bio-muted);
+            padding: 0.25rem 1rem;
+        }
+        div[data-baseweb="tab-list"] button[aria-selected="true"] {
+            background: linear-gradient(135deg, #14532d, #1d4ed8);
+            color: white;
+            border-color: transparent;
+            box-shadow: 0 12px 24px rgba(29, 78, 216, 0.16);
+        }
+        div[data-testid="stMetric"],
+        div[data-testid="stDataFrame"],
+        div[data-testid="stExpander"] {
+            border-radius: 20px;
+        }
+        div[data-testid="stMetric"] {
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            background: var(--bio-panel);
+            padding: 0.6rem 0.7rem;
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+        }
+        .stage-mapping-editor-controls + div[data-testid="stHorizontalBlock"] > div:nth-child(2) > div {
+            padding: 0.55rem;
+            border-radius: 18px;
+            border: 1px solid rgba(29, 78, 216, 0.22);
+            background: linear-gradient(135deg, rgba(219, 234, 254, 0.95), rgba(233, 247, 239, 0.98));
+            box-shadow: 0 14px 30px rgba(29, 78, 216, 0.12);
+        }
+        .stage-mapping-editor-controls + div[data-testid="stHorizontalBlock"] > div:nth-child(2) button {
+            width: 100%;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_model_hero() -> None:
+    badges = "".join(
+        f'<span class="designer-badge">{label}</span>'
+        for label in (
+            "Portfolio valuation",
+            "Professional workbook",
+            "Scenario stress testing",
+            "RAG support",
+        )
+    )
+    st.markdown(
+        f"""
+        <section class="designer-hero">
+            <p class="designer-kicker">Pipeline valuation studio</p>
+            <h1 class="designer-title">Biotech Financial Model</h1>
+            <p class="designer-copy">
+                Configure the asset mix, stage assumptions, and portfolio economics in a cleaner
+                executive shell, then export an investor-grade workbook instead of flat worksheets.
+            </p>
+            <div class="designer-badges">{badges}</div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _style_workbook_sheet(ws, *, accent: str, accent_soft: str, is_overview: bool = False) -> None:
+    ws.sheet_view.showGridLines = False
+    if is_overview:
+        ws.freeze_panes = "A6"
+    elif ws.max_row > 1:
+        ws.freeze_panes = "A2"
+        for cell in ws[1]:
+            cell.fill = PatternFill("solid", fgColor=accent)
+            cell.font = Font(color="FFFFFF", bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.auto_filter.ref = ws.dimensions
+        for row_idx in range(2, min(ws.max_row, 120) + 1):
+            if row_idx % 2 == 0:
+                for cell in ws[row_idx]:
+                    cell.fill = PatternFill("solid", fgColor=accent_soft)
+    for col_idx in range(1, ws.max_column + 1):
+        max_length = 0
+        for row_idx in range(1, min(ws.max_row, 80) + 1):
+            value = ws.cell(row=row_idx, column=col_idx).value
+            if value is None:
+                continue
+            max_length = max(max_length, len(str(value)))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_length + 2, 14), 36)
+
+
+def _format_overview_value(value: object) -> object:
+    if isinstance(value, (int, float, np.floating)) and np.isfinite(value):
+        amount = float(value)
+        if abs(amount) <= 1.0 and amount != 0:
+            return f"{amount:.1%}"
+        if abs(amount) >= 1_000_000:
+            return f"${amount / 1_000_000:,.2f}M"
+        if abs(amount) >= 1_000:
+            return f"${amount / 1_000:,.1f}K"
+        return f"{amount:,.2f}"
+    return value
+
+
+def _style_professional_workbook(
+    workbook_bytes: bytes,
+    *,
+    cons: pd.DataFrame,
+    model_cfg: Optional[ModelConfig],
+) -> bytes:
+    workbook = load_workbook(BytesIO(workbook_bytes))
+    accent = "14532D"
+    accent_soft = "E9F7EF"
+    if "Overview" in workbook.sheetnames:
+        del workbook["Overview"]
+    overview = workbook.create_sheet("Overview", 0)
+    overview["A1"] = "Biotech Financial Model"
+    overview["A1"].font = Font(size=20, bold=True, color="0F172A")
+    overview["A2"] = "Executive overview for portfolio valuation, statements, advanced analytics, and scenario comparison."
+    overview["A2"].font = Font(size=11, color="475569")
+    overview["A4"] = "Executive Snapshot"
+    overview["A4"].font = Font(size=12, bold=True, color=accent)
+    overview["A5"] = "Metric"
+    overview["B5"] = "Value"
+    for cell in overview[5]:
+        cell.fill = PatternFill("solid", fgColor=accent)
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    summary_rows: List[Tuple[str, object]] = []
+    if cons is not None and not cons.empty:
+        latest = cons.iloc[-1]
+        for label, column in (
+            ("Latest Revenue", "revenue"),
+            ("Latest EBITDA", "ebitda"),
+            ("Latest FCFF", "fcff_after_wc"),
+        ):
+            if column in latest.index and pd.notna(latest[column]):
+                summary_rows.append((label, _format_overview_value(float(latest[column]))))
+    if model_cfg is not None:
+        summary_rows.append(("Tax Rate", _format_overview_value(getattr(model_cfg, "tax_rate", ""))))
+        summary_rows.append(("Discount Rate", _format_overview_value(getattr(model_cfg, "discount_rate", ""))))
+    summary_rows.append(("Included Sheets", len(workbook.sheetnames)))
+    for row_idx, (label, value) in enumerate(summary_rows[:8], start=6):
+        overview.cell(row=row_idx, column=1, value=label)
+        overview.cell(row=row_idx, column=2, value=value)
+    overview["D4"] = "Workbook Notes"
+    overview["D4"].font = Font(size=12, bold=True, color=accent)
+    notes = [
+        "Portfolio valuation outputs sit alongside board-ready statements and scenario views.",
+        "Advanced analytics, margin trends, and break-even analysis remain available on dedicated tabs.",
+        "Use the workbook as the investor hand-off version of the live model run.",
+    ]
+    for row_idx, note in enumerate(notes, start=5):
+        overview.cell(row=row_idx, column=4, value=f"• {note}")
+    overview.column_dimensions["A"].width = 26
+    overview.column_dimensions["B"].width = 18
+    overview.column_dimensions["D"].width = 58
+
+    for sheet in workbook.worksheets:
+        _style_workbook_sheet(
+            sheet,
+            accent=accent,
+            accent_soft=accent_soft,
+            is_overview=sheet.title == "Overview",
+        )
+
+    output = BytesIO()
+    workbook.save(output)
+    return _style_professional_workbook(
+        output.getvalue(),
+        cons=cons,
+        model_cfg=model_cfg,
+    )
+
+
 def _default_products() -> pd.DataFrame:
     """Seed table with two representative products."""
 
     data = [
         {
             "name": "AgSeed-101",
-            "stage": "Phase II",
-            "success_prob": 0.35,
-            "sales_ramp_length": 5,
+            "stage": "Approval",
+            "success_prob": 1.0,
+            "sales_ramp_length": 3,
             "sales_ramp_shape": "Linear",
             "include_in_consolidation": True,
-            "time_to_market": 4,
-            "patent_years": 15,
-            "patent_revenue_target": 120_000_000,
-            "post_patent_revenue_target": 60_000_000,
-            "market_growth_patent": 0.04,
-            "market_growth_post": 0.0,
-            "cogs_patent": 0.32,
-            "cogs_post": 0.5,
-            "labor_pct": 0.14,
-            "overhead_pct": 0.09,
-            "material_pct": 0.11,
-            "sales_marketing_pct": 0.18,
-            "gna_pct": 0.12,
-            "rd_remaining_pre_launch": 180_000_000,
-            "rd_annual_post_launch": 12_000_000,
-            "capex_remaining_pre_launch": 55_000_000,
-            "capex_annual_post_launch": 6_500_000,
+            "time_to_market": 1,
+            "patent_years": 18,
+            "patent_revenue_target": 220_000_000,
+            "post_patent_revenue_target": 180_000_000,
+            "market_growth_patent": 0.03,
+            "market_growth_post": 0.01,
+            "cogs_patent": 0.26,
+            "cogs_post": 0.32,
+            "labor_pct": 0.09,
+            "overhead_pct": 0.06,
+            "material_pct": 0.07,
+            "sales_marketing_pct": 0.12,
+            "gna_pct": 0.08,
+            "rd_remaining_pre_launch": 80_000_000,
+            "rd_annual_post_launch": 6_000_000,
+            "capex_remaining_pre_launch": 25_000_000,
+            "capex_annual_post_launch": 2_500_000,
         },
         {
             "name": "BioYield-Plus",
-            "stage": "Phase III",
-            "success_prob": 0.55,
-            "sales_ramp_length": 5,
-            "sales_ramp_shape": "Linear",
+            "stage": "Commercial",
+            "success_prob": 1.0,
+            "sales_ramp_length": 1,
+            "sales_ramp_shape": "Step",
             "include_in_consolidation": True,
-            "time_to_market": 2,
-            "patent_years": 17,
-            "patent_revenue_target": 200_000_000,
-            "post_patent_revenue_target": 95_000_000,
+            "time_to_market": 0,
+            "patent_years": 20,
+            "patent_revenue_target": 300_000_000,
+            "post_patent_revenue_target": 240_000_000,
             "market_growth_patent": 0.03,
             "market_growth_post": 0.01,
-            "cogs_patent": 0.28,
-            "cogs_post": 0.45,
-            "labor_pct": 0.12,
-            "overhead_pct": 0.08,
-            "material_pct": 0.1,
-            "sales_marketing_pct": 0.16,
-            "gna_pct": 0.1,
-            "rd_remaining_pre_launch": 90_000_000,
-            "rd_annual_post_launch": 8_000_000,
-            "capex_remaining_pre_launch": 35_000_000,
-            "capex_annual_post_launch": 4_500_000,
+            "cogs_patent": 0.24,
+            "cogs_post": 0.30,
+            "labor_pct": 0.08,
+            "overhead_pct": 0.05,
+            "material_pct": 0.06,
+            "sales_marketing_pct": 0.11,
+            "gna_pct": 0.07,
+            "rd_remaining_pre_launch": 0.0,
+            "rd_annual_post_launch": 4_000_000,
+            "capex_remaining_pre_launch": 0.0,
+            "capex_annual_post_launch": 2_000_000,
         },
     ]
     return pd.DataFrame(data)
+
+
+def _stage_visibility_flags(selected_stage: str) -> Dict[str, bool]:
+    """Return visibility flags for stage-gated sections based on the pipeline stage."""
+
+    stage_index = STAGE_SEQUENCE.index(selected_stage)
+    show_precommercial = stage_index <= 4
+    show_approval_or_later = stage_index >= 5
+    show_forecast_ramp = stage_index in {0, 5, 6}
+    return {
+        "show_forecast_ramp": show_forecast_ramp,
+        "show_vaccine_sales": stage_index == 6,
+        "show_uses_sources": show_precommercial or stage_index == 5,
+        "show_relevant_market_sizes": stage_index in {1, 2, 3, 4},
+        "show_market_size_estimation": show_approval_or_later,
+        "show_revenue_estimation": show_approval_or_later,
+        "show_cost_assumptions": show_approval_or_later,
+        "show_royalties": show_approval_or_later,
+        "show_market_share": show_approval_or_later,
+        "show_rd": show_precommercial,
+        "show_capex": True,
+    }
+
+
+def _stage_mapping_sanity_checks(mapping_df: pd.DataFrame) -> List[str]:
+    """Validate stage mapping inputs for scientific and commercial plausibility."""
+
+    warnings: List[str] = []
+    if mapping_df is None or mapping_df.empty:
+        return warnings
+    for _, row in mapping_df.iterrows():
+        stage = normalize_stage_label(row.get("Stage"))
+        if not stage:
+            continue
+        time_to_market = row.get("Time to market (years)")
+        if pd.notna(time_to_market):
+            time_to_market = float(time_to_market)
+        else:
+            time_to_market = None
+        duration_sum = 0
+        durations = {}
+        for col in STAGE_DURATION_COLUMNS:
+            value = row.get(col)
+            if pd.isna(value):
+                continue
+            duration = max(0, int(value))
+            stage_name = col.replace(" duration (years)", "")
+            durations[stage_name] = duration
+            duration_sum += duration
+        if time_to_market is not None and duration_sum and abs(time_to_market - duration_sum) > 1:
+            warnings.append(
+                f"{stage}: time-to-market ({time_to_market:.0f}y) should align with "
+                f"the stage durations total ({duration_sum}y)."
+            )
+        for col, label in [
+            ("Success Probability %", "success probability"),
+            ("R&D remaining pre-launch (USD)", "R&D remaining"),
+            ("R&D annual post-launch (USD/year)", "R&D annual post-launch"),
+        ]:
+            value = row.get(col)
+            if pd.isna(value):
+                continue
+            if col == "Success Probability %" and not (0 <= float(value) <= 100):
+                warnings.append(f"{stage}: {label} should be between 0% and 100%.")
+        for weight_cols, label in [
+            (STAGE_COST_WEIGHT_COLUMNS, "R&D weight"),
+            (STAGE_CAPEX_WEIGHT_COLUMNS, "CAPEX weight"),
+        ]:
+            weight_total = 0.0
+            for col in weight_cols:
+                value = row.get(col)
+                if pd.isna(value):
+                    continue
+                weight_total += float(value)
+            if weight_total and abs(weight_total - 100.0) > 5.0:
+                warnings.append(
+                    f"{stage}: {label} totals {weight_total:.0f}%. Target ~100% so spend allocation is coherent."
+                )
+        if stage in {"Approval", "Commercial"}:
+            if durations.get("Discovery", 0) or durations.get("Preclinical", 0):
+                warnings.append(
+                    f"{stage}: early-stage durations should typically be 0 once in {stage}."
+                )
+            if stage == "Commercial" and time_to_market not in (0, None):
+                warnings.append(
+                    f"{stage}: time-to-market should be 0 for commercial assets."
+                )
+    return warnings
+
+
+def _render_section_warnings(title: str, warnings: List[str]) -> None:
+    if not warnings:
+        return
+    st.warning(f"{title}: please review the inputs below for scientific, commercial, or financial validity.")
+    for warning in warnings:
+        st.write(f"- {warning}")
+
+
+@contextmanager
+def _section_block(title: str, *, heading_level: int = 3, caption: Optional[str] = None):
+    heading_level = min(max(int(heading_level), 1), 6)
+    st.markdown(f"{'#' * heading_level} {title}")
+    if caption:
+        st.caption(caption)
+    with st.container():
+        yield
 
 
 def _template_library() -> Dict[str, pd.DataFrame]:
@@ -307,26 +617,21 @@ def _blank_product_row(name: str = "New vaccine") -> Dict:
 
 def _default_vaccine_sales_table(first_year: int = 2024, horizon_years: int = 5) -> pd.DataFrame:
     years = [first_year + i for i in range(max(horizon_years, 1))]
-    def _extend(values: List[float], target_len: int) -> List[float]:
-        if len(values) >= target_len:
-            return values[:target_len]
-        if not values:
-            return [0.0] * target_len
-        return values + [values[-1]] * (target_len - len(values))
-
-    doses = _extend([5, 7, 10, 12, 12], len(years))
-    prices = _extend([25, 26, 27, 27, 28], len(years))
-    vaccine_rows = _default_vaccine_revenue_table()[["ID_vaccine", "Vaccine name"]]
+    vaccine_rows = _default_vaccine_revenue_table()[
+        ["ID_vaccine", "Vaccine name", "Patent customers per year", "Patent price (USD/customer)"]
+    ]
     rows: List[Dict[str, Any]] = []
     for _, vaccine in vaccine_rows.iterrows():
-        for idx, year in enumerate(years):
+        doses = float(vaccine.get("Patent customers per year", 0.0) or 0.0) / 1e6
+        price = float(vaccine.get("Patent price (USD/customer)", 0.0) or 0.0)
+        for year in years:
             rows.append(
                 {
                     "ID_vaccine": vaccine["ID_vaccine"],
                     "Vaccine name": vaccine["Vaccine name"],
                     "Year": year,
-                    "Doses (M)": doses[idx],
-                    "Price per dose": prices[idx],
+                    "Doses (M)": doses,
+                    "Price per dose": price,
                     "Comments": "",
                 }
             )
@@ -375,14 +680,20 @@ def _default_uses_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Item": "Clinical trials",
-            "Amount": 150_000_000,
+            "Item": "Final approval, launch readiness, and market access",
+            "Amount": 110_000_000,
+        },
+        {
+            "ID_vaccine": "VAC-002",
+            "Vaccine name": "BioYield-Plus",
+            "Item": "Commercial capacity, channels, and support programs",
+            "Amount": 90_000_000,
         },
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Item": "Manufacturing scale-up",
-            "Amount": 90_000_000,
+            "Item": "Working capital buffer and contingency",
+            "Amount": 50_000_000,
         },
     ]
     return pd.DataFrame(data)
@@ -409,8 +720,9 @@ def _blank_use_row(df: pd.DataFrame) -> Dict:
 
 def _default_sources_table() -> pd.DataFrame:
     data = [
-        {"Item": "Existing cash", "Amount": 40_000_000},
-        {"Item": "New equity", "Amount": 200_000_000},
+        {"Item": "Existing cash", "Amount": 35_000_000},
+        {"Item": "Strategic grant", "Amount": 10_000_000},
+        {"Item": "New equity", "Amount": 85_000_000},
     ]
     return pd.DataFrame(data)
 
@@ -421,20 +733,44 @@ def _blank_source_row(df: pd.DataFrame) -> Dict:
 
 def _default_shareholders_table() -> pd.DataFrame:
     data = [
-        {"Shareholder": "Founders", "Ownership %": 0.35, "Investment": 25_000_000},
-        {"Shareholder": "Series A fund", "Ownership %": 0.4, "Investment": 80_000_000},
+        {
+            "Shareholder": "Founders",
+            "Security": "Common",
+            "Seniority": 3,
+            "Ownership %": 0.35,
+            "Investment": 30_000_000,
+            "Liquidation preference (x)": 0.0,
+            "Participating preferred": False,
+        },
+        {
+            "Shareholder": "Growth fund",
+            "Security": "Preferred",
+            "Seniority": 1,
+            "Ownership %": 0.65,
+            "Investment": 55_000_000,
+            "Liquidation preference (x)": 1.0,
+            "Participating preferred": False,
+        },
     ]
     return pd.DataFrame(data)
 
 
 def _blank_shareholder_row(df: pd.DataFrame) -> Dict:
-    return {"Shareholder": "New investor", "Ownership %": 0.05, "Investment": 0.0}
+    return {
+        "Shareholder": "New investor",
+        "Security": "Preferred",
+        "Seniority": 1,
+        "Ownership %": 0.05,
+        "Investment": 0.0,
+        "Liquidation preference (x)": 1.0,
+        "Participating preferred": False,
+    }
 
 
 def _default_market_sizes_table() -> pd.DataFrame:
     data = [
-        {"Segment": "Global vaccine market", "Value": 80_000_000_000},
-        {"Segment": "Target indication", "Value": 12_000_000_000},
+        {"Segment": "Crop protection biologics", "Value": 2_750_000_000},
+        {"Segment": "Soil and yield enhancement platforms", "Value": 3_750_000_000},
     ]
     return pd.DataFrame(data)
 
@@ -448,25 +784,25 @@ def _default_vaccine_development_table(first_year: int = 2024) -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Stage": "Phase II",
-            "Success Probability %": 35.0,
+            "Stage": "Approval",
+            "Success Probability %": 100.0,
             "Consolidation": True,
-            "First year forecast": first_year + 2,
-            "Time to market": 4,
-            "Market entry year": first_year + 6,
-            "Patent duration years": 15,
-            "End patent year": first_year + 20,
+            "First year forecast": first_year,
+            "Time to market": 1,
+            "Market entry year": first_year + 1,
+            "Patent duration years": 18,
+            "End patent year": first_year + 18,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Stage": "Phase III",
-            "Success Probability %": 55.0,
+            "Stage": "Commercial",
+            "Success Probability %": 100.0,
             "Consolidation": True,
-            "First year forecast": first_year + 1,
-            "Time to market": 2,
-            "Market entry year": first_year + 3,
-            "Patent duration years": 17,
+            "First year forecast": first_year,
+            "Time to market": 0,
+            "Market entry year": first_year,
+            "Patent duration years": 20,
             "End patent year": first_year + 19,
         },
     ]
@@ -478,20 +814,20 @@ def _default_market_size_estimation_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Market size (# customers)": 5_000_000,
-            "Average spend (USD/customer)": 120,
-            "Serviceable Available Market (% TAM)": 60.0,
-            "Serviceable Available Market (% Market size)": 45.0,
-            "Serviceable Obtainable Market (%)": 25.0,
+            "Market size (# customers)": 7_000_000,
+            "Average spend (USD/customer)": 65,
+            "Serviceable Available Market (% TAM)": 80.0,
+            "Serviceable Available Market (% Market size)": 70.0,
+            "Serviceable Obtainable Market (%)": 55.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Market size (# customers)": 8_000_000,
-            "Average spend (USD/customer)": 150,
-            "Serviceable Available Market (% TAM)": 55.0,
-            "Serviceable Available Market (% Market size)": 35.0,
-            "Serviceable Obtainable Market (%)": 18.0,
+            "Market size (# customers)": 6_500_000,
+            "Average spend (USD/customer)": 75,
+            "Serviceable Available Market (% TAM)": 80.0,
+            "Serviceable Available Market (% Market size)": 75.0,
+            "Serviceable Obtainable Market (%)": 70.0,
         },
     ]
     return pd.DataFrame(data)
@@ -502,17 +838,17 @@ def _default_vaccine_revenue_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Patent customers per year": 3_000_000,
-            "Patent price (USD/customer)": 50,
-            "Post patent customer adj. %": 80.0,
-            "Post patent price adj. %": 85.0,
+            "Patent customers per year": 4_000_000,
+            "Patent price (USD/customer)": 55,
+            "Post patent customer adj. %": 90.0,
+            "Post patent price adj. %": 91.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Patent customers per year": 4_200_000,
-            "Patent price (USD/customer)": 65,
-            "Post patent customer adj. %": 75.0,
+            "Patent customers per year": 5_000_000,
+            "Patent price (USD/customer)": 60,
+            "Post patent customer adj. %": 100.0,
             "Post patent price adj. %": 80.0,
         },
     ]
@@ -525,13 +861,13 @@ def _default_royalty_table() -> pd.DataFrame:
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
             "Monetization model": "Product Sale",
-            "Royalty rate (%)": 5.0,
+            "Royalty rate (%)": 0.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Monetization model": "Licensing",
-            "Royalty rate (%)": 6.5,
+            "Monetization model": "Product Sale",
+            "Royalty rate (%)": 0.0,
         },
     ]
     return pd.DataFrame(data)
@@ -542,26 +878,26 @@ def _default_market_share_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Relevant market type": "Global row crops",
-            "Relevant market size (USD)": 4_500_000_000,
-            "Revenue target - patent %": 12.0,
-            "Revenue target - post %": 8.0,
-            "Market share patent %": 6.0,
-            "Market share post %": 4.0,
-            "Market growth %": 5.0,
-            "Sales growth %": 8.0,
+            "Relevant market type": "Crop protection biologics",
+            "Relevant market size (USD)": 2_750_000_000,
+            "Revenue target - patent %": 8.0,
+            "Revenue target - post %": 6.55,
+            "Market share patent %": 5.5,
+            "Market share post %": 4.5,
+            "Market growth %": 1.5,
+            "Sales growth %": 3.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Relevant market type": "Specialty crops",
-            "Relevant market size (USD)": 3_200_000_000,
-            "Revenue target - patent %": 15.0,
-            "Revenue target - post %": 10.0,
-            "Market share patent %": 7.5,
-            "Market share post %": 5.0,
-            "Market growth %": 4.0,
-            "Sales growth %": 6.0,
+            "Relevant market type": "Soil and yield enhancement platforms",
+            "Relevant market size (USD)": 3_750_000_000,
+            "Revenue target - patent %": 8.0,
+            "Revenue target - post %": 6.4,
+            "Market share patent %": 6.0,
+            "Market share post %": 4.8,
+            "Market growth %": 1.5,
+            "Sales growth %": 3.0,
         },
     ]
     return pd.DataFrame(data)
@@ -572,28 +908,28 @@ def _default_vaccine_cost_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "COGS patent % of sales": 32.0,
-            "COGS post % of sales": 48.0,
-            "Marketing annual % of sales": 18.0,
-            "Marketing launch cost (USD)": 25_000_000,
-            "Indirect staff cost (USD)": 8_500_000,
-            "Electricity (USD)": 1_800_000,
-            "Depreciation (USD)": 3_200_000,
+            "COGS patent % of sales": 26.0,
+            "COGS post % of sales": 32.0,
+            "Marketing annual % of sales": 12.0,
+            "Marketing launch cost (USD)": 10_000_000,
+            "Indirect staff cost (USD)": 10_000_000,
+            "Electricity (USD)": 1_600_000,
+            "Depreciation (USD)": 4_000_000,
             "Interest & amortization (USD)": 2_000_000,
-            "Royalties cost % of sales": 4.0,
+            "Royalties cost % of sales": 0.0,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "COGS patent % of sales": 28.0,
-            "COGS post % of sales": 45.0,
-            "Marketing annual % of sales": 16.0,
-            "Marketing launch cost (USD)": 30_000_000,
-            "Indirect staff cost (USD)": 6_750_000,
-            "Electricity (USD)": 1_400_000,
-            "Depreciation (USD)": 2_750_000,
-            "Interest & amortization (USD)": 1_500_000,
-            "Royalties cost % of sales": 3.5,
+            "COGS patent % of sales": 24.0,
+            "COGS post % of sales": 30.0,
+            "Marketing annual % of sales": 11.0,
+            "Marketing launch cost (USD)": 8_000_000,
+            "Indirect staff cost (USD)": 12_000_000,
+            "Electricity (USD)": 1_500_000,
+            "Depreciation (USD)": 4_500_000,
+            "Interest & amortization (USD)": 3_000_000,
+            "Royalties cost % of sales": 0.0,
         },
     ]
     return pd.DataFrame(data)
@@ -604,18 +940,18 @@ def _default_vaccine_rd_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Cost accounting (capitalisation)": "50% capitalised",
-            "Pre-GTM spent to date (USD)": 120_000_000,
-            "Pre-GTM remaining (USD)": 60_000_000,
-            "Post-GTM annual cost (USD/year)": 12_000_000,
+            "Cost accounting (capitalisation)": "55% capitalised",
+            "Pre-GTM spent to date (USD)": 60_000_000,
+            "Pre-GTM remaining (USD)": 80_000_000,
+            "Post-GTM annual cost (USD/year)": 6_000_000,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Cost accounting (capitalisation)": "40% capitalised",
-            "Pre-GTM spent to date (USD)": 80_000_000,
-            "Pre-GTM remaining (USD)": 40_000_000,
-            "Post-GTM annual cost (USD/year)": 9_500_000,
+            "Cost accounting (capitalisation)": "45% capitalised",
+            "Pre-GTM spent to date (USD)": 150_000_000,
+            "Pre-GTM remaining (USD)": 0.0,
+            "Post-GTM annual cost (USD/year)": 4_000_000,
         },
     ]
     return pd.DataFrame(data)
@@ -626,34 +962,34 @@ def _default_vaccine_capex_table() -> pd.DataFrame:
         {
             "ID_vaccine": "VAC-001",
             "Vaccine name": "AgSeed-101",
-            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 35_000_000,
-            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 3_500_000,
-            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 12_000_000,
-            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 900_000,
-            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 6_000_000,
-            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 800_000,
-            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 4_000_000,
-            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 500_000,
-            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 15_000_000,
-            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 1_200_000,
-            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 8_000_000,
-            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 700_000,
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 8_000_000,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 700_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 4_000_000,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 350_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 2_000_000,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 200_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 1_500_000,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 150_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 5_500_000,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 600_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 4_000_000,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 500_000,
         },
         {
             "ID_vaccine": "VAC-002",
             "Vaccine name": "BioYield-Plus",
-            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 22_000_000,
-            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 2_800_000,
-            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 8_000_000,
-            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 650_000,
-            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 4_000_000,
-            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 550_000,
-            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 3_000_000,
-            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 400_000,
-            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 9_000_000,
-            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 900_000,
-            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 5_000_000,
-            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 450_000,
+            "Manufacturing & Scale-up Assets (Pre-GTM, USD)": 0.0,
+            "Manufacturing & Scale-up Assets (Post-GTM, USD/year)": 600_000,
+            "Quality & Compliance Infrastructure (Pre-GTM, USD)": 0.0,
+            "Quality & Compliance Infrastructure (Post-GTM, USD/year)": 250_000,
+            "Cold-chain / Distribution Assets (Pre-GTM, USD)": 0.0,
+            "Cold-chain / Distribution Assets (Post-GTM, USD/year)": 150_000,
+            "IT / Data / Digital Infrastructure (Pre-GTM, USD)": 0.0,
+            "IT / Data / Digital Infrastructure (Post-GTM, USD/year)": 150_000,
+            "Facility Build-out / Leasehold Improvements (Pre-GTM, USD)": 0.0,
+            "Facility Build-out / Leasehold Improvements (Post-GTM, USD/year)": 500_000,
+            "Process Development & Tech-Transfer Assets (Pre-GTM, USD)": 0.0,
+            "Process Development & Tech-Transfer Assets (Post-GTM, USD/year)": 350_000,
         },
     ]
     return pd.DataFrame(data)
@@ -925,6 +1261,10 @@ def _format_row_label(
 
 def _pending_selection_key(select_key: str) -> str:
     return f"{select_key}_pending"
+
+
+def _panel_state_key(section_key: str, panel_name: str) -> str:
+    return f"{section_key}_{panel_name}_open"
 
 
 def _set_pending_selection(select_key: str, value: Optional[object]) -> None:
@@ -1230,6 +1570,7 @@ def _widget_value(label: str, value, key: str):
     bool_like = isinstance(value, (bool, np.bool_)) or label_lower in {
         "include_in_consolidation",
         "consolidation",
+        "participating preferred",
     }
     if bool_like:
         return st.checkbox(label, value=bool(value), key=key)
@@ -1308,7 +1649,7 @@ def _edit_selected_row(
     )
     if edited_values is not None:
         for col, val in edited_values.items():
-            df.at[selected_idx, col] = val
+            _set_dataframe_cell(df, selected_idx, col, val)
         st.session_state[section_key] = df
         st.success("Row updated")
     return st.session_state.get(section_key, df)
@@ -1338,6 +1679,7 @@ def _add_row_via_form(
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         st.session_state[section_key] = df
         _set_pending_selection(select_key, _row_identifier(df, df.index[-1], id_column))
+        st.session_state[_panel_state_key(section_key, "add")] = False
         st.success("Row added")
     return st.session_state.get(section_key, df)
 
@@ -1381,15 +1723,47 @@ def _render_product_assumption_table(
     df = _ensure_table_state(session_key, default_factory).copy()
     select_key = f"{session_key}_row_select"
     selected_idx = _render_row_selector(df, select_key, id_column, name_column)
+    edit_panel_key = _panel_state_key(session_key, "edit")
+    add_panel_key = _panel_state_key(session_key, "add")
+    increment_panel_key = _panel_state_key(session_key, "increment")
 
     action_cols = st.columns(4)
     with action_cols[0]:
-        df = _edit_selected_row(session_key, df, selected_idx)
+        edit_open = st.checkbox(
+            "Edit",
+            value=bool(st.session_state.get(edit_panel_key, False)),
+            key=edit_panel_key,
+            help="Open the focused row editor for the selected row.",
+        )
     with action_cols[1]:
-        df = _add_row_via_form(session_key, df, blank_row_factory, select_key, id_column)
+        add_open = st.checkbox(
+            "Add Row",
+            value=bool(st.session_state.get(add_panel_key, False)),
+            key=add_panel_key,
+            help="Open the add-row form.",
+        )
     with action_cols[2]:
         df = _remove_selected_row(session_key, df, selected_idx, select_key, id_column)
     with action_cols[3]:
+        increment_open = st.checkbox(
+            "Yearly Increment",
+            value=bool(st.session_state.get(increment_panel_key, False)),
+            key=increment_panel_key,
+            help="Open the yearly increment helper for the selected row.",
+        )
+
+    if edit_open:
+        st.caption("Focused row editor: update one selected row at a time.")
+        df = _edit_selected_row(session_key, df, selected_idx)
+    else:
+        st.caption("Tick `Edit` to open the focused row editor for the selected row.")
+
+    if add_open:
+        st.caption("Add a new row with all fields visible before it is inserted into the table.")
+        df = _add_row_via_form(session_key, df, blank_row_factory, select_key, id_column)
+
+    if increment_open:
+        st.caption("Apply a fixed yearly change or compounded growth from the selected row onward.")
         df = _apply_yearly_increment(session_key, df, selected_idx)
 
     df = st.session_state.get(session_key, df)
@@ -1796,6 +2170,7 @@ def _stage_capex_weights_from_row(row: pd.Series) -> Dict[str, float]:
 
 
 def _compute_time_to_market_from_durations(stage: str, durations: Dict[str, int]) -> Optional[int]:
+    stage = normalize_stage_label(stage)
     if stage not in STAGE_SEQUENCE or not durations:
         return None
     stage_idx = STAGE_SEQUENCE.index(stage)
@@ -1811,7 +2186,8 @@ def _stage_mapping_row(mapping_df: pd.DataFrame, stage: str) -> Optional[pd.Seri
         return None
     if "Stage" not in mapping_df.columns:
         return None
-    matches = mapping_df[mapping_df["Stage"].astype(str) == str(stage)]
+    normalized_stage = normalize_stage_label(stage)
+    matches = mapping_df[mapping_df["Stage"].astype(str).map(normalize_stage_label) == normalized_stage]
     if matches.empty:
         return None
     return matches.iloc[0]
@@ -1870,17 +2246,14 @@ def _stage_milestones_from_row(
         amount = row.get(col)
         if pd.isna(amount) or float(amount) == 0.0:
             continue
-        transition_key = None
-        if stage != "Commercial":
-            next_idx = STAGE_SEQUENCE.index(stage) + 1
-            if next_idx < len(STAGE_SEQUENCE):
-                transition_key = f"{stage}->{STAGE_SEQUENCE[next_idx]}"
-        probability = transitions.get(transition_key, 1.0) if transition_key else 1.0
         milestone = Milestone(
             name=f"{stage} completion milestone",
             year_offset=cumulative_years,
             amount=float(amount),
-            probability=float(probability),
+            # Stage-transition schedules already risk-adjust the product cash flows
+            # over time, so generated milestones should not embed the same
+            # transition probability a second time.
+            probability=1.0,
             timing="from_start",
         )
         milestones.append(milestone)
@@ -1926,12 +2299,67 @@ def _apply_stage_schedule_defaults(
     return updated
 
 
+def _stage_mapping_editor_token(value: str) -> str:
+    token = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+    return token or "field"
+
+
+def _stage_mapping_input_key(stage: str, revision: int, column: str) -> str:
+    return (
+        "stage_mapping_editor_"
+        f"{_stage_mapping_editor_token(stage)}_{revision}_{_stage_mapping_editor_token(column)}"
+    )
+
+
+def _build_stage_mapping_candidate_row(
+    base_row: pd.Series,
+    updates: Dict[str, Any],
+) -> pd.Series:
+    candidate = base_row.copy()
+    for col, value in updates.items():
+        candidate.loc[col] = value
+
+    stage_value = normalize_stage_label(candidate.get("Stage")) or normalize_stage_label(base_row.get("Stage"))
+    if stage_value:
+        candidate.loc["Stage"] = stage_value
+
+    derived_time = _compute_time_to_market_from_durations(
+        str(candidate.get("Stage") or ""),
+        _stage_duration_years_from_row(candidate),
+    )
+    if derived_time is None:
+        derived_time = max(0, int(_as_float(candidate.get("Time to market (years)"), 0.0)))
+    candidate.loc["Time to market (years)"] = int(derived_time)
+    return candidate
+
+
+def _stage_mapping_row_warnings(
+    mapping_df: pd.DataFrame,
+    row_idx: int,
+    candidate_row: pd.Series,
+) -> List[str]:
+    preview_df = mapping_df.copy()
+    for col in preview_df.columns:
+        if col in candidate_row.index:
+            preview_df.at[row_idx, col] = candidate_row.get(col)
+
+    stage_label = normalize_stage_label(candidate_row.get("Stage"))
+    if not stage_label:
+        return _stage_mapping_sanity_checks(preview_df)
+
+    prefix = f"{stage_label}:"
+    return [warning for warning in _stage_mapping_sanity_checks(preview_df) if warning.startswith(prefix)]
+
+
 def _default_debt_schedule(first_year: int, n_years: int) -> pd.DataFrame:
     years = list(range(int(first_year), int(first_year) + int(n_years)))
+    seed_drawdowns = [60_000_000.0, 20_000_000.0, 20_000_000.0, 20_000_000.0]
+    drawdowns = seed_drawdowns[: len(years)] + [0.0] * max(0, len(years) - len(seed_drawdowns))
     return pd.DataFrame(
         {
             "Year": years,
-            "Debt drawdowns": [0.0] * len(years),
+            "Debt drawdowns": drawdowns,
+            "Manual debt repayments": [0.0] * len(years),
         }
     )
 
@@ -1944,11 +2372,61 @@ def _blank_debt_schedule_row(df: pd.DataFrame, first_year: int, n_years: int) ->
     return {
         "Year": year,
         "Debt drawdowns": 0.0,
+        "Manual debt repayments": 0.0,
     }
 
 
 def _coerce_numeric(series: pd.Series, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(default)
+
+
+def _set_dataframe_cell(df: pd.DataFrame, row_idx: int, column_name: str, value: object) -> None:
+    dtype = df[column_name].dtype
+    if value is None and not pd.api.types.is_object_dtype(dtype):
+        df[column_name] = df[column_name].astype("object")
+    elif isinstance(value, str) and pd.api.types.is_numeric_dtype(dtype):
+        df[column_name] = df[column_name].astype("object")
+
+    try:
+        df.at[row_idx, column_name] = value
+    except (TypeError, ValueError):
+        df[column_name] = df[column_name].astype("object")
+        df.at[row_idx, column_name] = value
+
+
+def _coerce_frame_column(df: pd.DataFrame, column: str, default: float = 0.0) -> pd.Series:
+    if column in df.columns:
+        return pd.to_numeric(df[column], errors="coerce").fillna(default)
+    return pd.Series(default, index=df.index, dtype=float)
+
+
+def _align_table_to_template(df: Optional[pd.DataFrame], template: pd.DataFrame) -> pd.DataFrame:
+    if df is None:
+        return template.copy()
+    aligned = df.copy()
+    if aligned.empty and not list(aligned.columns):
+        return template.copy()
+    for col in template.columns:
+        if col not in aligned.columns:
+            default_value = template[col].iloc[0] if not template.empty else ""
+            aligned[col] = default_value
+    ordered_cols = list(template.columns) + [col for col in aligned.columns if col not in template.columns]
+    return aligned[ordered_cols]
+
+
+def _roll_cash_balances(cash_flow_df: pd.DataFrame, opening_cash: float = 0.0) -> pd.DataFrame:
+    updated = cash_flow_df.copy()
+    net_cash = _coerce_frame_column(updated, "Net change in cash")
+    beginning_cash: List[float] = []
+    ending_cash: List[float] = []
+    current_cash = float(opening_cash or 0.0)
+    for year in updated.index:
+        beginning_cash.append(current_cash)
+        current_cash += float(net_cash.loc[year])
+        ending_cash.append(current_cash)
+    updated["Beginning cash balance"] = pd.Series(beginning_cash, index=updated.index)
+    updated["Ending cash balance"] = pd.Series(ending_cash, index=updated.index)
+    return updated
 
 
 def _recompute_vaccine_sales_implied_revenue(df: pd.DataFrame) -> pd.DataFrame:
@@ -1988,8 +2466,13 @@ def _render_schedule_editor(title: str, session_key: str) -> pd.DataFrame:
         schedule_df = schedule_df.iloc[:-1]
         st.session_state[session_key] = schedule_df
 
-    with toolbar_cols[3]:
-        with st.expander("Yearly Increment Helper"):
+    helper_open = toolbar_cols[3].toggle(
+        "Yearly Increment Helper",
+        value=False,
+        key=f"{session_key}_helper_open",
+    )
+    if helper_open:
+        with _section_block("Yearly Increment Helper", heading_level=5):
             def _filter(df: pd.DataFrame, _selected_id: Optional[str], start_year: int) -> pd.Series:
                 return pd.to_numeric(df["Year offset"], errors="coerce").fillna(0).astype(int) >= int(start_year)
 
@@ -2069,10 +2552,272 @@ def _validate_product_df(df: pd.DataFrame) -> pd.DataFrame:
     return validated
 
 
+def _normalized_label(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _as_probability(value: Any) -> float:
+    if value is None or pd.isna(value):
+        return 0.0
+    prob = float(value)
+    if prob > 1.0:
+        prob = prob / 100.0
+    return max(0.0, min(1.0, prob))
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return float(default)
+    return float(numeric)
+
+
+def _capitalization_ratio_from_label(value: Any) -> float:
+    text = str(value or "").strip().lower()
+    if not text:
+        return 0.5
+    match = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
+    if match:
+        return max(0.0, min(1.0, float(match.group(1)) / 100.0))
+    if "expense" in text:
+        return 0.0
+    if "capital" in text:
+        return 1.0
+    return 0.5
+
+
+def _find_detail_row(df: Optional[pd.DataFrame], vaccine_name: str) -> Optional[pd.Series]:
+    if df is None or df.empty or "Vaccine name" not in df.columns:
+        return None
+    normalized = _normalized_label(vaccine_name)
+    matches = df[df["Vaccine name"].astype(str).map(_normalized_label) == normalized]
+    if matches.empty:
+        return None
+    return matches.iloc[0]
+
+
+def _detail_tables_from_state() -> Dict[str, pd.DataFrame]:
+    return {
+        "development": st.session_state.get("vaccine_development_table", pd.DataFrame()),
+        "market_size_estimation": st.session_state.get("market_size_estimation", pd.DataFrame()),
+        "revenue": st.session_state.get("vaccine_revenue_table", pd.DataFrame()),
+        "cost": st.session_state.get("vaccine_cost_table", pd.DataFrame()),
+        "rd": st.session_state.get("vaccine_rd_table", pd.DataFrame()),
+        "capex": st.session_state.get("vaccine_capex_table", pd.DataFrame()),
+        "royalty": st.session_state.get("vaccine_royalty_table", pd.DataFrame()),
+        "market_share": st.session_state.get("vaccine_market_share_table", pd.DataFrame()),
+    }
+
+
+def _apply_detail_assumption_overrides(
+    cleaned: Dict[str, Any],
+    detail_tables: Optional[Dict[str, pd.DataFrame]],
+) -> Dict[str, Any]:
+    if not detail_tables:
+        return cleaned
+
+    updated = dict(cleaned)
+    product_name = str(updated.get("name") or "").strip()
+    if not product_name:
+        return updated
+
+    development_row = _find_detail_row(detail_tables.get("development"), product_name)
+    market_size_row = _find_detail_row(detail_tables.get("market_size_estimation"), product_name)
+    revenue_row = _find_detail_row(detail_tables.get("revenue"), product_name)
+    cost_row = _find_detail_row(detail_tables.get("cost"), product_name)
+    rd_row = _find_detail_row(detail_tables.get("rd"), product_name)
+    capex_row = _find_detail_row(detail_tables.get("capex"), product_name)
+    royalty_row = _find_detail_row(detail_tables.get("royalty"), product_name)
+    market_share_row = _find_detail_row(detail_tables.get("market_share"), product_name)
+
+    if development_row is not None:
+        if pd.notna(development_row.get("Stage")):
+            updated["stage"] = str(development_row.get("Stage"))
+        if pd.notna(development_row.get("Success Probability %")):
+            updated["success_prob"] = _as_probability(development_row.get("Success Probability %"))
+        if pd.notna(development_row.get("Consolidation")):
+            updated["include_in_consolidation"] = bool(development_row.get("Consolidation"))
+        if pd.notna(development_row.get("Time to market")):
+            updated["time_to_market"] = max(0, int(_as_float(development_row.get("Time to market"))))
+        if pd.notna(development_row.get("Patent duration years")):
+            updated["patent_years"] = max(1, int(_as_float(development_row.get("Patent duration years"))))
+
+    patient_population_patent = float(updated.get("patient_population_patent") or 0.0)
+    penetration_patent = float(updated.get("penetration_patent") or 0.0)
+
+    if market_size_row is not None:
+        tam_customers = _as_float(market_size_row.get("Market size (# customers)"))
+        sam_pct = _as_probability(market_size_row.get("Serviceable Available Market (% TAM)"))
+        serviceable_customers = tam_customers * sam_pct if tam_customers > 0 and sam_pct > 0 else 0.0
+        if serviceable_customers > 0:
+            patient_population_patent = serviceable_customers
+            updated["patient_population_patent"] = serviceable_customers
+            updated["patient_population_post"] = serviceable_customers
+
+    if revenue_row is not None:
+        patent_customers = _as_float(revenue_row.get("Patent customers per year"))
+        patent_price = _as_float(revenue_row.get("Patent price (USD/customer)"))
+        post_customer_adj = _as_probability(revenue_row.get("Post patent customer adj. %"))
+        post_price_adj = _as_probability(revenue_row.get("Post patent price adj. %"))
+        post_patent_customers = revenue_row.get("Post patent customers per year")
+        if pd.isna(post_patent_customers):
+            post_patent_customers = patent_customers * (post_customer_adj or 1.0)
+        post_patent_price = revenue_row.get("Post patent price (USD/customer)")
+        if pd.isna(post_patent_price):
+            post_patent_price = patent_price * (post_price_adj or 1.0)
+        post_patent_customers = _as_float(post_patent_customers)
+        post_patent_price = _as_float(post_patent_price)
+
+        if patient_population_patent > 0 and patent_customers > 0:
+            penetration_patent = min(1.0, patent_customers / patient_population_patent)
+        else:
+            penetration_patent = 1.0 if patent_customers > 0 and patent_price > 0 else 0.0
+
+        updated["patient_population_patent"] = patient_population_patent or patent_customers
+        updated["price_per_patient_patent"] = patent_price
+        updated["penetration_patent"] = penetration_patent
+        updated["patient_population_post"] = post_patent_customers
+        updated["price_per_patient_post"] = post_patent_price
+        updated["penetration_post"] = 1.0 if post_patent_customers > 0 and post_patent_price > 0 else 0.0
+        updated["patent_revenue_target"] = patent_customers * patent_price
+        updated["post_patent_revenue_target"] = post_patent_customers * post_patent_price
+
+    if market_share_row is not None:
+        market_growth = _as_probability(market_share_row.get("Market growth %"))
+        sales_growth = _as_probability(market_share_row.get("Sales growth %"))
+        if sales_growth > 0:
+            updated["market_growth_patent"] = sales_growth
+        if market_growth > 0 or pd.notna(market_share_row.get("Market growth %")):
+            updated["market_growth_post"] = market_growth
+        if float(updated.get("patent_revenue_target") or 0.0) <= 0.0 and pd.notna(
+            market_share_row.get("Revenue target patent (USD)")
+        ):
+            updated["patent_revenue_target"] = _as_float(market_share_row.get("Revenue target patent (USD)"))
+        if float(updated.get("post_patent_revenue_target") or 0.0) <= 0.0 and pd.notna(
+            market_share_row.get("Revenue target post (USD)")
+        ):
+            updated["post_patent_revenue_target"] = _as_float(market_share_row.get("Revenue target post (USD)"))
+
+    if cost_row is not None:
+        updated["cogs_patent"] = _as_probability(cost_row.get("COGS patent % of sales"))
+        updated["cogs_post"] = _as_probability(cost_row.get("COGS post % of sales"))
+        updated["sales_marketing_pct"] = _as_probability(cost_row.get("Marketing annual % of sales"))
+        updated["royalty_pct"] = _as_probability(cost_row.get("Royalties cost % of sales"))
+        gna_total = _as_float(cost_row.get("G&A total (USD)"))
+        revenue_base = float(updated.get("patent_revenue_target") or 0.0)
+        if gna_total > 0 and revenue_base > 0:
+            updated["gna_pct"] = min(1.0, gna_total / revenue_base)
+
+    if rd_row is not None:
+        updated["rd_remaining_pre_launch"] = float(
+            _as_float(rd_row.get("Pre-GTM remaining (USD)"))
+        )
+        updated["rd_annual_post_launch"] = float(
+            _as_float(rd_row.get("Post-GTM annual cost (USD/year)"))
+        )
+        updated["rd_capitalization_ratio"] = _capitalization_ratio_from_label(
+            rd_row.get("Cost accounting (capitalisation)")
+        )
+
+    if capex_row is not None:
+        updated["capex_remaining_pre_launch"] = float(
+            _as_float(capex_row.get("Total Pre-GTM capex (USD)"))
+        )
+        updated["capex_annual_post_launch"] = float(
+            _as_float(capex_row.get("Total Post-GTM capex (USD/year)"))
+        )
+
+    if royalty_row is not None:
+        monetization_model = str(royalty_row.get("Monetization model") or "Product Sale").strip() or "Product Sale"
+        updated["commercialization_model"] = monetization_model
+        if monetization_model.lower() == "licensing":
+            patent_royalty_income = float(
+                _as_float(royalty_row.get("Royalty income (USD)"))
+            )
+            post_patent_revenue = float(
+                _as_float(royalty_row.get("Post patent revenue (USD)"))
+            )
+            royalty_rate = _as_probability(royalty_row.get("Royalty rate (%)"))
+            if patent_royalty_income > 0:
+                updated["patent_revenue_target"] = patent_royalty_income
+                updated["patient_population_patent"] = 0.0
+                updated["price_per_patient_patent"] = 0.0
+                updated["penetration_patent"] = 0.0
+            if post_patent_revenue > 0 and royalty_rate > 0:
+                updated["post_patent_revenue_target"] = post_patent_revenue * royalty_rate
+                updated["patient_population_post"] = 0.0
+                updated["price_per_patient_post"] = 0.0
+                updated["penetration_post"] = 0.0
+
+    stage_weights = updated.get("stage_cost_weights") or {}
+    rd_remaining = float(updated.get("rd_remaining_pre_launch") or 0.0)
+    if stage_weights and rd_remaining > 0:
+        current_stage = str(updated.get("stage") or "").strip()
+        if current_stage in STAGE_SEQUENCE:
+            remaining_stages = set(STAGE_SEQUENCE[STAGE_SEQUENCE.index(current_stage) : -1])
+        else:
+            remaining_stages = set(stage_weights.keys())
+        relevant_weights = {
+            stage: float(weight)
+            for stage, weight in stage_weights.items()
+            if stage in remaining_stages and float(weight) > 0
+        }
+        total_weight = sum(relevant_weights.values())
+        if total_weight > 0:
+            updated["trial_costs_by_phase"] = {
+                stage: rd_remaining * (weight / total_weight)
+                for stage, weight in relevant_weights.items()
+            }
+
+    return updated
+
+
+def _build_probability_preview(
+    product_df: pd.DataFrame,
+    model_cfg: ModelConfig,
+    stage_mapping: Optional[pd.DataFrame],
+    *,
+    overwrite_defaults: bool,
+    detail_tables: Optional[Dict[str, pd.DataFrame]],
+) -> pd.DataFrame:
+    def _probability_path_label(source: str) -> str:
+        if source == "stage_transitions":
+            return "Stage-transition path"
+        if source == "success_prob_stage_fallback":
+            return "Single success probability fallback"
+        return "Single success probability"
+
+    rows: List[Dict[str, Any]] = []
+    preview_records = _sanitize_product_records(
+        product_df,
+        stage_mapping=stage_mapping,
+        overwrite_defaults=overwrite_defaults,
+        detail_tables=detail_tables,
+    )
+    for record in preview_records:
+        try:
+            product = Product(ProductConfig(**record), model_cfg)
+        except Exception:
+            continue
+        rows.append(
+            {
+                "Product": record.get("name"),
+                "Stage": record.get("stage"),
+                "Probability source": _probability_path_label(product.probability_source()),
+                "Probability path used": _probability_path_label(product.probability_source()),
+                "Input success probability": float(record.get("success_prob", 0.0) or 0.0),
+                "Effective cumulative success probability": product.effective_success_probability(),
+                "Time to market (years)": int(record.get("time_to_market", 0) or 0),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _sanitize_product_records(
     df: pd.DataFrame,
     stage_mapping: Optional[pd.DataFrame] = None,
     overwrite_defaults: bool = False,
+    detail_tables: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> List[Dict]:
     records: List[Dict] = []
     cfg_fields = {f.name for f in fields(ProductConfig)}
@@ -2086,7 +2831,7 @@ def _sanitize_product_records(
             if isinstance(value, float) and np.isnan(value):
                 continue
             cleaned[key] = value
-        cleaned.setdefault("stage", "Unspecified")
+        cleaned["stage"] = normalize_stage_label(cleaned.get("stage")) or "Unspecified"
         cleaned.setdefault("success_prob", 0.5)
         cleaned.setdefault("include_in_consolidation", True)
         mapping_row = _stage_mapping_row(stage_mapping, cleaned.get("stage"))
@@ -2138,6 +2883,7 @@ def _sanitize_product_records(
             milestones = _stage_milestones_from_row(mapping_row, durations, transitions)
             if milestones:
                 cleaned["milestones"] = [asdict(milestone) for milestone in milestones]
+        cleaned = _apply_detail_assumption_overrides(cleaned, detail_tables)
         records.append(cleaned)
     return records
 
@@ -2147,11 +2893,13 @@ def _build_portfolio(
     model_cfg: ModelConfig,
     stage_mapping: Optional[pd.DataFrame] = None,
     overwrite_defaults: bool = False,
+    detail_tables: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> Portfolio | None:
     product_records = _sanitize_product_records(
         product_df,
         stage_mapping=stage_mapping,
         overwrite_defaults=overwrite_defaults,
+        detail_tables=detail_tables,
     )
     if not product_records:
         return None
@@ -2275,6 +3023,7 @@ def _compute_financial_statements(
             "Ending cash balance": ending_cash,
         }
     )
+    cash_flow_df = _roll_cash_balances(cash_flow_df, opening_cash=0.0)
 
     return perf_df, position_df, cash_flow_df
 
@@ -2953,6 +3702,8 @@ def _build_snapshot_from_result(
     cashflows = dcf["fcff"].tolist()
     if "terminal_value" in dcf.columns:
         cashflows[-1] += float(dcf["terminal_value"].fillna(0.0).iloc[-1])
+    if "working_capital_recovery" in dcf.columns:
+        cashflows[-1] += float(dcf["working_capital_recovery"].fillna(0.0).iloc[-1])
     irr = _compute_irr(cashflows)
     payback = _compute_payback_years(cons.index.tolist(), cashflows)
     capex_total = -float(cons["capex_cash"].sum()) if "capex_cash" in cons.columns else None
@@ -2967,11 +3718,23 @@ def _build_snapshot_from_result(
     if opex_available:
         opex_annual = -float(cons[opex_available].sum(axis=1).mean())
     revenue_annual = float(cons["revenue"].mean()) if "revenue" in cons.columns else None
+    dscr_min = None
+    financing_outputs = _build_financing_outputs(valuation_result, model_cfg)
+    lender_metrics = financing_outputs.get("lender_metrics", pd.DataFrame())
+    if isinstance(lender_metrics, pd.DataFrame) and not lender_metrics.empty and "DSCR" in lender_metrics.columns:
+        finite_dscr = (
+            pd.to_numeric(lender_metrics["DSCR"], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+        if not finite_dscr.empty:
+            dscr_min = float(finite_dscr.min())
+    financing_settings = _financing_settings_from_state()
     snapshot = {
         "currency": model_cfg.currency,
-        "npv": valuation_result.rnpv,
+        "npv": valuation_result.enterprise_value,
         "irr": irr,
-        "dscr_min": None,
+        "dscr_min": dscr_min,
         "payback_years": payback,
         "capex_total": capex_total,
         "opex_annual": opex_annual,
@@ -2980,12 +3743,71 @@ def _build_snapshot_from_result(
         "sensitivities": sensitivities or [],
         "assumptions": {
             "discount_rate": model_cfg.discount_rate,
+            "discount_timing": getattr(model_cfg, "discount_timing", "year_end"),
             "tax_rate": model_cfg.tax_rate,
             "working_capital_pct": model_cfg.working_capital_pct_sales,
-            "inflation_rate": getattr(model_cfg, "inflation_rate", None),
+            "terminal_method": getattr(model_cfg, "terminal_method", "exit_multiple"),
+            "perpetuity_growth_rate": getattr(model_cfg, "perpetuity_growth_rate", None),
+            "opening_nol_balance": getattr(model_cfg, "opening_nol_balance", 0.0),
+            "debt_interest_rate": financing_settings["interest_rate"],
+            "debt_repayment_mode": financing_settings["repayment_mode"],
+            "debt_target_dscr": financing_settings["target_dscr"],
+            "minimum_cash_reserve": financing_settings["minimum_cash_reserve"],
         },
     }
     return snapshot
+
+
+def _empty_financial_snapshot(currency: str = "USD") -> dict:
+    return {
+        "currency": currency,
+        "npv": None,
+        "irr": None,
+        "dscr_min": None,
+        "payback_years": None,
+        "capex_total": None,
+        "opex_annual": None,
+        "revenue_annual": None,
+        "scenarios": [],
+        "sensitivities": [],
+        "assumptions": {},
+    }
+
+
+def _default_rag_advisory_inputs() -> dict:
+    return {
+        "scenarios": [],
+        "notes": "",
+        "workbook_hash": None,
+    }
+
+
+def _build_bankable_snapshot_payload(
+    project_id: str,
+    model_cfg: Optional[ModelConfig],
+    valuation_result: Optional[ValuationResult],
+    portfolio: Optional[Portfolio],
+    *,
+    workbook_hash: Optional[str] = None,
+    advisory_inputs: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    snapshot_source = "live_model_only" if model_cfg is not None and valuation_result is not None else "unavailable"
+    locked_snapshot = _empty_financial_snapshot(
+        currency=getattr(model_cfg, "currency", "USD") if model_cfg is not None else "USD"
+    )
+    if snapshot_source == "live_model_only":
+        locked_snapshot = _build_snapshot_from_result(
+            model_cfg,
+            valuation_result,
+            scenarios=_default_scenario_pack(portfolio),
+        )
+    return {
+        "project_id": project_id,
+        "financial_snapshot": locked_snapshot,
+        "workbook_hash": workbook_hash,
+        "snapshot_source": snapshot_source,
+        "advisory_inputs": dict(advisory_inputs or {}),
+    }
 
 
 def _default_scenario_pack(portfolio: Optional[Portfolio]) -> List[dict]:
@@ -3140,6 +3962,8 @@ def _build_financial_excel(
     position_df: pd.DataFrame,
     cash_flow_df: pd.DataFrame,
     model_cfg: Optional[ModelConfig] = None,
+    lender_metrics: Optional[pd.DataFrame] = None,
+    investor_waterfall: Optional[pd.DataFrame] = None,
 ) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -3147,6 +3971,10 @@ def _build_financial_excel(
         perf_df.to_excel(writer, sheet_name="Financial performance")
         position_df.to_excel(writer, sheet_name="Financial position")
         cash_flow_df.to_excel(writer, sheet_name="Cash flows")
+        if lender_metrics is not None and not lender_metrics.empty:
+            lender_metrics.to_excel(writer, sheet_name="Debt metrics")
+        if investor_waterfall is not None and not investor_waterfall.empty:
+            investor_waterfall.to_excel(writer, sheet_name="Investor waterfall", index=False)
         dashboard_cols = [col for col in ["revenue", "ebitda", "fcff_after_wc"] if col in cons.columns]
         dashboard_df = cons[dashboard_cols].copy()
         dashboard_df.to_excel(writer, sheet_name="Dashboard")
@@ -3194,6 +4022,10 @@ def _build_financial_excel(
         }.items():
             ws = workbook[name]
             _format_excel_sheet(ws, df)
+        if lender_metrics is not None and not lender_metrics.empty:
+            _format_excel_sheet(workbook["Debt metrics"], lender_metrics)
+        if investor_waterfall is not None and not investor_waterfall.empty:
+            _format_excel_table(workbook["Investor waterfall"], investor_waterfall, start_row=1)
 
         if not analytics_df.empty:
             ws = workbook["Advanced analytics"]
@@ -3231,6 +4063,18 @@ def _build_financial_excel(
                 data_max_col=1 + analytics_df.shape[1],
                 data_max_row=max_row,
                 anchor="H2",
+            )
+
+        if lender_metrics is not None and not lender_metrics.empty and "DSCR" in lender_metrics.columns:
+            ws = workbook["Debt metrics"]
+            max_row = lender_metrics.shape[0] + 1
+            _add_line_chart(
+                ws,
+                title="Debt Coverage",
+                data_min_col=2,
+                data_max_col=min(4, 1 + lender_metrics.shape[1]),
+                data_max_row=max_row,
+                anchor="J2",
             )
 
         if not scenario_df.empty:
@@ -3878,16 +4722,27 @@ def _apply_cash_flow_assumptions(
         + updated["Net cash from investing"]
         + updated["Net cash from financing"]
     )
-    updated["Beginning cash balance"] = pd.Series(beginning_cash, index=years)
-    updated["Ending cash balance"] = beginning_cash + updated["Net change in cash"].cumsum()
+    return _roll_cash_balances(updated, opening_cash=beginning_cash)
 
-    return updated
+
+def _financing_settings_from_state() -> Dict[str, object]:
+    return {
+        "interest_rate": float(st.session_state.get("debt_interest_rate", 0.0)),
+        "repayment_mode": str(st.session_state.get("debt_repayment_mode", "straight_line") or "straight_line"),
+        "grace_years": int(st.session_state.get("debt_grace_years", 0) or 0),
+        "target_dscr": float(st.session_state.get("debt_target_dscr", 1.3) or 1.3),
+        "minimum_cash_reserve": float(st.session_state.get("minimum_cash_reserve", 0.0) or 0.0),
+    }
 
 
 def _apply_debt_schedule(
     cash_flow_df: Optional[pd.DataFrame],
     debt_schedule: Optional[pd.DataFrame],
     interest_rate: float,
+    repayment_mode: str = "straight_line",
+    grace_years: int = 0,
+    target_dscr: float = 1.3,
+    minimum_cash_reserve: float = 0.0,
 ) -> Optional[pd.DataFrame]:
     if cash_flow_df is None or cash_flow_df.empty:
         return cash_flow_df
@@ -3899,6 +4754,8 @@ def _apply_debt_schedule(
     if "Year" not in schedule.columns:
         return cash_flow_df
 
+    template = _default_debt_schedule(int(updated.index.min()), len(updated.index))
+    schedule = _align_table_to_template(schedule, template)
     schedule["Year"] = pd.to_numeric(schedule["Year"], errors="coerce").astype("Int64")
     schedule = schedule.dropna(subset=["Year"]).set_index("Year")
     if schedule.index.has_duplicates:
@@ -3906,47 +4763,345 @@ def _apply_debt_schedule(
     schedule = schedule.reindex(updated.index).fillna(0.0)
 
     drawdowns = pd.to_numeric(schedule.get("Debt drawdowns", 0.0), errors="coerce").fillna(0.0)
+    manual_repayments = (
+        pd.to_numeric(schedule.get("Manual debt repayments", 0.0), errors="coerce").fillna(0.0)
+    )
+    net_ops = _coerce_frame_column(updated, "Net cash from operations")
+    net_investing = _coerce_frame_column(updated, "Net cash from investing")
+    equity_issuance = _coerce_frame_column(updated, "Equity issuance")
+    normalized_mode = str(repayment_mode or "straight_line").strip().lower()
+    grace_periods = max(int(grace_years or 0), 0)
+    reserve_floor = max(float(minimum_cash_reserve or 0.0), 0.0)
+    dscr_target = max(float(target_dscr or 1.3), 0.01)
+    opening_cash = 0.0
+    if "Beginning cash balance" in updated.columns and not updated.empty:
+        opening_cash = float(
+            pd.to_numeric(updated["Beginning cash balance"], errors="coerce").fillna(0.0).iloc[0]
+        )
     begin_balances = []
     principal_repayments = []
     interest_charges = []
     end_balances = []
+    beginning_cash = []
+    ending_cash = []
+    net_financing = []
+    net_change = []
     balance = 0.0
+    cash_balance = opening_cash
     years = list(updated.index)
     total_years = len(years)
     for idx, year in enumerate(years):
         draw = float(drawdowns.loc[year]) if year in drawdowns.index else 0.0
-        remaining_periods = max(total_years - idx, 1)
-        principal = (balance + draw) / remaining_periods
+        manual_principal = float(manual_repayments.loc[year]) if year in manual_repayments.index else 0.0
+        outstanding = max(balance + draw, 0.0)
         interest = balance * float(interest_rate)
-        end_balance = balance + draw - principal
+        if idx == total_years - 1:
+            desired_principal = outstanding
+        elif normalized_mode == "manual":
+            desired_principal = manual_principal
+        elif idx < grace_periods:
+            desired_principal = 0.0
+        elif normalized_mode == "bullet":
+            desired_principal = 0.0
+        elif normalized_mode == "sculpted_dscr":
+            cfads = float(net_ops.loc[year] + net_investing.loc[year])
+            max_service = max(cfads / dscr_target, 0.0)
+            desired_principal = max(max_service - interest, 0.0)
+        else:
+            remaining_periods = max(total_years - max(idx, grace_periods), 1)
+            desired_principal = outstanding / remaining_periods
+
+        cash_before_principal = (
+            cash_balance
+            + float(net_ops.loc[year])
+            + float(net_investing.loc[year])
+            + float(equity_issuance.loc[year])
+            + draw
+            - interest
+        )
+        principal = min(max(desired_principal, 0.0), outstanding)
+        if idx < total_years - 1:
+            principal = min(principal, max(cash_before_principal - reserve_floor, 0.0))
+        end_balance = max(outstanding - principal, 0.0)
+        financing_cash = float(equity_issuance.loc[year]) + draw - principal - interest
+        total_cash_change = float(net_ops.loc[year] + net_investing.loc[year] + financing_cash)
+        ending_cash_balance = cash_balance + total_cash_change
 
         begin_balances.append(balance)
         principal_repayments.append(principal)
         interest_charges.append(interest)
         end_balances.append(end_balance)
+        beginning_cash.append(cash_balance)
+        ending_cash.append(ending_cash_balance)
+        net_financing.append(financing_cash)
+        net_change.append(total_cash_change)
 
         balance = end_balance
+        cash_balance = ending_cash_balance
 
     updated["Debt drawdowns"] = pd.Series(drawdowns.values, index=updated.index)
+    updated["Manual debt repayments"] = pd.Series(manual_repayments.values, index=updated.index)
+    updated["Debt opening balance"] = pd.Series(begin_balances, index=updated.index)
     updated["Debt repayments"] = pd.Series(principal_repayments, index=updated.index)
     updated["Interest paid"] = pd.Series(interest_charges, index=updated.index)
-
-    updated["Net cash from financing"] = (
-        updated.get("Equity issuance", 0.0)
-        + updated.get("Debt drawdowns", 0.0)
-        - updated.get("Debt repayments", 0.0)
-        - updated.get("Interest paid", 0.0)
-    )
-    updated["Net change in cash"] = (
-        updated.get("Net cash from operations", 0.0)
-        + updated.get("Net cash from investing", 0.0)
-        + updated.get("Net cash from financing", 0.0)
-    )
-    if "Beginning cash balance" in updated.columns:
-        beginning_cash = updated["Beginning cash balance"].fillna(0.0)
-        updated["Ending cash balance"] = beginning_cash + updated["Net change in cash"].cumsum()
+    updated["Debt closing balance"] = pd.Series(end_balances, index=updated.index)
+    updated["Net cash from financing"] = pd.Series(net_financing, index=updated.index)
+    updated["Net change in cash"] = pd.Series(net_change, index=updated.index)
+    updated["Beginning cash balance"] = pd.Series(beginning_cash, index=updated.index)
+    updated["Ending cash balance"] = pd.Series(ending_cash, index=updated.index)
 
     return updated
+
+
+def _build_lender_metrics(
+    cash_flow_df: Optional[pd.DataFrame],
+    discount_rate: float,
+    minimum_cash_reserve: float = 0.0,
+    target_dscr: float = 1.3,
+) -> pd.DataFrame:
+    if cash_flow_df is None or cash_flow_df.empty:
+        return pd.DataFrame()
+
+    cfads = _coerce_frame_column(cash_flow_df, "Net cash from operations") + _coerce_frame_column(
+        cash_flow_df, "Net cash from investing"
+    )
+    opening_balance = _coerce_frame_column(cash_flow_df, "Debt opening balance")
+    closing_balance = _coerce_frame_column(cash_flow_df, "Debt closing balance")
+    principal = _coerce_frame_column(cash_flow_df, "Debt repayments")
+    interest = _coerce_frame_column(cash_flow_df, "Interest paid")
+    debt_service = principal + interest
+    ending_cash = _coerce_frame_column(cash_flow_df, "Ending cash balance")
+    reserve_headroom = ending_cash - float(minimum_cash_reserve or 0.0)
+    dscr = pd.Series(np.where(debt_service > 0, cfads / debt_service, np.nan), index=cash_flow_df.index)
+    discount = max(float(discount_rate or 0.0), 0.0)
+
+    active_debt = (opening_balance > 0) | (closing_balance > 0) | (debt_service > 0)
+    active_positions = np.flatnonzero(active_debt.to_numpy())
+    last_debt_period = int(active_positions[-1]) if len(active_positions) else -1
+
+    llcr_values: List[float] = []
+    plcr_values: List[float] = []
+    covenant_status: List[str] = []
+    cfads_values = cfads.astype(float).to_numpy()
+    opening_values = opening_balance.astype(float).to_numpy()
+
+    for idx, year in enumerate(cash_flow_df.index):
+        open_balance = opening_values[idx]
+        if open_balance <= 0:
+            llcr_values.append(np.nan)
+            plcr_values.append(np.nan)
+            covenant_status.append("N/A")
+            continue
+
+        future_cfads = cfads_values[idx:]
+        offsets = np.arange(len(future_cfads), dtype=float)
+        pv_project = float((future_cfads / np.power(1.0 + discount, offsets)).sum())
+        if last_debt_period >= idx:
+            debt_term_cfads = cfads_values[idx : last_debt_period + 1]
+            debt_offsets = np.arange(len(debt_term_cfads), dtype=float)
+            pv_debt_term = float((debt_term_cfads / np.power(1.0 + discount, debt_offsets)).sum())
+        else:
+            pv_debt_term = 0.0
+        llcr_values.append(pv_debt_term / open_balance)
+        plcr_values.append(pv_project / open_balance)
+
+        status_parts: List[str] = []
+        if not np.isnan(dscr.loc[year]) and float(dscr.loc[year]) < float(target_dscr):
+            status_parts.append("DSCR breach")
+        if float(reserve_headroom.loc[year]) < 0:
+            status_parts.append("Reserve breach")
+        covenant_status.append("Pass" if not status_parts else " + ".join(status_parts))
+
+    return pd.DataFrame(
+        {
+            "CFADS": cfads,
+            "Debt service": debt_service,
+            "DSCR": dscr,
+            "LLCR": pd.Series(llcr_values, index=cash_flow_df.index),
+            "PLCR": pd.Series(plcr_values, index=cash_flow_df.index),
+            "Minimum cash reserve": pd.Series(float(minimum_cash_reserve or 0.0), index=cash_flow_df.index),
+            "Cash reserve headroom": reserve_headroom,
+            "Covenant status": pd.Series(covenant_status, index=cash_flow_df.index),
+        }
+    )
+
+
+def _build_enterprise_to_equity_bridge(
+    valuation_result: Optional[ValuationResult],
+    cash_flow_df: Optional[pd.DataFrame],
+    planned_new_equity: float,
+) -> pd.DataFrame:
+    if valuation_result is None:
+        return pd.DataFrame()
+
+    enterprise_value = float(valuation_result.enterprise_value)
+    ending_cash = 0.0
+    debt_balance = 0.0
+    if cash_flow_df is not None and not cash_flow_df.empty:
+        if "Ending cash balance" in cash_flow_df.columns:
+            ending_cash = float(pd.to_numeric(cash_flow_df["Ending cash balance"], errors="coerce").fillna(0.0).iloc[-1])
+        if "Debt closing balance" in cash_flow_df.columns:
+            debt_balance = float(pd.to_numeric(cash_flow_df["Debt closing balance"], errors="coerce").fillna(0.0).iloc[-1])
+
+    net_debt = debt_balance - ending_cash
+    pre_money_equity = enterprise_value - net_debt
+    post_money_equity = pre_money_equity + float(planned_new_equity)
+
+    return pd.DataFrame(
+        [
+            {"Component": "Enterprise value (DCF)", "Amount": enterprise_value},
+            {"Component": "Less: debt outstanding", "Amount": -debt_balance},
+            {"Component": "Add: cash / (cash deficit)", "Amount": ending_cash},
+            {"Component": "Pre-money equity value", "Amount": pre_money_equity},
+            {"Component": "Planned new equity", "Amount": float(planned_new_equity)},
+            {"Component": "Post-money equity value", "Amount": post_money_equity},
+        ]
+    )
+
+
+def _build_investor_waterfall(
+    shareholders_df: Optional[pd.DataFrame],
+    exit_equity_value: float,
+) -> pd.DataFrame:
+    if shareholders_df is None or shareholders_df.empty:
+        return pd.DataFrame()
+
+    template = _default_shareholders_table()
+    waterfall = _align_table_to_template(shareholders_df, template).copy()
+    waterfall["Ownership %"] = _coerce_numeric(waterfall.get("Ownership %", pd.Series(dtype=float)))
+    waterfall["Investment"] = _coerce_numeric(waterfall.get("Investment", pd.Series(dtype=float)))
+    waterfall["Seniority"] = _coerce_numeric(waterfall.get("Seniority", pd.Series(dtype=float)), default=99.0)
+    waterfall["Liquidation preference (x)"] = _coerce_numeric(
+        waterfall.get("Liquidation preference (x)", pd.Series(dtype=float))
+    )
+    waterfall["Participating preferred"] = waterfall.get(
+        "Participating preferred", pd.Series(False, index=waterfall.index)
+    ).apply(lambda value: bool(value) if isinstance(value, (bool, np.bool_)) else str(value).strip().lower() in {"1", "true", "yes", "y"})
+    waterfall["Security"] = waterfall.get("Security", pd.Series("Common", index=waterfall.index)).astype(str)
+
+    exit_value = max(float(exit_equity_value or 0.0), 0.0)
+    waterfall["Converted value"] = waterfall["Ownership %"] * exit_value
+    waterfall["Preference claim"] = waterfall["Investment"] * waterfall["Liquidation preference (x)"]
+
+    preferred_mask = waterfall["Preference claim"] > 0
+    convert_mask = preferred_mask & ~waterfall["Participating preferred"] & (
+        waterfall["Converted value"] > waterfall["Preference claim"]
+    )
+    pref_pool_mask = preferred_mask & ~convert_mask
+
+    waterfall["Decision"] = "Common"
+    waterfall.loc[pref_pool_mask, "Decision"] = "Take preference"
+    waterfall.loc[convert_mask, "Decision"] = "Convert to common"
+    waterfall.loc[waterfall["Participating preferred"] & preferred_mask, "Decision"] = (
+        "Participating preferred"
+    )
+    waterfall["Preference paid"] = 0.0
+
+    remaining_exit = exit_value
+    for seniority in sorted(waterfall.loc[pref_pool_mask, "Seniority"].unique()):
+        mask = pref_pool_mask & (waterfall["Seniority"] == seniority)
+        claim_total = float(waterfall.loc[mask, "Preference claim"].sum())
+        if claim_total <= 0 or remaining_exit <= 0:
+            continue
+        payout = min(remaining_exit, claim_total)
+        allocation = waterfall.loc[mask, "Preference claim"] / claim_total
+        waterfall.loc[mask, "Preference paid"] = payout * allocation
+        remaining_exit -= payout
+
+    common_pool_mask = ~pref_pool_mask | waterfall["Participating preferred"]
+    common_pool_ownership = float(waterfall.loc[common_pool_mask, "Ownership %"].sum())
+    waterfall["Common pool allocation"] = 0.0
+    if remaining_exit > 0 and common_pool_ownership > 0:
+        waterfall.loc[common_pool_mask, "Common pool allocation"] = (
+            remaining_exit
+            * waterfall.loc[common_pool_mask, "Ownership %"]
+            / common_pool_ownership
+        )
+
+    waterfall["Total proceeds"] = waterfall["Preference paid"] + waterfall["Common pool allocation"]
+    waterfall["MOIC"] = np.where(
+        waterfall["Investment"] > 0,
+        waterfall["Total proceeds"] / waterfall["Investment"],
+        np.nan,
+    )
+
+    columns = [
+        "Shareholder",
+        "Security",
+        "Seniority",
+        "Ownership %",
+        "Investment",
+        "Decision",
+        "Converted value",
+        "Preference claim",
+        "Preference paid",
+        "Common pool allocation",
+        "Total proceeds",
+        "MOIC",
+    ]
+    return waterfall[columns].sort_values(["Seniority", "Shareholder"]).reset_index(drop=True)
+
+
+def _build_financing_outputs(
+    valuation_result: Optional[ValuationResult],
+    model_cfg: Optional[ModelConfig],
+) -> Dict[str, pd.DataFrame]:
+    outputs = {
+        "financial_performance": pd.DataFrame(),
+        "financial_position": pd.DataFrame(),
+        "cash_flows": pd.DataFrame(),
+        "lender_metrics": pd.DataFrame(),
+        "equity_bridge": pd.DataFrame(),
+        "investor_waterfall": pd.DataFrame(),
+    }
+    if valuation_result is None or model_cfg is None:
+        return outputs
+
+    perf_df, position_df, cash_flow_df = _compute_financial_statements(
+        valuation_result.consolidated,
+        model_cfg,
+    )
+    financing_settings = _financing_settings_from_state()
+    cash_flow_df = _apply_debt_schedule(
+        cash_flow_df,
+        st.session_state.get("debt_schedule_table"),
+        float(financing_settings["interest_rate"]),
+        repayment_mode=str(financing_settings["repayment_mode"]),
+        grace_years=int(financing_settings["grace_years"]),
+        target_dscr=float(financing_settings["target_dscr"]),
+        minimum_cash_reserve=float(financing_settings["minimum_cash_reserve"]),
+    )
+    lender_metrics = _build_lender_metrics(
+        cash_flow_df,
+        model_cfg.discount_rate,
+        minimum_cash_reserve=float(financing_settings["minimum_cash_reserve"]),
+        target_dscr=float(financing_settings["target_dscr"]),
+    )
+    equity_bridge = _build_enterprise_to_equity_bridge(
+        valuation_result,
+        cash_flow_df,
+        float(st.session_state.get("planned_new_equity", 0.0)),
+    )
+    investor_waterfall = pd.DataFrame()
+    if not equity_bridge.empty:
+        post_money = float(
+            equity_bridge.loc[
+                equity_bridge["Component"] == "Post-money equity value",
+                "Amount",
+            ].iloc[0]
+        )
+        investor_waterfall = _build_investor_waterfall(
+            st.session_state.get("shareholders_table"),
+            post_money,
+        )
+
+    outputs["financial_performance"] = perf_df
+    outputs["financial_position"] = position_df
+    outputs["cash_flows"] = cash_flow_df if cash_flow_df is not None else pd.DataFrame()
+    outputs["lender_metrics"] = lender_metrics
+    outputs["equity_bridge"] = equity_bridge
+    outputs["investor_waterfall"] = investor_waterfall
+    return outputs
 
 
 def _build_chart_tables(
@@ -4298,8 +5453,8 @@ def _build_excel_export(payload: Dict[str, Any]) -> io.BytesIO:
                 sheet.add_image(xlsx_image(image), "A1")
 
             _add_chart_sheet("Financial Statements Charts", "financial_statements_chart")
-            _add_chart_sheet("Financial Statements Charts", "dashboard_chart")
-            _add_chart_sheet("Financial Statements Charts", "dashboard_fcff_bar")
+            _add_chart_sheet("Dashboard Charts", "dashboard_chart")
+            _add_chart_sheet("Dashboard Charts", "dashboard_fcff_bar")
             _add_chart_sheet("Advanced Analytics Charts", "analytics_decomposition")
             _add_chart_sheet("Advanced Analytics Charts", "analytics_segmentation")
             _add_chart_sheet("Advanced Analytics Charts", "analytics_tornado")
@@ -5018,130 +6173,53 @@ def _render_rag_assistant_page() -> None:
     portfolio = st.session_state.get("portfolio")
 
     if "rag_snapshot" not in st.session_state:
-        if model_cfg is not None and valuation_result is not None:
-            default_scenarios = _default_scenario_pack(portfolio)
-            st.session_state["rag_snapshot"] = _build_snapshot_from_result(
-                model_cfg,
-                valuation_result,
-                scenarios=default_scenarios,
-            )
-        else:
-            st.session_state["rag_snapshot"] = {
-                "currency": "USD",
-                "npv": None,
-                "irr": None,
-                "dscr_min": None,
-                "payback_years": None,
-                "capex_total": None,
-                "opex_annual": None,
-                "revenue_annual": None,
-                "scenarios": [],
-                "sensitivities": [],
-                "assumptions": {},
-            }
-
-    if st.button("Refresh snapshot from latest model", key=f"{rag_key_prefix}_refresh_snapshot"):
-        if model_cfg is None or valuation_result is None:
-            st.warning("Run the model workspace to generate a snapshot.")
-        else:
-            st.session_state["rag_snapshot"] = _build_snapshot_from_result(
-                model_cfg,
-                valuation_result,
-                scenarios=_default_scenario_pack(portfolio),
-            )
+        st.session_state["rag_snapshot"] = _default_rag_advisory_inputs()
 
     snapshot_state = st.session_state["rag_snapshot"]
-    with st.expander("Snapshot inputs", expanded=False):
-        snap_cols = st.columns(3)
-        snapshot_state["currency"] = snap_cols[0].text_input(
-            "Currency",
-            value=snapshot_state.get("currency") or "USD",
-            key=f"{rag_key_prefix}_currency",
-        )
-        snapshot_state["npv"] = snap_cols[1].number_input(
-            "NPV",
-            value=float(snapshot_state["npv"]) if snapshot_state.get("npv") is not None else 0.0,
-            step=1000000.0,
-            key=f"{rag_key_prefix}_npv",
-        )
-        snapshot_state["irr"] = snap_cols[2].number_input(
-            "IRR",
-            value=float(snapshot_state["irr"]) if snapshot_state.get("irr") is not None else 0.0,
-            step=0.01,
-            format="%.4f",
-            key=f"{rag_key_prefix}_irr",
-        )
+    if model_cfg is not None and valuation_result is not None and not snapshot_state.get("scenarios"):
+        snapshot_state["scenarios"] = _default_scenario_pack(portfolio)
 
-        snap_cols2 = st.columns(3)
-        snapshot_state["dscr_min"] = snap_cols2[0].number_input(
-            "Minimum DSCR",
-            value=float(snapshot_state.get("dscr_min") or 0.0),
-            step=0.1,
-            format="%.2f",
-            key=f"{rag_key_prefix}_dscr_min",
-        )
-        snapshot_state["payback_years"] = snap_cols2[1].number_input(
-            "Payback (years)",
-            value=float(snapshot_state.get("payback_years") or 0.0),
-            step=0.1,
-            format="%.2f",
-            key=f"{rag_key_prefix}_payback_years",
-        )
-        snapshot_state["capex_total"] = snap_cols2[2].number_input(
-            "Total capex",
-            value=float(snapshot_state.get("capex_total") or 0.0),
-            step=1000000.0,
-            key=f"{rag_key_prefix}_capex_total",
-        )
+    if st.button("Refresh advisory scenarios from latest model", key=f"{rag_key_prefix}_refresh_snapshot"):
+        if model_cfg is None or valuation_result is None:
+            st.warning("Run the model workspace to seed advisory scenarios from the model.")
+        else:
+            snapshot_state["scenarios"] = _default_scenario_pack(portfolio)
 
-        snap_cols3 = st.columns(2)
-        snapshot_state["opex_annual"] = snap_cols3[0].number_input(
-            "Annual opex",
-            value=float(snapshot_state.get("opex_annual") or 0.0),
-            step=100000.0,
-            key=f"{rag_key_prefix}_opex_annual",
-        )
-        snapshot_state["revenue_annual"] = snap_cols3[1].number_input(
-            "Annual revenue",
-            value=float(snapshot_state.get("revenue_annual") or 0.0),
-            step=100000.0,
-            key=f"{rag_key_prefix}_revenue_annual",
-        )
+    snapshot_payload = _build_bankable_snapshot_payload(
+        project_id,
+        model_cfg,
+        valuation_result,
+        portfolio,
+        workbook_hash=snapshot_state.get("workbook_hash"),
+        advisory_inputs=snapshot_state,
+    )
+    locked_snapshot = snapshot_payload["financial_snapshot"]
+    has_live_model = snapshot_payload["snapshot_source"] == "live_model_only"
 
-        st.markdown("**Financing assumptions**")
-        finance_cols = st.columns(3)
-        snapshot_state["beginning_cash"] = finance_cols[0].number_input(
-            "Beginning cash balance",
-            value=float(snapshot_state.get("beginning_cash") or 0.0),
-            step=1_000_000.0,
-            key=f"{rag_key_prefix}_beginning_cash",
+    with st.expander("Locked export snapshot", expanded=False):
+        st.caption(
+            "Bankable exports use only these model-derived values. Manual overrides are disabled in the export path."
         )
-        snapshot_state["equity_issuance"] = finance_cols[1].number_input(
-            "Annual equity issuance",
-            value=float(snapshot_state.get("equity_issuance") or 0.0),
-            step=1_000_000.0,
-            key=f"{rag_key_prefix}_equity_issuance",
+        snapshot_rows = pd.DataFrame(
+            [
+                {"Metric": "Currency", "Value": locked_snapshot.get("currency")},
+                {"Metric": "NPV", "Value": locked_snapshot.get("npv")},
+                {"Metric": "IRR", "Value": locked_snapshot.get("irr")},
+                {"Metric": "Minimum DSCR", "Value": locked_snapshot.get("dscr_min")},
+                {"Metric": "Payback (years)", "Value": locked_snapshot.get("payback_years")},
+                {"Metric": "Total capex", "Value": locked_snapshot.get("capex_total")},
+                {"Metric": "Annual opex", "Value": locked_snapshot.get("opex_annual")},
+                {"Metric": "Annual revenue", "Value": locked_snapshot.get("revenue_annual")},
+            ]
         )
-        snapshot_state["debt_draw"] = finance_cols[2].number_input(
-            "Annual debt drawdowns",
-            value=float(snapshot_state.get("debt_draw") or 0.0),
-            step=1_000_000.0,
-            key=f"{rag_key_prefix}_debt_draw",
-        )
-        finance_cols2 = st.columns(2)
-        snapshot_state["debt_repay"] = finance_cols2[0].number_input(
-            "Annual debt repayments",
-            value=float(snapshot_state.get("debt_repay") or 0.0),
-            step=1_000_000.0,
-            key=f"{rag_key_prefix}_debt_repay",
-        )
-        snapshot_state["interest_paid"] = finance_cols2[1].number_input(
-            "Annual interest paid",
-            value=float(snapshot_state.get("interest_paid") or 0.0),
-            step=100_000.0,
-            key=f"{rag_key_prefix}_interest_paid",
-        )
+        st.dataframe(snapshot_rows, hide_index=True, use_container_width=True)
+        if not has_live_model:
+            st.warning("Run the model workspace to generate a locked snapshot for lender/investor exports.")
 
+    with st.expander("Advisory scenario inputs (not exported)", expanded=False):
+        st.caption(
+            "These notes can support AI drafting and internal discussion, but they are excluded from bankable exports."
+        )
         scenarios_df = pd.DataFrame(snapshot_state.get("scenarios") or [])
         scenarios_df = st.data_editor(
             scenarios_df,
@@ -5155,12 +6233,11 @@ def _render_rag_assistant_page() -> None:
             key=f"{rag_key_prefix}_scenarios_editor",
         )
         snapshot_state["scenarios"] = scenarios_df.to_dict(orient="records")
-
-    snapshot_payload = {
-        "project_id": project_id,
-        "financial_snapshot": snapshot_state,
-        "workbook_hash": snapshot_state.get("workbook_hash"),
-    }
+        snapshot_state["notes"] = st.text_area(
+            "Advisory notes",
+            value=str(snapshot_state.get("notes") or ""),
+            key=f"{rag_key_prefix}_advisory_notes",
+        )
 
     has_uploads = bool(uploads)
     has_indexed = bool(st.session_state.get("rag_last_ingest"))
@@ -5235,11 +6312,21 @@ def _render_rag_assistant_page() -> None:
     st.caption(
         "Generate a consolidated business plan bundle that includes the full financial report and snapshot."
     )
-    if st.button("Prepare business plan bundle", key=f"{rag_key_prefix}_bundle"):
+    if st.button(
+        "Prepare business plan bundle",
+        key=f"{rag_key_prefix}_bundle",
+        disabled=not has_live_model,
+    ):
         st.session_state["rag_bundle_ready"] = True
         st.success("Bundle ready. Download below.")
+    if not has_live_model:
+        st.caption("Run the model workspace first. Business plan exports now require locked model outputs.")
 
     if st.session_state.get("rag_bundle_ready"):
+        if not has_live_model:
+            st.warning("Locked export data is unavailable. Re-run the model before preparing a business plan bundle.")
+            st.session_state["rag_bundle_ready"] = False
+            return
         valuation_result = st.session_state.get("valuation_result")
         model_cfg = st.session_state.get("model_config")
         perf_df = None
@@ -5255,7 +6342,6 @@ def _render_rag_assistant_page() -> None:
             st.session_state.get("debt_schedule_table"),
             float(st.session_state.get("debt_interest_rate", 0.0)),
         )
-        cash_flow_df = _apply_cash_flow_assumptions(cash_flow_df, snapshot_state)
         bundle_payload = {
             "snapshot": snapshot_payload,
             "ai_config": st.session_state.get("rag_ai_config", {}),
@@ -5270,20 +6356,7 @@ def _render_rag_assistant_page() -> None:
             st.session_state.get("model_config"),
             st.session_state.get("portfolio"),
         )
-        custom_scenarios = snapshot_state.get("scenarios") or []
-        custom_rows = []
-        for scenario in custom_scenarios:
-            if isinstance(scenario, dict):
-                custom_rows.append(
-                    {
-                        "scenario": scenario.get("name") or scenario.get("scenario") or "Scenario",
-                        "npv": scenario.get("npv"),
-                        "irr": scenario.get("irr"),
-                    }
-                )
-        if custom_rows:
-            chart_tables["scenario_custom"] = pd.DataFrame(custom_rows)
-        monte_carlo_df = _build_monte_carlo_results(snapshot_state)
+        monte_carlo_df = _build_monte_carlo_results(snapshot_payload["financial_snapshot"])
         if not monte_carlo_df.empty:
             chart_tables["monte_carlo_results"] = monte_carlo_df
         export_payload = _build_export_payload(
@@ -5313,11 +6386,8 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="collapsed",
     )
-    st.title("Biotech")
-    st.write(
-        "Configure a portfolio, run discounted cash flow valuations, and explore VC "
-        "method estimates or stress scenarios."
-    )
+    _inject_app_theme()
+    _render_model_hero()
 
     model_cfg: ModelConfig | None = None
     portfolio: Portfolio | None = None
@@ -5342,7 +6412,11 @@ def main() -> None:
     )
 
     with config_tab:
-        with st.expander("Model assumptions", expanded=True):
+        with _section_block(
+            "Model assumptions",
+            heading_level=2,
+            caption="Configure stage templates, core model settings, financing assumptions, and governance inputs.",
+        ):
 
             with st.expander("Start here: guided setup", expanded=True):
                 st.markdown(
@@ -5367,29 +6441,20 @@ def main() -> None:
                 st.markdown("**Selected template**")
                 st.markdown(f"- {selected_stage}")
                 st.caption("Select a stage to align asset setup and scenario inputs.")
-                stage_index = STAGE_SEQUENCE.index(selected_stage)
-                show_discovery = stage_index == 0
-                show_preclinical = stage_index == 1
-                show_phase_i = stage_index == 2
-                show_phase_ii = stage_index == 3
-                show_phase_iii = stage_index == 4
-                show_approval = stage_index == 5
-                show_commercial = stage_index == 6
-                show_precommercial = stage_index <= 4
-                show_approval_or_later = stage_index >= 5
-                show_forecast_ramp = show_discovery or show_approval_or_later
-                show_vaccine_sales = show_commercial
-                show_uses_sources = show_precommercial or show_approval
-                show_relevant_market_sizes = stage_index in {1, 2, 3, 4}
-                show_market_size_estimation = show_approval_or_later
-                show_revenue_estimation = show_approval_or_later
-                show_cost_assumptions = show_approval_or_later
-                show_royalties = show_approval_or_later
-                show_market_share = show_approval_or_later
-                show_rd = show_precommercial
-                show_capex = True
+                visibility = _stage_visibility_flags(selected_stage)
+                show_forecast_ramp = visibility["show_forecast_ramp"]
+                show_vaccine_sales = visibility["show_vaccine_sales"]
+                show_uses_sources = visibility["show_uses_sources"]
+                show_relevant_market_sizes = visibility["show_relevant_market_sizes"]
+                show_market_size_estimation = visibility["show_market_size_estimation"]
+                show_revenue_estimation = visibility["show_revenue_estimation"]
+                show_cost_assumptions = visibility["show_cost_assumptions"]
+                show_royalties = visibility["show_royalties"]
+                show_market_share = visibility["show_market_share"]
+                show_rd = visibility["show_rd"]
+                show_capex = visibility["show_capex"]
 
-            with st.expander("Stage-to-schedule mapping", expanded=False):
+            with _section_block("Stage-to-schedule mapping", heading_level=3):
                 st.caption(
                     "Define default schedule assumptions per stage. These defaults can automatically "
                     "populate product assumptions when the stage changes. Stage durations are used to "
@@ -5416,89 +6481,304 @@ def main() -> None:
                     "stage_schedule_mapping",
                     _default_stage_schedule_mapping,
                 )
-                if "stage_mapping_edit" not in st.session_state:
-                    st.session_state["stage_mapping_edit"] = False
-                if st.session_state["stage_mapping_edit"]:
-                    if st.button("Done", key="stage_mapping_done_btn"):
-                        st.session_state["stage_mapping_edit"] = False
-                else:
-                    if st.button("Edit", key="stage_mapping_edit_btn"):
-                        st.session_state["stage_mapping_edit"] = True
-                if st.session_state["stage_mapping_edit"]:
-                    previous_mapping = mapping_df.copy()
-                    mapping_df = st.data_editor(
-                        mapping_df,
-                        num_rows="fixed",
-                        hide_index=True,
-                        key="stage_schedule_mapping_editor",
-                        column_config={
-                            "Stage": st.column_config.SelectboxColumn("Stage", options=STAGE_OPTIONS),
-                            "Success Probability %": st.column_config.NumberColumn(
-                                "Success Probability %", min_value=0.0, max_value=100.0, step=1.0
-                            ),
-                            "Time to market (years)": st.column_config.NumberColumn(
-                                "Time to market (years)", min_value=0, step=1
-                            ),
-                            "Sales ramp length (years)": st.column_config.NumberColumn(
-                                "Sales ramp length (years)", min_value=0, step=1
-                            ),
-                            "Ramp shape": st.column_config.SelectboxColumn(
-                                "Ramp shape", options=RAMP_SHAPE_OPTIONS
-                            ),
-                            "R&D remaining pre-launch (USD)": st.column_config.NumberColumn(
-                                "R&D remaining pre-launch (USD)", step=1_000_000.0
-                            ),
-                            "R&D annual post-launch (USD/year)": st.column_config.NumberColumn(
-                                "R&D annual post-launch (USD/year)", step=1_000_000.0
-                            ),
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0, step=1
-                                )
-                                for col in STAGE_DURATION_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0.0, max_value=100.0, step=1.0
-                                )
-                                for col in STAGE_COST_WEIGHT_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0.0, max_value=100.0, step=1.0
-                                )
-                                for col in STAGE_CAPEX_WEIGHT_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0.0, max_value=100.0, step=1.0
-                                )
-                                for col in STAGE_TRANSITION_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, min_value=0.0, max_value=100.0, step=1.0
-                                )
-                                for col in STAGE_TRANSITION_ANNUAL_COLUMNS
-                            },
-                            **{
-                                col: st.column_config.NumberColumn(
-                                    col, step=1_000_000.0
-                                )
-                                for col in STAGE_MILESTONE_COLUMNS
-                            },
-                        },
+                previous_mapping = mapping_df.copy()
+                with st.expander("Edit stage mapping", expanded=True):
+                    st.caption(
+                        "Use a structured editor for one stage at a time. "
+                        "Time to market is derived from the stage-duration inputs before save."
                     )
-                    if not mapping_df.equals(previous_mapping):
-                        st.session_state["stage_mapping_audit_log"].append(
-                            {
-                                "timestamp": pd.Timestamp.utcnow().isoformat(),
-                                "updated_by": audit_owner,
-                                "note": "Stage mapping updated",
-                            }
+                    editor_stage_key = "stage_mapping_editor_stage"
+                    editor_revision_key = "stage_mapping_editor_revision"
+                    editor_flash_key = "stage_mapping_editor_flash"
+                    flash_message = st.session_state.pop(editor_flash_key, None)
+                    if flash_message:
+                        level, message = flash_message
+                        if level == "success":
+                            st.success(message)
+                        elif level == "warning":
+                            st.warning(message)
+                        else:
+                            st.info(message)
+
+                    st.markdown('<div class="stage-mapping-editor-controls"></div>', unsafe_allow_html=True)
+                    control_cols = st.columns([2.2, 1.15, 1.0, 3.65])
+                    selected_stage = control_cols[0].selectbox(
+                        "Select stage",
+                        options=STAGE_OPTIONS,
+                        key="stage_mapping_selected_stage",
+                    )
+                    with control_cols[1]:
+                        st.caption("Open structured editor")
+                        edit_clicked = st.button(
+                            "Edit",
+                            key="stage_mapping_edit_open",
+                            type="primary",
+                            use_container_width=True,
                         )
-                else:
-                    st.dataframe(mapping_df, use_container_width=True, hide_index=True)
+                    active_stage = st.session_state.get(editor_stage_key)
+                    if edit_clicked:
+                        st.session_state[editor_stage_key] = selected_stage
+                        st.session_state[editor_revision_key] = int(
+                            st.session_state.get(editor_revision_key, 0)
+                        ) + 1
+                        st.rerun()
+                    if control_cols[2].button(
+                        "Close",
+                        key="stage_mapping_edit_close",
+                        disabled=not active_stage,
+                    ):
+                        st.session_state.pop(editor_stage_key, None)
+                        st.session_state[editor_revision_key] = int(
+                            st.session_state.get(editor_revision_key, 0)
+                        ) + 1
+                        st.session_state[editor_flash_key] = ("info", "Edit stage mapping closed.")
+                        st.rerun()
+                    if active_stage:
+                        control_cols[3].caption(
+                            f"Editing {active_stage}. Save commits the row; discard reverts the staged changes."
+                        )
+                    else:
+                        control_cols[3].caption(
+                            "Select a stage and click Edit to open the structured editor."
+                        )
+
+                    active_stage = st.session_state.get(editor_stage_key)
+                    if active_stage:
+                        row_mask = (
+                            mapping_df["Stage"].astype(str).map(normalize_stage_label)
+                            == normalize_stage_label(active_stage)
+                        )
+                        if not row_mask.any():
+                            st.warning("Selected stage not found in the mapping table.")
+                        else:
+                            row_idx = mapping_df.index[row_mask][0]
+                            base_row = mapping_df.loc[row_idx].copy()
+                            stage_label = str(base_row.get("Stage") or active_stage)
+                            revision = int(st.session_state.get(editor_revision_key, 0))
+                            updates: Dict[str, float | int | str] = {"Stage": stage_label}
+
+                            st.markdown(f"**Editing {stage_label}**")
+                            core_cols = st.columns(3)
+                            with core_cols[0]:
+                                updates["Success Probability %"] = st.number_input(
+                                    "Success Probability %",
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=float(base_row.get("Success Probability %", 0.0) or 0.0),
+                                    step=1.0,
+                                    key=_stage_mapping_input_key(stage_label, revision, "Success Probability %"),
+                                )
+                            with core_cols[1]:
+                                updates["Sales ramp length (years)"] = st.number_input(
+                                    "Sales ramp length (years)",
+                                    min_value=0,
+                                    value=int(base_row.get("Sales ramp length (years)", 0) or 0),
+                                    step=1,
+                                    key=_stage_mapping_input_key(stage_label, revision, "Sales ramp length (years)"),
+                                )
+                            with core_cols[2]:
+                                current_shape = base_row.get("Ramp shape", RAMP_SHAPE_OPTIONS[0])
+                                if current_shape not in RAMP_SHAPE_OPTIONS:
+                                    current_shape = RAMP_SHAPE_OPTIONS[0]
+                                updates["Ramp shape"] = st.selectbox(
+                                    "Ramp shape",
+                                    options=RAMP_SHAPE_OPTIONS,
+                                    index=RAMP_SHAPE_OPTIONS.index(current_shape),
+                                    key=_stage_mapping_input_key(stage_label, revision, "Ramp shape"),
+                                )
+
+                            funding_cols = st.columns(2)
+                            with funding_cols[0]:
+                                updates["R&D remaining pre-launch (USD)"] = st.number_input(
+                                    "R&D remaining pre-launch (USD)",
+                                    min_value=0.0,
+                                    value=float(base_row.get("R&D remaining pre-launch (USD)", 0.0) or 0.0),
+                                    step=1_000_000.0,
+                                    key=_stage_mapping_input_key(
+                                        stage_label,
+                                        revision,
+                                        "R&D remaining pre-launch (USD)",
+                                    ),
+                                )
+                            with funding_cols[1]:
+                                updates["R&D annual post-launch (USD/year)"] = st.number_input(
+                                    "R&D annual post-launch (USD/year)",
+                                    min_value=0.0,
+                                    value=float(base_row.get("R&D annual post-launch (USD/year)", 0.0) or 0.0),
+                                    step=1_000_000.0,
+                                    key=_stage_mapping_input_key(
+                                        stage_label,
+                                        revision,
+                                        "R&D annual post-launch (USD/year)",
+                                    ),
+                                )
+
+                            with st.expander("Stage durations", expanded=True):
+                                st.caption(
+                                    "These durations drive the derived time to market for the selected stage."
+                                )
+                                duration_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_DURATION_COLUMNS):
+                                    with duration_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0,
+                                            value=int(base_row.get(col, 0) or 0),
+                                            step=1,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+
+                            with st.expander("Transition probabilities", expanded=False):
+                                trans_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_TRANSITION_COLUMNS):
+                                    with trans_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+                                annual_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_TRANSITION_ANNUAL_COLUMNS):
+                                    with annual_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+
+                            with st.expander("R&D and CAPEX allocation", expanded=False):
+                                rd_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_COST_WEIGHT_COLUMNS):
+                                    with rd_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+                                capex_cols = st.columns(3)
+                                for idx, col in enumerate(STAGE_CAPEX_WEIGHT_COLUMNS):
+                                    with capex_cols[idx % 3]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+
+                            with st.expander("Milestones", expanded=False):
+                                milestone_cols = st.columns(2)
+                                for idx, col in enumerate(STAGE_MILESTONE_COLUMNS):
+                                    with milestone_cols[idx % 2]:
+                                        updates[col] = st.number_input(
+                                            col,
+                                            min_value=0.0,
+                                            value=float(base_row.get(col, 0.0) or 0.0),
+                                            step=1_000_000.0,
+                                            key=_stage_mapping_input_key(stage_label, revision, col),
+                                        )
+
+                            candidate_row = _build_stage_mapping_candidate_row(base_row, updates)
+                            row_warnings = _stage_mapping_row_warnings(mapping_df, row_idx, candidate_row)
+
+                            derived_cols = st.columns([1.2, 1.2, 3.6])
+                            derived_cols[0].metric(
+                                "Derived time to market (years)",
+                                int(candidate_row.get("Time to market (years)", 0) or 0),
+                            )
+                            derived_cols[1].metric(
+                                "Saved value",
+                                int(base_row.get("Time to market (years)", 0) or 0),
+                            )
+                            derived_cols[2].caption(
+                                "The saved time-to-market value is computed from the stage-duration inputs above."
+                            )
+
+                            if row_warnings:
+                                st.warning(
+                                    "Scientific/commercial check for this stage: review the items below before saving."
+                                )
+                                for warning in row_warnings:
+                                    st.write(f"- {warning}")
+                            else:
+                                st.success("No row-level scientific/commercial warnings for this stage.")
+
+                            preview_cols = [
+                                "Stage",
+                                "Success Probability %",
+                                "Time to market (years)",
+                                "Sales ramp length (years)",
+                                "Ramp shape",
+                                "R&D remaining pre-launch (USD)",
+                                "R&D annual post-launch (USD/year)",
+                            ]
+                            st.markdown("**Save preview**")
+                            st.dataframe(
+                                pd.DataFrame([candidate_row.reindex(preview_cols)]),
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+
+                            action_cols = st.columns([1.2, 1.2, 4.6])
+                            if action_cols[0].button("Save stage", key="stage_mapping_edit_save"):
+                                updated_mapping = mapping_df.copy()
+                                for col in updated_mapping.columns:
+                                    updated_mapping.at[row_idx, col] = candidate_row.get(
+                                        col,
+                                        updated_mapping.at[row_idx, col],
+                                    )
+                                mapping_df = updated_mapping
+                                st.session_state["stage_schedule_mapping"] = mapping_df
+                                if not mapping_df.equals(previous_mapping):
+                                    st.session_state["stage_mapping_audit_log"].append(
+                                        {
+                                            "timestamp": pd.Timestamp.utcnow().isoformat(),
+                                            "updated_by": audit_owner,
+                                            "note": f"Stage mapping updated: {stage_label}",
+                                        }
+                                    )
+                                st.session_state.pop(editor_stage_key, None)
+                                st.session_state[editor_revision_key] = revision + 1
+                                st.session_state[editor_flash_key] = (
+                                    "success",
+                                    f"Saved {stage_label} stage assumptions.",
+                                )
+                                st.rerun()
+                            if action_cols[1].button("Discard edits", key="stage_mapping_edit_discard"):
+                                st.session_state.pop(editor_stage_key, None)
+                                st.session_state[editor_revision_key] = revision + 1
+                                st.session_state[editor_flash_key] = (
+                                    "info",
+                                    f"Discarded edits for {stage_label}.",
+                                )
+                                st.rerun()
+
+                st.info("Editing happens above. Use Edit stage mapping to make changes before reviewing the summary.")
+                with st.expander("Full mapping table (summary)", expanded=False):
+                    st.caption("Read-only summary. Use Edit stage mapping above to make changes.")
+                    st.dataframe(
+                        mapping_df,
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                mapping_warnings = _stage_mapping_sanity_checks(mapping_df)
+                if mapping_warnings:
+                    st.warning(
+                        "Scientific/commercial check: please review the items below so stage inputs "
+                        "remain realistic and internally consistent."
+                    )
+                    for warning in mapping_warnings:
+                        st.write(f"- {warning}")
                 st.session_state["stage_schedule_mapping"] = mapping_df
                 with st.expander("Mapping audit trail", expanded=False):
                     audit_log = st.session_state.get("stage_mapping_audit_log", [])
@@ -5569,7 +6849,7 @@ def main() -> None:
                     )
                     vaccine_df = _recompute_vaccine_sales_implied_revenue(vaccine_df)
                     st.session_state["vaccine_sales_table"] = vaccine_df
-                    with st.expander("Yearly Increment Helper", expanded=False):
+                    with _section_block("Yearly Increment Helper", heading_level=4):
                         def _filter(df: pd.DataFrame, selected_id: Optional[str], start_year: int) -> pd.Series:
                             if selected_id is None:
                                 return pd.Series([False] * len(df), index=df.index)
@@ -5669,6 +6949,10 @@ def main() -> None:
                         uses_total = float(uses_df.get("Amount", pd.Series(dtype=float)).sum())
                         st.session_state["uses_total"] = uses_total
                         st.metric("Total uses", f"{uses_total:,.0f}")
+                        uses_warnings = []
+                        if (pd.to_numeric(uses_df.get("Amount", pd.Series(dtype=float)), errors="coerce") < 0).any():
+                            uses_warnings.append("Uses contain negative amounts; use positive values.")
+                        _render_section_warnings("Uses", uses_warnings)
                         if {"ID_vaccine", "Vaccine name", "Amount"}.issubset(uses_df.columns):
                             uses_by_vaccine = (
                                 uses_df.groupby(["ID_vaccine", "Vaccine name"], dropna=False)["Amount"]
@@ -5737,34 +7021,95 @@ def main() -> None:
                                     "Amount": planned_new_equity,
                                 }
                                 st.session_state["sources_table"] = sources_df
-                        sources_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
+                        sources_table_total = float(sources_df.get("Amount", pd.Series(dtype=float)).sum())
+                        sources_total = sources_table_total + debt_draw_total
                         st.session_state["sources_total"] = sources_total
                         st.metric("Total sources", f"{sources_total:,.0f}")
-                    delta = sources_total - uses_total
-                    st.info(f"Funding gap (sources - uses): {delta:,.0f}")
+                        if debt_draw_total:
+                            st.caption(
+                                f"Includes scheduled debt drawdowns of {debt_draw_total:,.0f} from the debt schedule."
+                            )
+                        sources_warnings = []
+                        if (pd.to_numeric(sources_df.get("Amount", pd.Series(dtype=float)), errors="coerce") < 0).any():
+                            sources_warnings.append("Sources contain negative amounts; use positive values.")
+                        _render_section_warnings("Sources", sources_warnings)
+                    delta = sources_total - funding_required
+                    st.info(f"Funding gap (sources - total funding required): {delta:,.0f}")
 
             if show_uses_sources:
                 with st.expander("Debt schedule inputs", expanded=False):
+                    debt_template = _default_debt_schedule(int(first_year), int(n_years))
                     debt_table_changed = (
                         st.session_state.get("debt_schedule_first_year") != int(first_year)
                         or st.session_state.get("debt_schedule_n_years") != int(n_years)
                     )
                     if debt_table_changed or "debt_schedule_table" not in st.session_state:
-                        st.session_state["debt_schedule_table"] = _default_debt_schedule(
-                            int(first_year),
-                            int(n_years),
+                        st.session_state["debt_schedule_table"] = debt_template
+                    else:
+                        st.session_state["debt_schedule_table"] = _align_table_to_template(
+                            st.session_state.get("debt_schedule_table"),
+                            debt_template,
                         )
                     st.session_state["debt_schedule_first_year"] = int(first_year)
                     st.session_state["debt_schedule_n_years"] = int(n_years)
-                    debt_interest_rate = st.number_input(
-                        "Debt interest rate",
-                        min_value=0.0,
-                        max_value=1.0,
-                        value=float(st.session_state.get("debt_interest_rate", 0.08)),
-                        step=0.005,
-                        format="%.3f",
-                        key="debt_interest_rate",
-                    )
+                    debt_cols = st.columns(5)
+                    with debt_cols[0]:
+                        debt_interest_rate = st.number_input(
+                            "Debt interest rate",
+                            min_value=0.0,
+                            max_value=1.0,
+                            value=float(st.session_state.get("debt_interest_rate", 0.08)),
+                            step=0.005,
+                            format="%.3f",
+                            key="debt_interest_rate",
+                        )
+                    with debt_cols[1]:
+                        repayment_options = ["straight_line", "sculpted_dscr", "bullet", "manual"]
+                        current_repayment_mode = str(
+                            st.session_state.get("debt_repayment_mode", "straight_line") or "straight_line"
+                        )
+                        if current_repayment_mode not in repayment_options:
+                            current_repayment_mode = "straight_line"
+                        debt_repayment_mode = st.selectbox(
+                            "Repayment mode",
+                            options=repayment_options,
+                            format_func=lambda value: {
+                                "straight_line": "Straight-line",
+                                "sculpted_dscr": "Sculpted to DSCR",
+                                "bullet": "Bullet maturity",
+                                "manual": "Manual schedule",
+                            }.get(value, value),
+                            index=repayment_options.index(current_repayment_mode),
+                            key="debt_repayment_mode",
+                        )
+                    with debt_cols[2]:
+                        debt_grace_years = st.number_input(
+                            "Grace years",
+                            min_value=0,
+                            max_value=int(n_years),
+                            value=int(st.session_state.get("debt_grace_years", 0) or 0),
+                            step=1,
+                            key="debt_grace_years",
+                        )
+                    with debt_cols[3]:
+                        debt_target_dscr = st.number_input(
+                            "Target DSCR",
+                            min_value=0.5,
+                            max_value=5.0,
+                            value=float(st.session_state.get("debt_target_dscr", 1.3) or 1.3),
+                            step=0.05,
+                            format="%.2f",
+                            key="debt_target_dscr",
+                        )
+                    with debt_cols[4]:
+                        minimum_cash_reserve = st.number_input(
+                            "Minimum cash reserve",
+                            min_value=0.0,
+                            value=float(st.session_state.get("minimum_cash_reserve", 0.0) or 0.0),
+                            step=1_000_000.0,
+                            format="%0.0f",
+                            key="minimum_cash_reserve",
+                        )
                     debt_schedule_df = _render_product_assumption_table(
                         session_key="debt_schedule_table",
                         default_factory=lambda: _default_debt_schedule(int(first_year), int(n_years)),
@@ -5780,20 +7125,52 @@ def main() -> None:
                             "Debt drawdowns": st.column_config.NumberColumn(
                                 "Debt drawdowns", step=1_000_000.0
                             ),
+                            "Manual debt repayments": st.column_config.NumberColumn(
+                                "Manual debt repayments",
+                                step=1_000_000.0,
+                            ),
                         },
                     )
                     st.session_state["debt_schedule_table"] = debt_schedule_df
-                    st.caption("Edit debt drawdowns; repayments and interest are calculated from the rate.")
-                    funding_gap = funding_required - uses_total
-                    st.metric("Funding required vs uses", f"{funding_gap:,.0f}")
+                    st.caption(
+                        "Drawdowns stay manual. Repayments follow the selected mode; the manual repayment column is used only when Manual schedule is selected."
+                    )
+                    debt_warnings = []
+                    if (pd.to_numeric(debt_schedule_df.get("Debt drawdowns", pd.Series(dtype=float)), errors="coerce") < 0).any():
+                        debt_warnings.append("Debt drawdowns should be zero or positive.")
+                    if (
+                        pd.to_numeric(
+                            debt_schedule_df.get("Manual debt repayments", pd.Series(dtype=float)),
+                            errors="coerce",
+                        )
+                        < 0
+                    ).any():
+                        debt_warnings.append("Manual debt repayments should be zero or positive.")
+                    if debt_interest_rate < 0 or debt_interest_rate > 1:
+                        debt_warnings.append("Debt interest rate should be between 0% and 100%.")
+                    if debt_repayment_mode == "manual" and (
+                        pd.to_numeric(
+                            debt_schedule_df.get("Manual debt repayments", pd.Series(dtype=float)),
+                            errors="coerce",
+                        )
+                        .fillna(0.0)
+                        .sum()
+                        <= 0
+                    ):
+                        debt_warnings.append("Manual repayment mode requires at least one positive manual repayment.")
+                    _render_section_warnings("Debt schedule", debt_warnings)
+                    funding_gap = sources_total - funding_required
+                    st.metric("Sources less funding required", f"{funding_gap:,.0f}")
                     if abs(funding_gap) > 1.0:
-                        st.warning("Funding required does not match total uses.")
+                        st.warning("Sources and total funding required are not yet reconciled.")
                     reconciliation = pd.DataFrame(
                         [
                             {"Component": "Uses total", "Amount": uses_total},
                             {"Component": "Cash burn (FCFF < 0)", "Amount": burn_total},
                             {"Component": "Working capital draw", "Amount": wc_total},
                             {"Component": "Funding required", "Amount": funding_required},
+                            {"Component": "Total sources", "Amount": sources_total},
+                            {"Component": "Minimum cash reserve", "Amount": minimum_cash_reserve},
                         ]
                     )
                     st.dataframe(reconciliation.style.format({"Amount": "{:,.0f}"}))
@@ -5803,12 +7180,51 @@ def main() -> None:
                 with col_a:
                     discount_rate = st.slider("Discount rate", min_value=0.02, max_value=0.30, value=0.10)
                 with col_b:
-                    ev_multiple = st.slider("Terminal EV/EBITDA multiple", 2.0, 30.0, 8.0)
+                    discount_timing = st.selectbox(
+                        "Discount timing",
+                        options=["year_end", "mid_year", "year_0"],
+                        format_func=lambda option: {
+                            "year_end": "Year-end",
+                            "mid_year": "Mid-year",
+                            "year_0": "Year-0",
+                        }.get(option, option),
+                    )
                 with col_c:
                     risk_buffer = st.number_input(
                         "Additional risk premium", min_value=0.0, max_value=0.20, value=0.0, step=0.01
                     )
-                st.caption("Discount rate + premium governs the rNPV and terminal value." )
+                dcf_cols = st.columns(3)
+                with dcf_cols[0]:
+                    terminal_method = st.selectbox(
+                        "Terminal method",
+                        options=["exit_multiple", "perpetuity_growth"],
+                        format_func=lambda option: {
+                            "exit_multiple": "Exit multiple",
+                            "perpetuity_growth": "Perpetuity growth",
+                        }.get(option, option),
+                    )
+                with dcf_cols[1]:
+                    ev_multiple = st.slider("Terminal EV/EBITDA multiple", 2.0, 30.0, 8.0)
+                with dcf_cols[2]:
+                    perpetuity_growth = st.slider(
+                        "Perpetuity growth rate",
+                        min_value=0.0,
+                        max_value=0.08,
+                        value=0.02,
+                        step=0.005,
+                    )
+                opening_nol_balance = st.number_input(
+                    "Opening NOL balance",
+                    min_value=0.0,
+                    value=float(st.session_state.get("opening_nol_balance", 0.0)),
+                    step=5_000_000.0,
+                    format="%0.0f",
+                    key="opening_nol_balance",
+                )
+                st.caption(
+                    "Discount rate + premium governs enterprise value. Terminal method, discount timing, "
+                    "working capital unwind, and NOL usage are now explicit model mechanics."
+                )
 
             with st.expander("Funding required"):
                 funding_required = st.number_input(
@@ -5820,6 +7236,12 @@ def main() -> None:
                 )
 
             with st.expander("Shareholders / Investors"):
+                shareholder_template = _default_shareholders_table()
+                if "shareholders_table" in st.session_state:
+                    st.session_state["shareholders_table"] = _align_table_to_template(
+                        st.session_state.get("shareholders_table"),
+                        shareholder_template,
+                    )
                 shareholders_df = _render_product_assumption_table(
                     session_key="shareholders_table",
                     default_factory=_default_shareholders_table,
@@ -5827,10 +7249,23 @@ def main() -> None:
                     id_column=None,
                     name_column="Shareholder",
                     column_config={
+                        "Security": st.column_config.SelectboxColumn(
+                            "Security",
+                            options=["Common", "Preferred", "Convertible note"],
+                        ),
+                        "Seniority": st.column_config.NumberColumn("Seniority", min_value=1, step=1),
                         "Ownership %": st.column_config.NumberColumn(
                             "Ownership %", min_value=0.0, max_value=1.0, step=0.01
                         ),
                         "Investment": st.column_config.NumberColumn("Investment", step=1_000_000.0),
+                        "Liquidation preference (x)": st.column_config.NumberColumn(
+                            "Liquidation preference (x)",
+                            min_value=0.0,
+                            step=0.1,
+                        ),
+                        "Participating preferred": st.column_config.CheckboxColumn(
+                            "Participating preferred"
+                        ),
                     },
                 )
                 investment = pd.to_numeric(
@@ -5844,11 +7279,19 @@ def main() -> None:
                     new_equity_mask = trimmed == "new equity round"
                     if new_equity_mask.any():
                         shareholders_df.loc[new_equity_mask, "Investment"] = planned_new_equity
+                        shareholders_df.loc[new_equity_mask, "Security"] = "Preferred"
+                        shareholders_df.loc[new_equity_mask, "Seniority"] = 1
+                        shareholders_df.loc[new_equity_mask, "Liquidation preference (x)"] = 1.0
+                        shareholders_df.loc[new_equity_mask, "Participating preferred"] = False
                     elif planned_new_equity > 0:
                         shareholders_df.loc[len(shareholders_df)] = {
                             "Shareholder": "New equity round",
+                            "Security": "Preferred",
+                            "Seniority": 1,
                             "Ownership %": planned_new_equity / post_money,
                             "Investment": planned_new_equity,
+                            "Liquidation preference (x)": 1.0,
+                            "Participating preferred": False,
                         }
 
                 ownership = pd.to_numeric(
@@ -5857,13 +7300,18 @@ def main() -> None:
                 shareholders_df["Ownership %"] = ownership
                 st.session_state["shareholders_table"] = shareholders_df
                 st.metric("Total ownership (post-money)", f"{shareholders_df['Ownership %'].sum():.0%}")
-                if valuation_result is not None:
-                    shareholders_df["Equity value (rNPV)"] = shareholders_df["Ownership %"] * valuation_result.rnpv
-                    st.dataframe(
-                        shareholders_df.style.format(
-                            {"Ownership %": "{:.1%}", "Investment": "{:,.0f}", "Equity value (rNPV)": "{:,.0f}"}
-                        )
+                st.dataframe(
+                    shareholders_df.style.format(
+                        {
+                            "Ownership %": "{:.1%}",
+                            "Investment": "{:,.0f}",
+                            "Liquidation preference (x)": "{:.1f}",
+                        }
                     )
+                )
+                st.caption(
+                    "Diluted ownership is recalculated from invested capital and planned new equity; liquidation preference and seniority feed the exit waterfall after a run."
+                )
 
             if show_relevant_market_sizes:
                 with st.expander("Relevant market sizes"):
@@ -5877,6 +7325,10 @@ def main() -> None:
                             "Value": st.column_config.NumberColumn("Value", step=1_000_000.0),
                         },
                     )
+                    market_warnings = []
+                    if (pd.to_numeric(market_df.get("Value", pd.Series(dtype=float)), errors="coerce") <= 0).any():
+                        market_warnings.append("Relevant market sizes should be greater than zero.")
+                    _render_section_warnings("Relevant market sizes", market_warnings)
 
             with st.expander("New equity issued"):
                 new_equity = st.number_input(
@@ -5902,10 +7354,19 @@ def main() -> None:
                 tax_rate=float(tax_rate),
                 working_capital_pct_sales=float(wc_pct),
                 ev_ebitda_multiple=float(ev_multiple),
+                opening_nol_balance=float(opening_nol_balance),
                 sales_ramp_factors=ramp,
+                discount_timing=str(discount_timing),
+                terminal_method=str(terminal_method),
+                perpetuity_growth_rate=float(perpetuity_growth),
+                unwind_working_capital=True,
             )
 
-        with st.expander("Product assumptions", expanded=True):
+        with _section_block(
+            "Product assumptions",
+            heading_level=2,
+            caption="Define development, commercial, cost, R&D, CAPEX, royalty, and market-share inputs by asset.",
+        ):
 
             dev_df = _render_product_assumption_table(
                 session_key="vaccine_development_table",
@@ -5986,6 +7447,16 @@ def main() -> None:
                             }
                         )
                     )
+                    market_size_warnings = []
+                    if (market_size <= 0).any():
+                        market_size_warnings.append("Market size (# customers) should be greater than zero.")
+                    if (avg_spend <= 0).any():
+                        market_size_warnings.append("Average spend should be greater than zero.")
+                    if (sam_pct > 100).any() or (sam_pct < 0).any():
+                        market_size_warnings.append("Serviceable Available Market % should be 0–100%.")
+                    if (som_pct > 100).any() or (som_pct < 0).any():
+                        market_size_warnings.append("Serviceable Obtainable Market % should be 0–100%.")
+                    _render_section_warnings("Market size estimation", market_size_warnings)
 
             if show_revenue_estimation:
                 with st.expander("Vaccines revenue estimation", expanded=True):
@@ -6048,6 +7519,16 @@ def main() -> None:
                             }
                         )
                     )
+                    revenue_warnings = []
+                    if (patent_customers < 0).any():
+                        revenue_warnings.append("Patent customers per year should be zero or positive.")
+                    if (patent_price < 0).any():
+                        revenue_warnings.append("Patent price should be zero or positive.")
+                    if (revenue_df["Patent revenue target (USD)"] < 0).any():
+                        revenue_warnings.append("Patent revenue targets should be zero or positive.")
+                    if (revenue_df["Post patent revenue target (USD)"] < 0).any():
+                        revenue_warnings.append("Post-patent revenue targets should be zero or positive.")
+                    _render_section_warnings("Revenue estimation", revenue_warnings)
 
             if show_cost_assumptions:
                 with st.expander("Vaccine cost assumptions", expanded=True):
@@ -6099,6 +7580,18 @@ def main() -> None:
                         if col in cost_display.columns
                     }
                     st.dataframe(cost_display.style.format({**percent_fmt, **currency_fmt}))
+                    cost_warnings = []
+                    for label, series in [
+                        ("COGS patent % of sales", cogs_patent),
+                        ("COGS post % of sales", cogs_post),
+                        ("Marketing annual % of sales", marketing_pct),
+                        ("Royalties cost % of sales", royalty_pct),
+                    ]:
+                        if (series < 0).any() or (series > 1).any():
+                            cost_warnings.append(f"{label} should be between 0% and 100%.")
+                    if (cost_df["G&A total (USD)"] < 0).any():
+                        cost_warnings.append("G&A total should be zero or positive.")
+                    _render_section_warnings("Cost assumptions", cost_warnings)
 
             if show_rd:
                 with st.expander("Vaccines research & development (R&D)", expanded=True):
@@ -6128,10 +7621,19 @@ def main() -> None:
                         if col not in ["ID_vaccine", "Vaccine name", "Cost accounting (capitalisation)"]
                     }
                     st.dataframe(rd_display.style.format(rd_fmt))
+                    rd_warnings = []
+                    for col in [
+                        "Pre-GTM spent to date (USD)",
+                        "Pre-GTM remaining (USD)",
+                        "Post-GTM annual cost (USD/year)",
+                    ]:
+                        if (pd.to_numeric(rd_df.get(col, pd.Series(dtype=float)), errors="coerce") < 0).any():
+                            rd_warnings.append(f"{col} should be zero or positive.")
+                    _render_section_warnings("R&D assumptions", rd_warnings)
 
             if show_capex:
                 with st.expander("Vaccine CAPEX assumptions", expanded=True):
-                    with st.expander("Shared CAPEX pools", expanded=False):
+                    with _section_block("Shared CAPEX pools", heading_level=4):
                         shared_pools_df = _render_product_assumption_table(
                             session_key="shared_capex_pools_table",
                             default_factory=_default_shared_capex_pools_table,
@@ -6147,7 +7649,7 @@ def main() -> None:
                             },
                         )
                         st.session_state["shared_capex_pools_table"] = shared_pools_df
-                    with st.expander("Shared CAPEX allocation weights", expanded=False):
+                    with _section_block("Shared CAPEX allocation weights", heading_level=4):
                         shared_allocations_df = _render_product_assumption_table(
                             session_key="shared_capex_allocations_table",
                             default_factory=_default_shared_capex_allocations_table,
@@ -6186,6 +7688,12 @@ def main() -> None:
                     capex_post = capex_df.get(capex_post_cols, pd.DataFrame()).apply(
                         pd.to_numeric, errors="coerce"
                     )
+                    capex_warnings = []
+                    if (capex_pre < 0).any().any():
+                        capex_warnings.append("Pre-GTM CAPEX entries should be zero or positive.")
+                    if (capex_post < 0).any().any():
+                        capex_warnings.append("Post-GTM CAPEX entries should be zero or positive.")
+                    _render_section_warnings("CAPEX assumptions", capex_warnings)
                     capex_df["Total Pre-GTM capex (USD)"] = capex_pre.fillna(0.0).sum(axis=1)
                     capex_df["Total Post-GTM capex (USD/year)"] = capex_post.fillna(0.0).sum(axis=1)
                     if not shared_pools_df.empty:
@@ -6405,14 +7913,36 @@ def main() -> None:
                     stage_column="stage",
                     overwrite=st.session_state.get("stage_mapping_overwrite", False),
                 )
+            detail_tables = _detail_tables_from_state()
             product_df = _validate_product_df(product_df)
             st.session_state["product_table"] = product_df
+            probability_preview = _build_probability_preview(
+                product_df,
+                model_cfg,
+                stage_mapping,
+                overwrite_defaults=st.session_state.get("stage_mapping_overwrite", False),
+                detail_tables=detail_tables,
+            )
+            if not probability_preview.empty:
+                st.markdown("**Probability basis before valuation**")
+                st.dataframe(
+                    probability_preview.style.format(
+                        {
+                            "Input success probability": "{:.1%}",
+                            "Effective cumulative success probability": "{:.1%}",
+                        }
+                    )
+                )
+                st.caption(
+                    "Stage-transition curves are authoritative when present; the single success probability is a fallback only."
+                )
 
             portfolio = _build_portfolio(
                 product_df,
                 model_cfg,
                 stage_mapping=stage_mapping,
                 overwrite_defaults=st.session_state.get("stage_mapping_overwrite", False),
+                detail_tables=detail_tables,
             )
             if portfolio is None:
                 st.info("Add at least one product with a name to run valuations.")
@@ -6428,8 +7958,47 @@ def main() -> None:
                 st.session_state["portfolio"] = portfolio
                 st.session_state["valuation_result"] = valuation_result
                 st.success(
-                    f"Run complete: portfolio rNPV = {valuation_result.rnpv:,.0f} {model_cfg.currency}."
+                    f"Run complete: enterprise value = {valuation_result.enterprise_value:,.0f} {model_cfg.currency}."
                 )
+                financing_outputs = _build_financing_outputs(valuation_result, model_cfg)
+                equity_bridge = financing_outputs["equity_bridge"]
+                lender_metrics = financing_outputs["lender_metrics"]
+                investor_waterfall = financing_outputs["investor_waterfall"]
+                st.markdown("**Enterprise-to-equity bridge**")
+                st.dataframe(equity_bridge.style.format({"Amount": "{:,.0f}"}), use_container_width=True)
+                if not lender_metrics.empty:
+                    st.markdown("**Lender metrics**")
+                    st.dataframe(
+                        lender_metrics.style.format(
+                            {
+                                "CFADS": "{:,.0f}",
+                                "Debt service": "{:,.0f}",
+                                "DSCR": "{:.2f}",
+                                "LLCR": "{:.2f}",
+                                "PLCR": "{:.2f}",
+                                "Minimum cash reserve": "{:,.0f}",
+                                "Cash reserve headroom": "{:,.0f}",
+                            }
+                        ),
+                        use_container_width=True,
+                    )
+                if not investor_waterfall.empty:
+                    st.markdown("**Investor waterfall**")
+                    st.dataframe(
+                        investor_waterfall.style.format(
+                            {
+                                "Ownership %": "{:.1%}",
+                                "Investment": "{:,.0f}",
+                                "Converted value": "{:,.0f}",
+                                "Preference claim": "{:,.0f}",
+                                "Preference paid": "{:,.0f}",
+                                "Common pool allocation": "{:,.0f}",
+                                "Total proceeds": "{:,.0f}",
+                                "MOIC": "{:.2f}",
+                            }
+                        ),
+                        use_container_width=True,
+                    )
 
     with financial_tab:
         st.subheader("Financial statements")
@@ -6437,6 +8006,12 @@ def main() -> None:
             st.info("Run the model configuration tab to populate the statements.")
         else:
             cons = valuation_result.consolidated
+            financing_outputs = _build_financing_outputs(valuation_result, model_cfg)
+            perf_df = financing_outputs["financial_performance"]
+            position_df = financing_outputs["financial_position"]
+            cash_flow_df = financing_outputs["cash_flows"]
+            lender_metrics = financing_outputs["lender_metrics"]
+            investor_waterfall = financing_outputs["investor_waterfall"]
             with st.expander("Consolidated forecast", expanded=True):
                 cons_display = cons[["revenue", "ebitda", "fcff_after_wc"]].copy()
                 cons_display.columns = ["Revenue", "EBITDA", "FCFF after WC"]
@@ -6450,12 +8025,6 @@ def main() -> None:
                     )
                 )
                 st.line_chart(cons_display)
-            perf_df, position_df, cash_flow_df = _compute_financial_statements(cons, model_cfg)
-            cash_flow_df = _apply_debt_schedule(
-                cash_flow_df,
-                st.session_state.get("debt_schedule_table"),
-                float(st.session_state.get("debt_interest_rate", 0.0)),
-            )
             st.markdown("**Statement of Financial Performance**")
             st.dataframe(
                 perf_df.style.format({col: "{:.0f}" for col in perf_df.columns})
@@ -6470,14 +8039,15 @@ def main() -> None:
             )
             debt_draw = cash_flow_df.get("Debt drawdowns")
             debt_repay = cash_flow_df.get("Debt repayments")
+            debt_open = cash_flow_df.get("Debt opening balance")
+            debt_close = cash_flow_df.get("Debt closing balance")
             if debt_draw is not None and debt_repay is not None:
-                debt_balance = (debt_draw.fillna(0.0) - debt_repay.fillna(0.0)).cumsum()
                 debt_schedule = pd.DataFrame(
                     {
-                        "Beginning balance": debt_balance.shift(1).fillna(0.0),
+                        "Beginning balance": debt_open.fillna(0.0) if debt_open is not None else 0.0,
                         "Debt drawdowns": debt_draw.fillna(0.0),
                         "Debt repayments": debt_repay.fillna(0.0),
-                        "Ending balance": debt_balance,
+                        "Ending balance": debt_close.fillna(0.0) if debt_close is not None else 0.0,
                     },
                     index=cash_flow_df.index,
                 )
@@ -6487,6 +8057,39 @@ def main() -> None:
                 )
             else:
                 st.info("Debt schedule unavailable: cash flow inputs are missing debt columns.")
+            if not lender_metrics.empty:
+                st.markdown("**Lender metrics**")
+                st.dataframe(
+                    lender_metrics.style.format(
+                        {
+                            "CFADS": "{:,.0f}",
+                            "Debt service": "{:,.0f}",
+                            "DSCR": "{:.2f}",
+                            "LLCR": "{:.2f}",
+                            "PLCR": "{:.2f}",
+                            "Minimum cash reserve": "{:,.0f}",
+                            "Cash reserve headroom": "{:,.0f}",
+                        }
+                    ),
+                    use_container_width=True,
+                )
+            if not investor_waterfall.empty:
+                st.markdown("**Investor waterfall**")
+                st.dataframe(
+                    investor_waterfall.style.format(
+                        {
+                            "Ownership %": "{:.1%}",
+                            "Investment": "{:,.0f}",
+                            "Converted value": "{:,.0f}",
+                            "Preference claim": "{:,.0f}",
+                            "Preference paid": "{:,.0f}",
+                            "Common pool allocation": "{:,.0f}",
+                            "Total proceeds": "{:,.0f}",
+                            "MOIC": "{:.2f}",
+                        }
+                    ),
+                    use_container_width=True,
+                )
             st.markdown("**Excel Model Download**")
             excel_bytes = st.session_state.get("financial_excel_bytes")
             download_container = st.container()
@@ -6500,6 +8103,8 @@ def main() -> None:
                                 position_df,
                                 cash_flow_df,
                                 model_cfg,
+                                lender_metrics=lender_metrics,
+                                investor_waterfall=investor_waterfall,
                             )
                         st.session_state["financial_excel_bytes"] = excel_bytes
                 if excel_bytes:
@@ -7022,12 +8627,15 @@ def main() -> None:
                 cost_dist = mc_cols[2].selectbox("Cost distribution", ["Normal", "Lognormal", "Uniform"])
                 seed = mc_cols[3].number_input("Random seed", min_value=0, value=42)
 
-                sigma_cols = st.columns(2)
+                sigma_cols = st.columns(3)
                 rev_sigma = sigma_cols[0].number_input(
                     "Revenue sigma", min_value=0.01, max_value=0.5, value=0.15, step=0.01
                 )
                 cost_sigma = sigma_cols[1].number_input(
                     "Cost sigma", min_value=0.01, max_value=0.5, value=0.1, step=0.01
+                )
+                launch_delay_sigma = sigma_cols[2].number_input(
+                    "Launch delay sigma (years)", min_value=0.0, max_value=5.0, value=0.5, step=0.1
                 )
                 rev_bounds = st.columns(2)
                 rev_min = rev_bounds[0].number_input("Revenue min (uniform)", value=0.8, step=0.05)
@@ -7047,6 +8655,7 @@ def main() -> None:
                         revenue_max=float(rev_max),
                         cost_min=float(cost_min),
                         cost_max=float(cost_max),
+                        launch_delay_sigma=float(launch_delay_sigma),
                         random_seed=int(seed),
                     )
                     st.session_state["mc_results"] = sims
@@ -7298,6 +8907,101 @@ def main() -> None:
     st.caption(
         "Tip: Upload a Prophet-ready dataframe (ds, y) and plug it into ForecastScenarioBridge for richer scenarios."
     )
+
+
+# ---------------------------------------------------------------------------
+# Scenario state hooks — called by the parent NumQuants shell.
+# ---------------------------------------------------------------------------
+
+# DataFrames stored directly in session_state (serialised by the parent app's
+# _serialize() helper). Portfolio and ValuationResult are derived objects and
+# are rebuilt from these tables on the next render — no need to save them.
+_BIOTECH_DF_KEYS = [
+    "product_table",
+    "stage_schedule_mapping",
+    "vaccine_sales_table",
+    "vaccine_development_table",
+    "vaccine_revenue_table",
+    "vaccine_cost_table",
+    "vaccine_rd_table",
+    "vaccine_capex_table",
+    "vaccine_royalty_table",
+    "vaccine_market_share_table",
+    "market_size_estimation",
+    "uses_table",
+    "sources_table",
+    "shareholders_table",
+    "debt_schedule_table",
+]
+
+_BIOTECH_SCALAR_KEYS = [
+    "stage_mapping_auto_apply",
+    "stage_mapping_overwrite",
+    "scenario_basket",
+    "scenario_rev_mult",
+    "scenario_cost_mult",
+    "scenario_dr_shift",
+    "scenario_prob_mult",
+    "vaccine_sales_first_year",
+    "vaccine_sales_n_years",
+    "debt_interest_rate",
+    "debt_repayment_mode",
+    "debt_grace_years",
+    "debt_target_dscr",
+    "minimum_cash_reserve",
+    "funding_required",
+    "planned_new_equity",
+    "opening_nol_balance",
+    "debt_schedule_first_year",
+    "debt_schedule_n_years",
+]
+
+
+def get_state() -> dict:
+    """Snapshot all user-editable inputs.
+
+    ModelConfig is serialised via dataclasses.asdict() so it round-trips through
+    JSON cleanly. Portfolio and ValuationResult are omitted — they are rebuilt
+    from product_table + model_config on the next render.
+    """
+    import streamlit as _st
+    state: dict = {}
+
+    # ModelConfig dataclass → plain dict
+    model_cfg = _st.session_state.get("model_config")
+    if model_cfg is not None:
+        from dataclasses import asdict as _asdict
+        try:
+            state["model_config"] = _asdict(model_cfg)
+        except TypeError:
+            pass  # not a dataclass, skip
+
+    # DataFrames and scalars
+    for key in _BIOTECH_DF_KEYS + _BIOTECH_SCALAR_KEYS:
+        val = _st.session_state.get(key)
+        if val is not None:
+            state[key] = val
+
+    return state
+
+
+def set_state(state: dict) -> None:
+    """Restore a previously saved state snapshot.
+
+    Reconstructs ModelConfig from its saved dict. DataFrames are written
+    directly to session_state; portfolio is rebuilt by main() on next render.
+    """
+    import streamlit as _st
+
+    if "model_config" in state:
+        try:
+            _st.session_state["model_config"] = ModelConfig(**state["model_config"])
+        except (TypeError, KeyError):
+            pass  # schema changed; leave unset so main() uses defaults
+
+    for key in _BIOTECH_DF_KEYS + _BIOTECH_SCALAR_KEYS:
+        if key in state:
+            _st.session_state[key] = state[key]
 
 
 if __name__ == "__main__":
