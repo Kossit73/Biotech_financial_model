@@ -1166,6 +1166,20 @@ def _ensure_table_state(key: str, default_factory: Callable[[], pd.DataFrame]) -
     return st.session_state[key]
 
 
+def _table_editor_revision_key(session_key: str) -> str:
+    return f"{session_key}_editor_revision"
+
+
+def _table_editor_key(session_key: str) -> str:
+    revision = int(st.session_state.get(_table_editor_revision_key(session_key), 0))
+    return f"{session_key}_editor_{revision}"
+
+
+def _bump_table_editor_revision(session_key: str) -> None:
+    revision_key = _table_editor_revision_key(session_key)
+    st.session_state[revision_key] = int(st.session_state.get(revision_key, 0)) + 1
+
+
 def _parse_pool_targets(raw_value: str, fallback_ids: List[str]) -> List[str]:
     if not raw_value:
         return fallback_ids
@@ -1528,6 +1542,7 @@ def _render_yearly_increment_helper(
             df.loc[row_mask, target_col] = value
 
         st.session_state[section_key] = df
+        _bump_table_editor_revision(section_key)
         st.success("Increment applied")
 
     return st.session_state.get(section_key, df)
@@ -1668,6 +1683,7 @@ def _edit_selected_row(
         for col, val in edited_values.items():
             _set_dataframe_cell(df, selected_idx, col, val)
         st.session_state[section_key] = df
+        _bump_table_editor_revision(section_key)
         st.success("Row updated")
     return st.session_state.get(section_key, df)
 
@@ -1695,6 +1711,7 @@ def _add_row_via_form(
     if new_row is not None:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         st.session_state[section_key] = df
+        _bump_table_editor_revision(section_key)
         _set_pending_selection(select_key, _row_identifier(df, df.index[-1], id_column))
         _set_pending_panel_state(_panel_state_key(section_key, "add"), False)
         st.success("Row added")
@@ -1720,6 +1737,7 @@ def _remove_selected_row(
         if selected_idx is not None and selected_idx in df.index:
             df = df.drop(index=selected_idx).reset_index(drop=True)
             st.session_state[section_key] = df
+            _bump_table_editor_revision(section_key)
             if not df.empty:
                 _set_pending_selection(select_key, _row_identifier(df, df.index[-1], id_column))
             else:
@@ -1793,7 +1811,7 @@ def _render_product_assumption_table(
         df,
         num_rows="dynamic",
         hide_index=True,
-        key=f"{session_key}_editor",
+        key=_table_editor_key(session_key),
         column_config=column_config,
     )
     if session_key == "vaccine_sales_table":
